@@ -1,0 +1,20 @@
+# Окружение «живого голоса» XTTS-v2 (отдельный venv .venv-xtts). Python 3.10, GPU.
+#
+# Установка с нуля:
+#   python -m venv .venv-xtts
+#   .venv-xtts\Scripts\python -m pip install -U pip wheel setuptools
+#   .venv-xtts\Scripts\python -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+#   .venv-xtts\Scripts\python -m pip install -r requirements-xtts.txt
+#
+# torch/torchaudio ставятся ОТДЕЛЬНО с CUDA-индекса (строка выше), здесь их нет
+# намеренно — иначе pip затащит CPU-сборку. Рабочие версии:
+#   torch==2.5.1+cu121  torchaudio==2.5.1+cu121
+#
+# ВАЖНО: transformers держим <5. В 5.x удалили isin_mps_friendly, который нужен
+# слою tortoise/xtts, а coqui-tts 0.27.5 объявляет ">=4.57" без верхней границы —
+# pip без этого пина ставит 5.x и импорт XTTS падает.
+
+coqui-tts==0.27.5
+transformers>=4.57,<5
+gtts==2.5.4
+edge-tts==7.2.8

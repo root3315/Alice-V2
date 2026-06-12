@@ -14,6 +14,14 @@ Ami/
 __pycache__/
 *.pyc
 
+# Виртуальные окружения (тяжёлые, не версионируем — torch CUDA ~2.5GB)
+.venv*/
+venv*/
+
+# Кэш моделей TTS (XTTS-v2 ~1.8GB) и аудио-сэмплы голосов
+tts-models/
+voice-samples/
+
 # Секреты / локальная конфигурация
 .env
 .env-tts
