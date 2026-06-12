@@ -1,0 +1,85 @@
+# Runtime data
+/data/
+
+# Prompt snapshot logs (ALICE_PROMPT_LOG=true)
+runtime/prompt-logs/
+
+# Skill 包管理器运行时数据（store + registry）
+runtime/skills/store/
+runtime/skills/registry.json
+
+# Alice home directory (容器内文件中转，运行时数据)
+runtime/home/
+
+# Script generated output (preview-prompt, eval-dump)
+runtime/scripts/preview-dump-*/
+runtime/scripts/preview-prompt-output.md
+runtime/scripts/blind-review-prompt.md
+runtime/eval-dump-*/
+runtime/eval-ablation-*/
+runtime/.eval-cache.json
+
+# Test data (real Telegram exports — personal data, never commit)
+simulation/testdata/
+
+# Environment
+.env
+.env.*
+!**/.env.example
+
+# Node
+node_modules/
+dist/
+
+# Bun
+*.session*
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+bun.lock
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+texput.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code
+.claude/
+
+# Error logs
+*.log
+!simulation/**/*.log
+
+# Database backups (运行时产物)
+runtime/*.db.bak-*
+
+# Simulation output (生成的图表，不入 git)
+simulation/output/
+simulation/experiments/figures/
+
+# Conversation exports
+conversation-*.txt
+
+# OS
+.DS_Store
+Thumbs.db

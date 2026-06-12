@@ -1,0 +1,30 @@
+# 依赖
+node_modules/
+
+# 编译产物
+dist/bin/
+
+# 运行时文件
+execution-grain
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.backup-*.db
+.env
+logs/
+*.log
+eval-artifacts/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 临时文件
+*.tmp
+*.temp
+.DS_Store
+
+# 测试产物
+test/.test-*

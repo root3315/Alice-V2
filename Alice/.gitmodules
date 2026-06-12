@@ -1,0 +1,3 @@
+[submodule "services/wd14-tagger-server"]
+	path = services/wd14-tagger-server
+	url = https://github.com/LlmKira/wd14-tagger-server.git

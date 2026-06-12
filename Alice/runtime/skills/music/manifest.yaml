@@ -1,0 +1,37 @@
+name: music
+version: "1.0.0"
+author: "Alice"
+license: "MIT"
+description: "Music search — find songs by title, artist, or lyrics"
+
+actions:
+  - name: use_music_app
+    category: music
+    description:
+      - "Search for music — find songs by name, artist, or lyrics."
+      - "Returns song name, artist, album, and play URL."
+    usageHint: "Music search. Use for song sharing or when music comes up."
+    whenToUse: "Search for music, share songs, find a song by name or lyrics"
+    whenNotToUse: "When music isn't relevant"
+    params:
+      - name: query
+        type: string
+        required: true
+        description: "Search keywords (song name, artist, or lyrics)"
+    returns: "Results printed to stdout in next round."
+
+runtime:
+  backend: shell
+  timeout: 15
+  env:
+    - name: MUSIC_API_BASE
+      description: "NeteaseCloudMusicApi base URL (e.g. http://localhost:3000)"
+  shell:
+    command: "npx tsx bin/music.ts {{query}}"
+
+family:
+  label: "Музыка"
+  whenToUse: "Поиск музыки и обмен песнями"
+  tutorials:
+    - '// use_music_app({ query: "Земфира Искала" })'
+    - "// -> results appear automatically in next round"

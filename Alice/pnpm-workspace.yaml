@@ -1,0 +1,9 @@
+packages:
+  - runtime
+# pnpm 11: разрешаем build-скрипты нативных модулей (better-sqlite3/sharp и т.д.).
+allowBuilds:
+  '@ax-llm/ax': true
+  better-sqlite3: true
+  esbuild: true
+  onnxruntime-node: true
+  sharp: true
