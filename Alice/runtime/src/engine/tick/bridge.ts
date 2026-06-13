@@ -26,6 +26,7 @@ import type { SubcycleResult } from "../react/types.js";
 import { collectAllTools } from "./affordance-filter.js";
 import { createBlackboard } from "./blackboard.js";
 import { callTickLLM } from "./callLLM.js";
+import { shouldUseOpsModel } from "./ops-model.js";
 import type { TickPromptContext } from "./prompt-builder.js";
 import type { ResolvedTarget } from "./target.js";
 import { type TickDeps, tick } from "./tick.js";
@@ -33,9 +34,9 @@ import type { FeatureFlags, TickResult, UnifiedTool } from "./types.js";
 
 const log = createLogger("tick/bridge");
 
-// Model-tiering (#23): ops-каналы (работач) → Opus-маршрут для триажа/код-анализа.
-// Канал берём из env — тот же OPS_CHANNEL_ID, что incident-детекция в events.ts.
-// Не задан → все тики идут обычным маршрутом (sonnet), поведение как раньше.
+// Model-tiering (#23): работач берём из env (тот же OPS_CHANNEL_ID, что incident-детекция
+// в events.ts). Не задан → Opus-маршрут вообще не включается, поведение как раньше.
+// Решение Opus/sonnet — в shouldUseOpsModel: только реальная ops-работа, не «просто так».
 const OPS_CHANNEL_ID = process.env.OPS_CHANNEL_ID;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -202,15 +203,18 @@ export async function runTickSubcycle(
   _session: EngagementSession,
 ): Promise<SubcycleResult> {
   const { board, allTools, deps } = prepareTickRun(ctx, item, contextVars ?? {});
-  // Model-tiering (#23): тик в работач → Opus-маршрут (глубже по коду/инцидентам),
-  // соц-чаты остаются на sonnet (живее персона, дешевле по лимитам).
-  const isOpsTick = !!OPS_CHANNEL_ID && item.target === OPS_CHANNEL_ID;
+  // Model-tiering (#23): Opus только когда в работач к Алисе реально обращаются
+  // (вопрос/код-ревью/инцидент); автономные патрули и болтовня остаются на sonnet.
+  const opsChannel =
+    item.target && ctx.G.has(item.target) ? ctx.G.getChannel(item.target) : null;
+  const isOpsTick = shouldUseOpsModel(item.target, OPS_CHANNEL_ID, opsChannel, Date.now());
   const llmProvider = selectProviderForTick(isOpsTick);
   if (isOpsTick) {
     log.info("ops tick → opus route", {
       target: item.target,
       model: llmProvider.model,
       endpoint: llmProvider.name,
+      pendingDirected: opsChannel?.pending_directed ?? 0,
     });
   }
 

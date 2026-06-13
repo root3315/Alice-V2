@@ -423,9 +423,11 @@ whitelist = ["channel:-1001234567890", "https://t.me/example"]
     writeFileSync(whitelistPath, "channel:telegram:123456789\n", "utf-8");
     writeConfig(
       configPath,
+      // TOML literal string (одинарные кавычки): без обработки escape —
+      // Windows-пути (C:\Users\...) не ломают парсер на \U / \a.
       `
 [focus]
-whitelist_path = "${whitelistPath}"
+whitelist_path = '${whitelistPath}'
 `,
     );
     process.env.ALICE_CONFIG_PATH = configPath;
