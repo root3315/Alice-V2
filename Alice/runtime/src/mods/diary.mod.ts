@@ -287,8 +287,11 @@ export const diaryMod = createMod<DiaryState>("diary", {
 })
   .instruction("diary", {
     params: z.object({
-      content: z.string().trim().min(1).max(MAX_ENTRY_LENGTH).describe("Текст записи (свободная форма)"),
-      about: z.string().optional().describe("@id связанной сущности (необязательно, например @7785440246)"),
+      // Схема НЕ режет жёстко: impl сам аккуратно обрезает >MAX_ENTRY_LENGTH и
+      // нормализует about. coerce → number/прочее не валят валидацию (была частая
+      // ошибка "content max 200" / "about expected string, received number").
+      content: z.coerce.string().trim().min(1).describe("Текст записи (свободная форма; длинное аккуратно обрежется)"),
+      about: z.coerce.string().optional().describe("@id связанной сущности (необязательно, например @7785440246)"),
     }),
     description: "Сделать личную запись в дневнике",
     affordance: {
