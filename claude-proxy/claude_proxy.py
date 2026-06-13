@@ -87,6 +87,9 @@ OPUS_TIMEOUT_S = int(os.getenv("PROXY_OPUS_TIMEOUT_S", "230"))
 # (пустая папка для обычных чат-вызовов). Огромный живой промпт Alice сюда НЕ идёт —
 # только задача → быстро, без таймаута, без её «не смонтировано»-истории.
 WORKI_CLONE = os.getenv("PROXY_WORKI_CLONE", r"C:\Users\sozda\alice-readonly\worki")
+# Модель для code-analyze. sonnet = быстро+легко (агент всё равно сам читает реальный
+# код); opus = глубже, но заметно дольше и грузит машину. Меняется одной env-переменной.
+CODE_ANALYZE_MODEL = os.getenv("PROXY_CODE_ANALYZE_MODEL", "sonnet")
 
 # На Max-подписке ключ должен быть пустым, иначе CLI уйдёт на платный API.
 # Подчищаем окружение дочернего процесса от ключа на всякий случай.
@@ -482,14 +485,15 @@ async def code_analyze(request: Request):
     analyst = (
         "Текущая папка (cwd) — это репозиторий Worki, read-only. Исследуй код своими "
         "инструментами Read/Grep/Glob и ответь на задачу КОНКРЕТНО, по реальному коду, "
-        "с путями к файлам. Кратко, по делу, без воды и без выдумок."
+        "с путями к файлам. Бери МИНИМУМ файлов, нужных для ответа — не перечитывай лишнего. "
+        "Кратко, по делу, без воды и без выдумок."
     )
     # persona (краткая «душа» от Alice) — чтобы ответ был в её голосе. Без неё — нейтрально.
     system = f"{persona}\n\n{analyst}" if persona else analyst
     prompt = f"{system}\n\nЗАДАЧА: {task}"
     argv = [
         CLAUDE_CLI, "-p",
-        "--model", "opus",
+        "--model", CODE_ANALYZE_MODEL,
         "--allowedTools", "Read", "Grep", "Glob",
         "--output-format", "json",
     ]
