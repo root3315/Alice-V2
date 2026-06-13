@@ -84,9 +84,11 @@ export function initProviders(config: Config): void {
  */
 export function selectProviderForFirstPass(ops = false): AvailableProvider {
   const useOps = ops && _routing.opsFirstPass.length > 0;
-  return useOps
-    ? selectShuffledAvailableFromRoute("opsFirstPass", _routing.opsFirstPass)
-    : selectShuffledAvailableFromRoute("firstPass", _routing.firstPass);
+  if (useOps) {
+    // ops: СТРОГИЙ приоритет (opus первый), НЕ shuffle — sonnet только если opus circuit-open.
+    return selectAvailableFromRoute(_routing.opsFirstPass, "opsFirstPass");
+  }
+  return selectShuffledAvailableFromRoute("firstPass", _routing.firstPass);
 }
 
 function selectAvailableFromRoute(route: readonly string[], routeName: string): AvailableProvider {
@@ -153,9 +155,11 @@ function shuffle<T>(items: T[]): T[] {
  */
 export function selectProviderForTick(ops = false): AvailableProvider {
   const useOps = ops && _routing.opsToolTick.length > 0;
-  return useOps
-    ? selectShuffledAvailableFromRoute("opsToolTick", _routing.opsToolTick)
-    : selectShuffledAvailableFromRoute("toolTick", _routing.toolTick);
+  if (useOps) {
+    // ops: СТРОГИЙ приоритет (opus первый), НЕ shuffle — sonnet только если opus circuit-open.
+    return selectAvailableFromRoute(_routing.opsToolTick, "opsToolTick");
+  }
+  return selectShuffledAvailableFromRoute("toolTick", _routing.toolTick);
 }
 
 /**
