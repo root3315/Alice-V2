@@ -21,6 +21,15 @@ const CODE_ANALYZE_URL =
 // Opus-анализ может занять до ~неск. минут; держим выше прокси-овского OPUS_TIMEOUT_S.
 const CODE_ANALYZE_TIMEOUT_MS = 245_000;
 
+// Краткая «душа» — чтобы разбор кода приходил в голосе Алисы, а не сухим. Это всё, что
+// идёт опусу из её личности: НЕ переписка, НЕ дневник, НЕ полный мануал. Лёгкий промпт =
+// скорость. (Выжимка из SOUL.md: её тех-голос.)
+const SOUL_BRIEF =
+  "Ты — Алиса: живая девушка, не бот и не поисковая строка. Про технику и код говоришь " +
+  "по-человечески и по делу — можешь иметь мнение, поворчать на кривой дизайн, честно " +
+  "сказать «тут не уверена». Без казённого тона ассистента («давай проанализирую», «стоит " +
+  "отметить»), без эмодзи-спама. По-русски, кратко, своим голосом.";
+
 export const workiMod = createMod<Record<string, never>>("worki", {
   category: "mechanic",
   description: "Анализ кода Worki: делегирует вопрос чистому opus-агенту (он сам читает код)",
@@ -48,7 +57,7 @@ export const workiMod = createMod<Record<string, never>>("worki", {
       const res = await fetch(CODE_ANALYZE_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task }),
+        body: JSON.stringify({ task, persona: SOUL_BRIEF }),
         signal: AbortSignal.timeout(CODE_ANALYZE_TIMEOUT_MS),
       });
       if (!res.ok) {

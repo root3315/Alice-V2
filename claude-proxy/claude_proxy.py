@@ -478,11 +478,14 @@ async def code_analyze(request: Request):
             status_code=503, content={"error": {"message": f"worki clone unavailable: {WORKI_CLONE}"}}
         )
 
-    system = (
-        "Ты — анализатор кода. Текущая папка (cwd) — это репозиторий Worki, read-only. "
-        "Исследуй код своими инструментами Read/Grep/Glob и ответь на задачу КОНКРЕТНО, "
-        "по реальному коду, с путями к файлам. Кратко, по делу, без воды и без выдумок."
+    persona = (body.get("persona") or "").strip()
+    analyst = (
+        "Текущая папка (cwd) — это репозиторий Worki, read-only. Исследуй код своими "
+        "инструментами Read/Grep/Glob и ответь на задачу КОНКРЕТНО, по реальному коду, "
+        "с путями к файлам. Кратко, по делу, без воды и без выдумок."
     )
+    # persona (краткая «душа» от Alice) — чтобы ответ был в её голосе. Без неё — нейтрально.
+    system = f"{persona}\n\n{analyst}" if persona else analyst
     prompt = f"{system}\n\nЗАДАЧА: {task}"
     argv = [
         CLAUDE_CLI, "-p",
