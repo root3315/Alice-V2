@@ -24,6 +24,27 @@ import type { GraphPerturbation } from "./mapper.js";
 
 const log = createLogger("events");
 
+// WS-4: гейт ops-инцидента — двойной (канал работач + гараж-бот) + маркер. id в .env.
+// Для этого (и только этого) случая инцидент трактуется как directed-сообщение,
+// обходя bot-downweight, чтобы её любопытство его заметило. Сам контакт остаётся ботом.
+const OPS_CHANNEL_ID = process.env.OPS_CHANNEL_ID;
+const OPS_GARAGE_BOT_ID = process.env.OPS_GARAGE_BOT_ID;
+const OPS_INCIDENT_MARKER = /🔴|🚨|👀|💬|INC-/;
+function isGarageIncident(
+  channelId: string,
+  contactId: string | null,
+  text: string | null | undefined,
+): boolean {
+  return (
+    !!OPS_CHANNEL_ID &&
+    !!OPS_GARAGE_BOT_ID &&
+    channelId === OPS_CHANNEL_ID &&
+    contactId === OPS_GARAGE_BOT_ID &&
+    !!text &&
+    OPS_INCIDENT_MARKER.test(text)
+  );
+}
+
 /** ADR-64 I-1: directed 消息到达回调类型。 */
 export type DirectedCallback = (event: GraphPerturbation) => void;
 
@@ -319,6 +340,8 @@ export function bindEvents(
     if (senderId === "1271266957") return;
 
     const contactId = senderId ? telegramContactId(senderId) : null;
+    // WS-4: инцидент гараж-бота в работач → ниже трактуем как directed (не как бот).
+    const opsIncident = isGarageIncident(channelId, contactId, ctx.text);
 
     // 判断是否 directed（reply、私聊、或 @mention）
     const isPrivate = ctx.chat instanceof User;
@@ -359,7 +382,7 @@ export function bindEvents(
         }
       }
     }
-    const isDirected = isPrivate || isReply || isMentioned;
+    const isDirected = isPrivate || isReply || isMentioned || opsIncident;
 
     // G3: bot 检测 — mtcute User 对象有 isBot 属性
     const senderIsBot = ctx.sender instanceof User && ctx.sender.isBot;
@@ -461,7 +484,9 @@ export function bindEvents(
         messageText: msgText,
         senderName: sName,
         contentType,
-        senderIsBot: senderIsBot || undefined,
+        // WS-4: для ops-инцидента senderIsBot=false → mapper засчитает его как
+        // directed (pending_directed++) и она ответит. Контакт остаётся ботом.
+        senderIsBot: (senderIsBot && !opsIncident) || undefined,
         forwardFromChannelId,
         forwardFromChannelName,
         tmeLinks,
