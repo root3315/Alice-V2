@@ -970,6 +970,12 @@ export function processResult(
     thinksPreview: executionResult.thinks[0]?.slice(0, 80) ?? null,
     errorCount,
     scriptErrors: executionResult.errors.length,
+    // WS-0 ext: показать сам stderr и в success-пути (есть ошибки команд), не только при script_failed.
+    errors:
+      executionResult.errors.length > 0
+        ? executionResult.errors.map((e) => e.slice(0, 200)).slice(0, 3)
+        : undefined,
+    errorCodes: executionResult.errorCodes.length > 0 ? executionResult.errorCodes : undefined,
     afterward: engagementMetrics?.outcome ?? null,
     subcycles: engagementMetrics?.subcycles ?? 1,
     outcome: outcome.kind,
