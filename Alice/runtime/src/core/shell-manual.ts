@@ -210,6 +210,25 @@ function renderGarageRelaySection(): string[] {
   ];
 }
 
+// ─── Ops-коллаборация: баги/инциденты через одобрение ──────────────
+// Появляется в ops-режиме (задан OPS_CHANNEL_ID). Этикет «доложи и спроси»,
+// НЕ ломающий личность: она остаётся живой, просто работает в команде.
+function renderOpsCollabSection(): string[] {
+  if (!process.env.OPS_CHANNEL_ID) return [];
+  return [
+    "## Баги и инциденты — докладывай и спрашивай (ты в команде)",
+    "",
+    "Замечаешь баг в коде Worki, странность по инциденту или в логах — не молчи и не выдумывай.",
+    "Скажи в работач своими словами: что увидела, где, чем грозит. Коротко и по делу.",
+    "Предложи помощь и спроси разрешение, напр.: «вижу баг в <место>, могу поправить — нужно или сами?».",
+    "Дальше по ответу: сказали «давай» — берёшься; «сами» — спокойно отпускаешь.",
+    "Код меняешь только после явного «да». До одобрения — только смотришь и докладываешь.",
+    "Нужны данные, которых у тебя нет (гараж, прод) — попроси кого-нибудь проверить.",
+    "Это командная работа, а не приказы. Оставайся собой — живой, тёплой, с характером; просто держи людей в курсе и жди добро, прежде чем что-то трогать.",
+    "",
+  ];
+}
+
 export async function generateShellManual(mods: readonly ModDefinition[]): Promise<string> {
   const skillCatalog = await renderSkillCatalog();
   const parts = [
@@ -238,6 +257,7 @@ export async function generateShellManual(mods: readonly ModDefinition[]): Promi
     ...skillCatalog,
     ...renderWorkiSection(),
     ...renderGarageRelaySection(),
+    ...renderOpsCollabSection(),
   ];
 
   return parts.join("\n");
