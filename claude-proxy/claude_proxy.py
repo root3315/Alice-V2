@@ -96,6 +96,7 @@ CODE_ANALYZE_TIMEOUT_S = int(os.getenv("PROXY_CODE_ANALYZE_TIMEOUT_S", "300"))
 WORKI_DEV_CLONE = os.getenv("PROXY_WORKI_DEV_CLONE", r"C:\Users\sozda\alice-worki-dev")
 # code-fix дольше (правка + тесты): дефолт 10 мин.
 CODE_FIX_TIMEOUT_S = int(os.getenv("PROXY_CODE_FIX_TIMEOUT_S", "600"))
+WORKI_BASE_BRANCH = os.getenv("PROXY_WORKI_BASE_BRANCH", "main")
 
 # На Max-подписке ключ должен быть пустым, иначе CLI уйдёт на платный API.
 # Подчищаем окружение дочернего процесса от ключа на всякий случай.
@@ -553,17 +554,28 @@ async def code_fix(request: Request):
     except (TypeError, ValueError):
         timeout_s = CODE_FIX_TIMEOUT_S
     timeout_s = max(60, min(timeout_s, 1800))
+    # Детерминированно привести dev-клон к ЧИСТОМУ base ПЕРЕД агентом (не доверять агенту:
+    # он может пропустить reset и захватить чужие незакоммиченные правки в коммит).
+    try:
+        subprocess.run(["git", "-C", WORKI_DEV_CLONE, "checkout", "-f", WORKI_BASE_BRANCH], check=True, capture_output=True, timeout=60)
+        subprocess.run(["git", "-C", WORKI_DEV_CLONE, "reset", "--hard"], check=True, capture_output=True, timeout=60)
+    except Exception as e:  # noqa: BLE001
+        log.exception("clean base failed")
+        return JSONResponse(status_code=500, content={"error": {"message": f"clean base failed: {e}"}})
     persona = (body.get("persona") or "").strip()
     fix = (
-        "Текущая папка (cwd) — ПИСЧИЙ клон Worki, можно править. Исправь описанный баг.\n"
-        "1. Чистая база: `git checkout main` и `git reset --hard` (отбрось незакоммиченное).\n"
-        "2. Найди причину (Read/Grep/Glob), внеси МИНИМАЛЬНУЮ правку (Edit/Write).\n"
-        "3. Прогони ОТНОСЯЩИЕСЯ тесты (НЕ весь набор — он ~17 мин):\n"
-        "   бэкенд: cd HH-PY && .venv/Scripts/python -m pytest tests/<нужный_файл> -q ;\n"
-        "   фронт: cd Worki && npm test -- <нужный файл> .\n"
-        "4. Тесты зелёные → ветка+коммит: git checkout -b alice/<слаг> ; git add -A ; git commit -m 'fix: ...'. НЕ пушь, PR не открывай.\n"
-        "5. Если не чинится или тесты красные — НЕ коммить, честно опиши проблему.\n"
-        "Верни КРАТКО для пересказа в чат: что было не так, что поправил (файлы), результат тестов, имя ветки."
+        "Текущая папка (cwd) — ПИСЧИЙ клон Worki, можно править. Исправь описанный баг. Работай БЫСТРО и УЗКО.\n"
+        "1. База уже чистая (main, сброшена за тебя). НЕ переключай ветки и НЕ делай reset — сразу к правке.\n"
+        "2. Найди причину (Read/Grep/Glob) и внеси МИНИМАЛЬНУЮ правку (Edit/Write). Трогай ТОЛЬКО файлы по задаче.\n"
+        "3. Проверь БЫСТРО и УЗКО — КРИТИЧНО: полный прогон ~17 мин, его НЕ запускай. Только одно из:\n"
+        "   - import/синтаксис-чек изменённого модуля; ЛИБО\n"
+        "   - ОДИН самый релевантный тест-файл (НЕ наборы/каталоги, НЕ весь pytest):\n"
+        "     бэкенд: `cd HH-PY && .venv/Scripts/python -m pytest tests/<один_файл> -q -x`;\n"
+        "     фронт (быстрее): `cd Worki && npm test -- <один файл>`;\n"
+        "   - если быстрой узкой проверки не видно — ПРОПУСТИ тесты и честно пометь «тесты не гонял».\n"
+        "4. Проверка зелёная (или осознанно пропущена) → ветка+коммит: `git checkout -b alice/<слаг>`, `git add -A`, `git commit -m 'fix: ...'`. НЕ пушь, PR не открывай.\n"
+        "5. Если правка не выходит или нужный тест красный — НЕ коммить, честно опиши проблему.\n"
+        "Верни КРАТКО для пересказа в чат: причина, что поправил (файлы), результат проверки, имя ветки."
     )
     system = f"{persona}\n\n{fix}" if persona else fix
     prompt = f"{system}\n\nБАГ/ЗАДАЧА: {task}"
