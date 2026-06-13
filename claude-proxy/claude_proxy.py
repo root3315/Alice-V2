@@ -92,6 +92,10 @@ WORKI_CLONE = os.getenv("PROXY_WORKI_CLONE", r"C:\Users\sozda\alice-readonly\wor
 CODE_ANALYZE_MODEL = os.getenv("PROXY_CODE_ANALYZE_MODEL", "sonnet")
 # Дефолтный таймаут code-analyze (сек, 5 мин). Запрос может прислать свой timeout_s.
 CODE_ANALYZE_TIMEOUT_S = int(os.getenv("PROXY_CODE_ANALYZE_TIMEOUT_S", "300"))
+# Писчий dev-клон для code-fix (агент правит+тестит+коммитит здесь). НЕ read-only клон.
+WORKI_DEV_CLONE = os.getenv("PROXY_WORKI_DEV_CLONE", r"C:\Users\sozda\alice-worki-dev")
+# code-fix дольше (правка + тесты): дефолт 10 мин.
+CODE_FIX_TIMEOUT_S = int(os.getenv("PROXY_CODE_FIX_TIMEOUT_S", "600"))
 
 # На Max-подписке ключ должен быть пустым, иначе CLI уйдёт на платный API.
 # Подчищаем окружение дочернего процесса от ключа на всякий случай.
@@ -523,3 +527,61 @@ async def code_analyze(request: Request):
         msg = envelope.get("result") or envelope.get("subtype") or "claude error"
         return JSONResponse(status_code=502, content={"error": {"message": str(msg)}})
     return JSONResponse(content={"analysis": envelope.get("result") or "", "usage": envelope.get("usage")})
+
+
+@app.post("/v1/code-fix")
+async def code_fix(request: Request):
+    """Fix-агент: правит баг в ПИСЧЕМ dev-клоне Worki, гоняет относящиеся тесты,
+    создаёт ветку и коммитит ЛОКАЛЬНО (без push/PR — это отдельный шаг /v1/code-pr).
+    Те же model/timeout-оверрайды, что у code-analyze. Тело: {task, model?, timeout_s?, persona?}.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"error": {"message": "invalid JSON body"}})
+    task = (body.get("task") or "").strip()
+    if not task:
+        return JSONResponse(status_code=400, content={"error": {"message": "missing 'task'"}})
+    if not WORKI_DEV_CLONE or not os.path.isdir(WORKI_DEV_CLONE):
+        return JSONResponse(
+            status_code=503, content={"error": {"message": f"dev clone unavailable: {WORKI_DEV_CLONE}"}}
+        )
+    req_model = (body.get("model") or "").strip().lower()
+    model = req_model if req_model in ("sonnet", "opus", "haiku") else CODE_ANALYZE_MODEL
+    try:
+        timeout_s = int(body.get("timeout_s") or CODE_FIX_TIMEOUT_S)
+    except (TypeError, ValueError):
+        timeout_s = CODE_FIX_TIMEOUT_S
+    timeout_s = max(60, min(timeout_s, 1800))
+    persona = (body.get("persona") or "").strip()
+    fix = (
+        "Текущая папка (cwd) — ПИСЧИЙ клон Worki, можно править. Исправь описанный баг.\n"
+        "1. Чистая база: `git checkout main` и `git reset --hard` (отбрось незакоммиченное).\n"
+        "2. Найди причину (Read/Grep/Glob), внеси МИНИМАЛЬНУЮ правку (Edit/Write).\n"
+        "3. Прогони ОТНОСЯЩИЕСЯ тесты (НЕ весь набор — он ~17 мин):\n"
+        "   бэкенд: cd HH-PY && .venv/Scripts/python -m pytest tests/<нужный_файл> -q ;\n"
+        "   фронт: cd Worki && npm test -- <нужный файл> .\n"
+        "4. Тесты зелёные → ветка+коммит: git checkout -b alice/<слаг> ; git add -A ; git commit -m 'fix: ...'. НЕ пушь, PR не открывай.\n"
+        "5. Если не чинится или тесты красные — НЕ коммить, честно опиши проблему.\n"
+        "Верни КРАТКО для пересказа в чат: что было не так, что поправил (файлы), результат тестов, имя ветки."
+    )
+    system = f"{persona}\n\n{fix}" if persona else fix
+    prompt = f"{system}\n\nБАГ/ЗАДАЧА: {task}"
+    argv = [
+        CLAUDE_CLI, "-p",
+        "--model", model,
+        "--allowedTools", "Read", "Grep", "Glob", "Edit", "Write", "Bash",
+        "--output-format", "json",
+    ]
+    try:
+        async with _sem:
+            envelope = await asyncio.to_thread(_run_claude_sync, argv, prompt, timeout_s, WORKI_DEV_CLONE)
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=504, content={"error": {"message": "code-fix timeout"}})
+    except Exception as e:  # noqa: BLE001
+        log.exception("ошибка code-fix")
+        return JSONResponse(status_code=502, content={"error": {"message": str(e)}})
+    if envelope.get("is_error"):
+        msg = envelope.get("result") or envelope.get("subtype") or "claude error"
+        return JSONResponse(status_code=502, content={"error": {"message": str(msg)}})
+    return JSONResponse(content={"report": envelope.get("result") or "", "usage": envelope.get("usage")})
