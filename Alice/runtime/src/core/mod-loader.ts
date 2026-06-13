@@ -52,6 +52,6 @@ export function loadAllMods(): ModDefinition[] {
     channelMod, // ADR-206: 频道信息流——在 feedsMod 之后
     diaryMod,
     episodeMod, // ADR-215: 认知片段因果图——在 diary 之后
-    workiMod, // code-ask: чистый opus-анализ кода Worki через прокси
+    workiMod, // code_ask/code_fix/code_pr: чистые агенты по коду Worki (async, через прокси)
   ];
 }
