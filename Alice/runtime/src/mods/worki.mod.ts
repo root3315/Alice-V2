@@ -28,7 +28,7 @@ const CODE_ANALYZE_URL = process.env.PROXY_CODE_ANALYZE_URL ?? `${PROXY}/v1/code
 const CODE_FIX_URL = process.env.PROXY_CODE_FIX_URL ?? `${PROXY}/v1/code-fix`;
 const DEFAULT_TIMEOUT_MIN = 5;
 const MAX_TIMEOUT_MIN = 20;
-const SHOW_TICKS = 3; // сколько тиков держать готовый результат в контексте
+const SHOW_TICKS = 12; // сколько тиков держать готовый результат (с запасом: она отвлекается на др. чаты и не успевает переслать за 3 тика)
 
 // worki-alice (репо-песочница) + токен (host-only, из .env — в Docker-песочницу не идёт).
 const WORKI_ALICE_REPO = process.env.WORKI_ALICE_REPO ?? "root3315/worki-alice";
@@ -263,7 +263,7 @@ export const workiMod = createMod<Record<string, never>>("worki", {
         continue;
       }
       if (p.kind === "ask") {
-        ready.push(`Разбор по «${p.task}» (перескажи своими словами в чат, где спросили):\n${p.result}`);
+        ready.push(`Готов разбор кода, который ты обещала человеку (вопрос: «${p.task}»). ОТВЕТЬ им этим сейчас в том чате, где спросили про код — они ждут. Перескажи своими словами, по делу:\n${p.result}`);
       } else if (p.kind === "fix") {
         const prHint = p.branch ? `\nЕсли всё ок и человек одобрит — открой PR: self code-pr --branch ${p.branch}` : "";
         ready.push(`Готов фикс по «${p.task}» (перескажи + спроси «открыть PR?»):\n${p.result}${prHint}`);
