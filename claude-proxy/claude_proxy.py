@@ -76,6 +76,11 @@ MAX_CONCURRENCY = int(os.getenv("PROXY_MAX_CONCURRENCY", "6"))
 # 110с < таймаут тика Alice (BLOCK_TIMEOUT_MS=120с): прокси сам убивает зависший
 # claude раньше, чем Alice бросит вызов — иначе «хвост» крутится ещё 60с и копится.
 CALL_TIMEOUT_S = int(os.getenv("PROXY_TIMEOUT_S", "110"))
+# Opus рассуждает глубже + холодный старт CLI на opus заметно медленнее обычного —
+# даём ему отдельный, больший таймаут. Alice под opus поднимает свой BLOCK_TIMEOUT_MS
+# выше этого значения, сохраняя инвариант «прокси убивает зависший раньше, чем Alice».
+# sonnet/haiku не затронуты (важно: прокси общий, им же ходит AlbedoBot).
+OPUS_TIMEOUT_S = int(os.getenv("PROXY_OPUS_TIMEOUT_S", "230"))
 
 # На Max-подписке ключ должен быть пустым, иначе CLI уйдёт на платный API.
 # Подчищаем окружение дочернего процесса от ключа на всякий случай.
@@ -199,7 +204,7 @@ def wants_json_object(response_format: Any) -> bool:
 
 # ─────────────────────── вызов claude CLI ─────────────────────
 
-def _run_claude_sync(argv: list[str], stdin_text: str) -> dict:
+def _run_claude_sync(argv: list[str], stdin_text: str, timeout_s: int = CALL_TIMEOUT_S) -> dict:
     """Синхронный вызов claude (в отдельном потоке). Возвращает распарсенный envelope."""
     proc = subprocess.run(
         argv,
@@ -209,7 +214,7 @@ def _run_claude_sync(argv: list[str], stdin_text: str) -> dict:
         encoding="utf-8",
         env=_CHILD_ENV,
         cwd=CLEAN_CWD,
-        timeout=CALL_TIMEOUT_S,
+        timeout=timeout_s,
     )
     out = proc.stdout.strip()
     if not out:
@@ -228,7 +233,7 @@ def _run_claude_sync(argv: list[str], stdin_text: str) -> dict:
         raise RuntimeError(f"не удалось распарсить ответ claude: {out[:500]}")
 
 
-def _run_claude_streamjson(argv: list[str], message: dict) -> dict:
+def _run_claude_streamjson(argv: list[str], message: dict, timeout_s: int = CALL_TIMEOUT_S) -> dict:
     """Вызов claude с stream-json вход/выход (нужно для нативных картинок).
     Возвращает финальный result-event (в нём те же поля: result, structured_output, usage)."""
     proc = subprocess.run(
@@ -239,7 +244,7 @@ def _run_claude_streamjson(argv: list[str], message: dict) -> dict:
         encoding="utf-8",
         env=_CHILD_ENV,
         cwd=CLEAN_CWD,
-        timeout=CALL_TIMEOUT_S,
+        timeout=timeout_s,
     )
     result = None
     for line in proc.stdout.splitlines():
@@ -271,6 +276,7 @@ async def call_claude(
     tmpdir = tempfile.mkdtemp(prefix="claude_proxy_")
     try:
         argv = [CLAUDE_CLI, "-p", "--model", model]
+        call_timeout = OPUS_TIMEOUT_S if model == "opus" else CALL_TIMEOUT_S
         if FALLBACK_MODEL:
             argv += ["--fallback-model", FALLBACK_MODEL]
 
@@ -301,11 +307,11 @@ async def call_claude(
             message = {"type": "user", "message": {"role": "user", "content": content}}
             argv += ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
             async with _sem:
-                return await asyncio.to_thread(_run_claude_streamjson, argv, message)
+                return await asyncio.to_thread(_run_claude_streamjson, argv, message, call_timeout)
 
         argv += ["--output-format", "json"]
         async with _sem:
-            return await asyncio.to_thread(_run_claude_sync, argv, prompt)
+            return await asyncio.to_thread(_run_claude_sync, argv, prompt, call_timeout)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 

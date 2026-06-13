@@ -32,6 +32,10 @@ const BLOCK_TEMPERATURE = 0.7;
 // 120s: claude CLI через прокси стартует процесс на каждый вызов (cold start),
 // большой промпт мозга не всегда укладывается в 60с. Запас под локальный прокси.
 const BLOCK_TIMEOUT_MS = 120_000;
+// #23: opus медленнее (глубже рассуждает + холодный старт CLI). Даём больше времени,
+// чтобы ops-тики в работач не падали по timeout и не откатывались на sonnet.
+// Держим ВЫШЕ прокси-овского PROXY_OPUS_TIMEOUT_S (230с): прокси убьёт зависший первым.
+const OPUS_BLOCK_TIMEOUT_MS = 240_000;
 const MAX_BLOCK_REPAIR_RETRIES = 1;
 
 interface ProviderAuditContext {
@@ -185,6 +189,8 @@ async function generateBlockStep(
   selectedProvider?: AvailableProvider,
 ): Promise<GeneratedBlockStep> {
   const { provider, model, name } = selectedProvider ?? selectProviderForFirstPass();
+  // #23: opus получает больший таймаут (см. OPUS_BLOCK_TIMEOUT_MS).
+  const timeoutMs = model === "opus" ? OPUS_BLOCK_TIMEOUT_MS : BLOCK_TIMEOUT_MS;
   const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
     { role: "system", content: system },
     { role: "user", content: user },
