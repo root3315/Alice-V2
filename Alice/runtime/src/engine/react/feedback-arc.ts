@@ -656,6 +656,10 @@ export function processResult(
         target: item.target,
         errorCount,
         scriptErrors: executionResult.errors.length,
+        // WS-0: раньше логировался только счётчик → причина была не видна.
+        // Теперь пишем сам stderr (обрезанный) + машинные коды для диагностики.
+        errors: executionResult.errors.map((e) => e.slice(0, 300)).slice(0, 5),
+        errorCodes: executionResult.errorCodes,
         newSilences: prevSil + 1,
       });
     } else {

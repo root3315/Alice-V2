@@ -14,6 +14,7 @@
 
 import { writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { generateText } from "ai";
 
 import { TRAIT_BELIEF_DECAY } from "./belief/types.js";
@@ -877,7 +878,9 @@ async function main() {
   // S8: Skill 包同步 — 收敛到 alice-env.yaml 声明的期望状态
   // @see docs/adr/201-os-for-llm.md
   try {
-    const envPath = new URL("../skills/alice-env.yaml", import.meta.url).pathname;
+    // fileURLToPath (не .pathname): на Windows URL.pathname даёт "/C:/..." с
+    // ведущим слешем → existsSync=false → syncEnv бросает "env file not found".
+    const envPath = fileURLToPath(new URL("../skills/alice-env.yaml", import.meta.url));
     const skillSync = await syncEnv(envPath, { enginePort });
     if (skillSync.installed.length > 0 || skillSync.upgraded.length > 0) {
       log.info("Skills synced", skillSync);
