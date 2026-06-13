@@ -150,6 +150,16 @@ async function main() {
     log.info("Initial graph saved", { nodes: G.size, edges: G.edgeCount });
   }
 
+  // Self-узел обязателен: на нём держатся feel/agent-команды и runtime-heartbeat.
+  // Наблюдалось его исчезновение из загруженного графа → "entity not found: self"
+  // → script_failed (errorCount 3). buildInitialGraph на рестарте не вызывается,
+  // поэтому восстанавливаем здесь, после любой ветки загрузки.
+  if (!G.has(ALICE_SELF)) {
+    log.warn("self node missing from loaded graph — recreating");
+    G.addAgent(ALICE_SELF, { display_name: "Alice" });
+    flushGraph(G);
+  }
+
   // ADR-123 D2: 注册域衰减参数（在 evolve 前、所有 graph 路径后）
   // @see docs/adr/123-crystallization-substrate-generalization.md §D2
   G.beliefs.registerDomainDecay("trait:", TRAIT_BELIEF_DECAY);
