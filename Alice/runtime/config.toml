@@ -64,12 +64,11 @@ model = "opus"
 first_pass = ["claude-sonnet"]
 tool_tick = ["claude-sonnet"]
 
-# Ops-триаж / код-анализ в работач: Opus глубже рассуждает по коду и инцидентам.
-# Канал-гейт в bridge.ts (item.target == OPS_CHANNEL_ID); соц-чаты остаются на sonnet.
-# Fallback на sonnet — если по opus просядут лимиты/прокси, не встаём колом.
-# Если не заданы — Алиса работает как раньше (все каналы на sonnet).
-ops_first_pass = ["claude-opus", "claude-sonnet"]
-ops_tool_tick = ["claude-opus", "claude-sonnet"]
+# Живые тики работач — на sonnet (надёжно, без таймаутов). Опус НЕ тянет большой
+# живой промпт (контекст+история) → уходил за таймаут и ронял тики. Опус для
+# код-анализа вынесен в отдельный task-tool с ЧИСТЫМ контекстом (только задача).
+ops_first_pass = ["claude-sonnet"]
+ops_tool_tick = ["claude-sonnet"]
 
 # Eval/校准：офлайн, можно на haiku (дешевле/быстрее, не жжём ради тестов).
 eval = ["claude-haiku"]

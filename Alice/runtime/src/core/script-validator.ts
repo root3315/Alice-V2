@@ -84,6 +84,11 @@ let _knownCommands = new Set<string>([
   "cut",
   "date",
   "sleep",
+  // навигация по файлам (read-only) — нужна для чтения кода в /work/worki.
+  // Без них валидатор ронял её `ls`-проверки → она думала «нет доступа».
+  "ls",
+  "find",
+  "pwd",
 ]);
 
 let _knownSubcommands = new Map<string, Set<string>>();
