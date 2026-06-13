@@ -22,6 +22,7 @@ import { socialCaseMod } from "../mods/social-case.mod.js";
 import { soulMod } from "../mods/soul.mod.js";
 import { strategyMod } from "../mods/strategy.mod.js";
 import { threadsMod } from "../mods/threads.mod.js";
+import { workiMod } from "../mods/worki.mod.js";
 import type { ModDefinition } from "./types.js";
 
 /**
@@ -51,5 +52,6 @@ export function loadAllMods(): ModDefinition[] {
     channelMod, // ADR-206: 频道信息流——在 feedsMod 之后
     diaryMod,
     episodeMod, // ADR-215: 认知片段因果图——在 diary 之后
+    workiMod, // code-ask: чистый opus-анализ кода Worki через прокси
   ];
 }
