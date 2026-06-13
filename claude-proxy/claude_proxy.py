@@ -82,6 +82,12 @@ CALL_TIMEOUT_S = int(os.getenv("PROXY_TIMEOUT_S", "110"))
 # sonnet/haiku не затронуты (важно: прокси общий, им же ходит AlbedoBot).
 OPUS_TIMEOUT_S = int(os.getenv("PROXY_OPUS_TIMEOUT_S", "230"))
 
+# Read-only клон Worki для /v1/code-analyze: opus запускается В этой папке (cwd) с
+# ЧИСТОЙ задачей и сам грепает/читает код (свои Read/Grep/Glob). Не путать с CLEAN_CWD
+# (пустая папка для обычных чат-вызовов). Огромный живой промпт Alice сюда НЕ идёт —
+# только задача → быстро, без таймаута, без её «не смонтировано»-истории.
+WORKI_CLONE = os.getenv("PROXY_WORKI_CLONE", r"C:\Users\sozda\alice-readonly\worki")
+
 # На Max-подписке ключ должен быть пустым, иначе CLI уйдёт на платный API.
 # Подчищаем окружение дочернего процесса от ключа на всякий случай.
 _CHILD_ENV = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
@@ -204,7 +210,9 @@ def wants_json_object(response_format: Any) -> bool:
 
 # ─────────────────────── вызов claude CLI ─────────────────────
 
-def _run_claude_sync(argv: list[str], stdin_text: str, timeout_s: int = CALL_TIMEOUT_S) -> dict:
+def _run_claude_sync(
+    argv: list[str], stdin_text: str, timeout_s: int = CALL_TIMEOUT_S, cwd: str = CLEAN_CWD
+) -> dict:
     """Синхронный вызов claude (в отдельном потоке). Возвращает распарсенный envelope."""
     proc = subprocess.run(
         argv,
@@ -213,7 +221,7 @@ def _run_claude_sync(argv: list[str], stdin_text: str, timeout_s: int = CALL_TIM
         text=True,
         encoding="utf-8",
         env=_CHILD_ENV,
-        cwd=CLEAN_CWD,
+        cwd=cwd,
         timeout=timeout_s,
     )
     out = proc.stdout.strip()
@@ -447,3 +455,53 @@ async def chat_completions(request: Request):
     if stream:
         return StreamingResponse(sse_chunks(content, model_label), media_type="text/event-stream")
     return JSONResponse(content=openai_response(content, model_label, envelope))
+
+
+@app.post("/v1/code-analyze")
+async def code_analyze(request: Request):
+    """Чистый opus-анализ кода Worki.
+
+    Запускает claude (opus) В read-only клоне (cwd=WORKI_CLONE) с ТОЛЬКО задачей —
+    без огромного контекста/истории Alice. Claude сам грепает/читает код своими
+    Read/Grep/Glob и возвращает разбор. Обходит и конфабуляцию («не смонтировано»),
+    и таймаут живого тика (промпт лёгкий). Тело: {"task": "..."}.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"error": {"message": "invalid JSON body"}})
+    task = (body.get("task") or body.get("prompt") or "").strip()
+    if not task:
+        return JSONResponse(status_code=400, content={"error": {"message": "missing 'task'"}})
+    if not WORKI_CLONE or not os.path.isdir(WORKI_CLONE):
+        return JSONResponse(
+            status_code=503, content={"error": {"message": f"worki clone unavailable: {WORKI_CLONE}"}}
+        )
+
+    system = (
+        "Ты — анализатор кода. Текущая папка (cwd) — это репозиторий Worki, read-only. "
+        "Исследуй код своими инструментами Read/Grep/Glob и ответь на задачу КОНКРЕТНО, "
+        "по реальному коду, с путями к файлам. Кратко, по делу, без воды и без выдумок."
+    )
+    prompt = f"{system}\n\nЗАДАЧА: {task}"
+    argv = [
+        CLAUDE_CLI, "-p",
+        "--model", "opus",
+        "--allowedTools", "Read", "Grep", "Glob",
+        "--output-format", "json",
+    ]
+    try:
+        async with _sem:
+            envelope = await asyncio.to_thread(
+                _run_claude_sync, argv, prompt, OPUS_TIMEOUT_S, WORKI_CLONE
+            )
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=504, content={"error": {"message": "code-analyze timeout"}})
+    except Exception as e:  # noqa: BLE001
+        log.exception("ошибка code-analyze")
+        return JSONResponse(status_code=502, content={"error": {"message": str(e)}})
+
+    if envelope.get("is_error"):
+        msg = envelope.get("result") or envelope.get("subtype") or "claude error"
+        return JSONResponse(status_code=502, content={"error": {"message": str(msg)}})
+    return JSONResponse(content={"analysis": envelope.get("result") or "", "usage": envelope.get("usage")})
