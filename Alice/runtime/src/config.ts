@@ -60,6 +60,10 @@ const LlmEndpointTomlSchema = z.object({
 const LlmRoutingTomlSchema = z.object({
   first_pass: z.array(z.string().min(1)).min(1),
   tool_tick: z.array(z.string().min(1)).min(1),
+  // Ops-каналы (работач): отдельные маршруты под Opus. Опциональны — без них
+  // ops-каналы используют first_pass/tool_tick (поведение как раньше).
+  ops_first_pass: z.array(z.string().min(1)).min(1).optional(),
+  ops_tool_tick: z.array(z.string().min(1)).min(1).optional(),
   eval: z.array(z.string().min(1)).min(1).optional(),
   auxiliary: z.array(z.string().min(1)).min(1).optional(),
   reflect: z.array(z.string().min(1)).min(1).optional(),
@@ -105,6 +109,8 @@ const RuntimeTomlSchema = z.object({
       };
       checkRoute("first_pass");
       checkRoute("tool_tick");
+      checkRoute("ops_first_pass");
+      checkRoute("ops_tool_tick");
       checkRoute("eval");
       checkRoute("auxiliary");
       checkRoute("reflect");
@@ -440,6 +446,9 @@ export interface Config {
   llmRouting: {
     firstPass: string[];
     toolTick: string[];
+    /** Ops-каналы (работач): Opus-маршруты. Пусты → используются firstPass/toolTick. */
+    opsFirstPass: string[];
+    opsToolTick: string[];
     eval: string[];
     auxiliary: string[];
     reflect: string[];
@@ -729,6 +738,8 @@ export function loadConfig(): Config {
     llmRouting: {
       firstPass: toml.llm.routing.first_pass,
       toolTick: toml.llm.routing.tool_tick,
+      opsFirstPass: toml.llm.routing.ops_first_pass ?? toml.llm.routing.first_pass,
+      opsToolTick: toml.llm.routing.ops_tool_tick ?? toml.llm.routing.tool_tick,
       eval: toml.llm.routing.eval ?? toml.llm.routing.first_pass,
       auxiliary: auxiliaryRoute,
       reflect: toml.llm.routing.reflect ?? auxiliaryRoute,

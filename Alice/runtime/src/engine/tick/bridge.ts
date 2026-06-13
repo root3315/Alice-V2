@@ -15,6 +15,7 @@ import { getDb } from "../../db/connection.js";
 import { type AvailableProvider, selectProviderForTick } from "../../llm/client.js";
 import { TELEGRAM_ACTIONS } from "../../telegram/actions/index.js";
 import { hasPaletteEntries } from "../../telegram/apps/sticker-palette.js";
+import { createLogger } from "../../utils/logger.js";
 import type { PressureDims } from "../../utils/math.js";
 import type { EngagementSession } from "../act/engagement.js";
 import type { MessageRecord } from "../act/messages.js";
@@ -29,6 +30,13 @@ import type { TickPromptContext } from "./prompt-builder.js";
 import type { ResolvedTarget } from "./target.js";
 import { type TickDeps, tick } from "./tick.js";
 import type { FeatureFlags, TickResult, UnifiedTool } from "./types.js";
+
+const log = createLogger("tick/bridge");
+
+// Model-tiering (#23): ops-каналы (работач) → Opus-маршрут для триажа/код-анализа.
+// Канал берём из env — тот же OPS_CHANNEL_ID, что incident-детекция в events.ts.
+// Не задан → все тики идут обычным маршрутом (sonnet), поведение как раньше.
+const OPS_CHANNEL_ID = process.env.OPS_CHANNEL_ID;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FeatureFlags 派生
@@ -194,7 +202,17 @@ export async function runTickSubcycle(
   _session: EngagementSession,
 ): Promise<SubcycleResult> {
   const { board, allTools, deps } = prepareTickRun(ctx, item, contextVars ?? {});
-  const llmProvider = selectProviderForTick();
+  // Model-tiering (#23): тик в работач → Opus-маршрут (глубже по коду/инцидентам),
+  // соц-чаты остаются на sonnet (живее персона, дешевле по лимитам).
+  const isOpsTick = !!OPS_CHANNEL_ID && item.target === OPS_CHANNEL_ID;
+  const llmProvider = selectProviderForTick(isOpsTick);
+  if (isOpsTick) {
+    log.info("ops tick → opus route", {
+      target: item.target,
+      model: llmProvider.model,
+      endpoint: llmProvider.name,
+    });
+  }
 
   const tickCtx = buildTickRunContext(
     ctx,

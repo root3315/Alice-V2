@@ -125,6 +125,9 @@ cap_group = 6
       expect(config.llmRouting).toEqual({
         firstPass: ["fresh", "steady"],
         toolTick: ["steady"],
+        // ops_* не заданы в этом TOML → фолбэк на first_pass/tool_tick.
+        opsFirstPass: ["fresh", "steady"],
+        opsToolTick: ["steady"],
         eval: ["steady"],
         auxiliary: ["auxiliary", "steady"],
         reflect: ["steady"],

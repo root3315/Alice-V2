@@ -61,6 +61,8 @@ function mockConfig(
     llmRouting: {
       firstPass: routing?.firstPass ?? names,
       toolTick: routing?.toolTick ?? routing?.firstPass ?? names,
+      opsFirstPass: routing?.opsFirstPass ?? routing?.firstPass ?? names,
+      opsToolTick: routing?.opsToolTick ?? routing?.toolTick ?? routing?.firstPass ?? names,
       eval: routing?.eval ?? routing?.firstPass ?? names,
       auxiliary: routing?.auxiliary ?? routing?.firstPass ?? names,
       reflect: routing?.reflect ?? routing?.firstPass ?? names,

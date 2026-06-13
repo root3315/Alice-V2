@@ -49,12 +49,27 @@ base_url = "http://127.0.0.1:8787/v1"
 api_key_env = "LLM_API_KEY"
 model = "haiku"
 
+# Opus — для ops-триажа и код-анализа в работач (см. ops_* маршруты ниже).
+# Прокси понимает model="opus" (instructor-client.ts).
+[[llm.endpoints]]
+name = "claude-opus"
+base_url = "http://127.0.0.1:8787/v1"
+api_key_env = "LLM_API_KEY"
+model = "opus"
+
 [llm.routing]
 # Мозг на sonnet (богаче/живее ответы). Латентность ок благодаря чистой cwd в прокси
 # (CLI больше не грузит контекст Astracore) + BLOCK_TIMEOUT_MS=120с. Если будет
 # упираться в таймаут — верни "claude-haiku".
 first_pass = ["claude-sonnet"]
 tool_tick = ["claude-sonnet"]
+
+# Ops-триаж / код-анализ в работач: Opus глубже рассуждает по коду и инцидентам.
+# Канал-гейт в bridge.ts (item.target == OPS_CHANNEL_ID); соц-чаты остаются на sonnet.
+# Fallback на sonnet — если по opus просядут лимиты/прокси, не встаём колом.
+# Если не заданы — Алиса работает как раньше (все каналы на sonnet).
+ops_first_pass = ["claude-opus", "claude-sonnet"]
+ops_tool_tick = ["claude-opus", "claude-sonnet"]
 
 # Eval/校准：офлайн, можно на haiku (дешевле/быстрее, не жжём ради тестов).
 eval = ["claude-haiku"]

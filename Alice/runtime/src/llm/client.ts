@@ -35,6 +35,8 @@ let _providers: ProviderEntry[] = [];
 let _routing: Config["llmRouting"] = {
   firstPass: [],
   toolTick: [],
+  opsFirstPass: [],
+  opsToolTick: [],
   eval: [],
   auxiliary: [],
   reflect: [],
@@ -66,6 +68,8 @@ export function initProviders(config: Config): void {
   _routing = config.llmRouting ?? {
     firstPass: _providers.map((entry) => entry.config.name),
     toolTick: _providers.map((entry) => entry.config.name),
+    opsFirstPass: _providers.map((entry) => entry.config.name),
+    opsToolTick: _providers.map((entry) => entry.config.name),
     eval: _providers.map((entry) => entry.config.name),
     auxiliary: _providers.map((entry) => entry.config.name),
     reflect: _providers.map((entry) => entry.config.name),
@@ -78,8 +82,11 @@ export function initProviders(config: Config): void {
  * firstPass 用于首轮/通用结构化任务，不代表后续 shell/tool tick 执行模型。
  * 全部 open 时退回第一个，等待半开放试探。
  */
-export function selectProviderForFirstPass(): AvailableProvider {
-  return selectShuffledAvailableFromRoute("firstPass", _routing.firstPass);
+export function selectProviderForFirstPass(ops = false): AvailableProvider {
+  const useOps = ops && _routing.opsFirstPass.length > 0;
+  return useOps
+    ? selectShuffledAvailableFromRoute("opsFirstPass", _routing.opsFirstPass)
+    : selectShuffledAvailableFromRoute("firstPass", _routing.firstPass);
 }
 
 function selectAvailableFromRoute(route: readonly string[], routeName: string): AvailableProvider {
@@ -144,8 +151,11 @@ function shuffle<T>(items: T[]): T[] {
  * 选择边界是 tick subcycle：同一个 subcycle 内的修正/续轮应复用同一个模型，
  * 避免一次行动里人格和推理口径漂移。
  */
-export function selectProviderForTick(): AvailableProvider {
-  return selectShuffledAvailableFromRoute("toolTick", _routing.toolTick);
+export function selectProviderForTick(ops = false): AvailableProvider {
+  const useOps = ops && _routing.opsToolTick.length > 0;
+  return useOps
+    ? selectShuffledAvailableFromRoute("opsToolTick", _routing.opsToolTick)
+    : selectShuffledAvailableFromRoute("toolTick", _routing.toolTick);
 }
 
 /**
@@ -183,6 +193,14 @@ export function isAnyProviderHealthy(): boolean {
 export function resetProviders(): void {
   _providers = [];
   _providerByName.clear();
-  _routing = { firstPass: [], toolTick: [], eval: [], auxiliary: [], reflect: [] };
+  _routing = {
+    firstPass: [],
+    toolTick: [],
+    opsFirstPass: [],
+    opsToolTick: [],
+    eval: [],
+    auxiliary: [],
+    reflect: [],
+  };
   _routeBags.clear();
 }
