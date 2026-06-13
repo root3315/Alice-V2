@@ -26,7 +26,7 @@ export const workiMod = createMod<Record<string, never>>("worki", {
   description: "Анализ кода Worki: делегирует вопрос чистому opus-агенту (он сам читает код)",
   topics: ["worki"],
   initialState: {},
-}).instruction("code-ask", {
+}).instruction("code_ask", {
   params: z.object({
     task: z.coerce
       .string()
