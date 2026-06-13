@@ -1,0 +1,43 @@
+name: code-read
+version: "0.1.0"
+author: "Alice"
+license: "MIT"
+description: "Read-only поиск по исходникам Worki (смонтированный :ro клон, без сети). Инструмент для триажа инцидентов и код-ревью в рабочем канале."
+
+actions:
+  - name: search_worki_code
+    category: dev
+    description:
+      - "Поиск по исходникам Worki: grep -rn по read-only клону, до 100 совпадений."
+      - "Возвращает file:line:текст — используй, чтобы найти и процитировать код при триаже."
+    usageHint: "Поиск кода Worki. Применяй при инциденте или ревью в рабочем канале."
+    whenToUse: "Когда при триаже инцидента или код-ревью нужно найти/процитировать код Worki."
+    whenNotToUse: "В обычной беседе вне рабочего канала — это инструмент только для ops."
+    params:
+      - name: pattern
+        type: string
+        required: true
+        description: 'Строка или регэксп для grep (напр. "AuthKeyDuplicated").'
+      - name: path
+        type: string
+        required: false
+        description: 'Подпапка внутри Worki (напр. "HH-PY/parser_telegram"). Пусто = весь репозиторий.'
+    returns: "Совпадения file:line:текст (до 100 строк), появятся в следующем раунде."
+    examples:
+      - '// search_worki_code({ pattern: "FloodWait", path: "HH-PY" })'
+
+runtime:
+  backend: shell
+  network: false
+  isolation: sandboxed
+  memory: "512m"
+  timeout: 30
+  shell:
+    command: "grep -rn --color=never --exclude-dir=.git --exclude-dir=.garage -e {{pattern}} /work/worki/{{path}} 2>/dev/null | head -100"
+
+family:
+  label: "Код Worki"
+  whenToUse: "Читать исходники Worki при ops-триаже (только рабочий канал)"
+  tutorials:
+    - '// search_worki_code({ pattern: "AuthKeyDuplicated", path: "HH-PY/parser_telegram" })'
+    - "// -> совпадения появятся в следующем раунде"

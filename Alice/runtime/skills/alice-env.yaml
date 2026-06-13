@@ -35,3 +35,8 @@ skills:
     path: ./visit/manifest.yaml
   - name: repeat-message
     path: ./repeat-message/manifest.yaml
+
+  # Ops: read-only исходники Worki для триажа (рабочий канал). network:false, :ro клон.
+  # Активен только если в .env задан WORKI_RO_CLONE (иначе mount не появится).
+  - name: code-read
+    path: ./code-read/manifest.yaml

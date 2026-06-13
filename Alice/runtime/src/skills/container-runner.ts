@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   DEFAULT_DOCKER_IMAGE,
@@ -14,6 +15,8 @@ export const ALICE_CONTAINER_PATHS = {
   bin: "/opt/alice/bin",
   store: "/opt/alice/store",
   home: "/home/alice",
+  /** WS-1: read-only Worki source clone (code-read skill). */
+  worki: "/work/worki",
 } as const;
 
 /** Alice 持久家目录（宿主侧路径）。容器内挂载为 /home/alice。 */
@@ -51,6 +54,20 @@ function buildBaseMounts(includeAliceHome: boolean): Mount[] {
       source: ALICE_HOME,
       target: ALICE_CONTAINER_PATHS.home,
       readOnly: false,
+    });
+  }
+
+  // WS-1: опциональный read-only клон исходников Worki (скилл code-read).
+  // Гейтится только WORKI_RO_CLONE; явный линукс-target обязателен — docker.ts:222
+  // выкидывает mount'ы с Windows-target. Применяется ко всем sandbox-вызовам через
+  // эту функцию: и брейн-скрипт (shell-executor, includeAliceHome=true), и скилл-
+  // команды (compiler, includeAliceHome=false) — последним он как раз и нужен.
+  const workiClone = process.env.WORKI_RO_CLONE;
+  if (workiClone && existsSync(workiClone)) {
+    mounts.push({
+      source: workiClone,
+      target: ALICE_CONTAINER_PATHS.worki,
+      readOnly: true,
     });
   }
   return mounts;
