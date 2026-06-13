@@ -117,10 +117,11 @@ export const workiMod = createMod<Record<string, never>>("worki", {
         pending.delete(id);
         continue;
       }
+      const body = p.result.replace(/\*\*/g, ""); // срезать markdown-bold (prompt-lint no-bold)
       ready.push(
         p.status === "done"
-          ? `Разбор по задаче «${p.task}» (перескажи в чат, где спросили, своими словами):\n${p.result}`
-          : `Разбор по «${p.task}» не получился: ${p.result}. Скажи честно, что не вышло.`,
+          ? `Разбор по задаче «${p.task}» (перескажи в чат, где спросили, своими словами):\n${body}`
+          : `Разбор по «${p.task}» не получился: ${body}. Скажи честно, что не вышло.`,
       );
     }
     if (ready.length === 0) return [];
