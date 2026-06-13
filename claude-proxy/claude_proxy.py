@@ -90,6 +90,8 @@ WORKI_CLONE = os.getenv("PROXY_WORKI_CLONE", r"C:\Users\sozda\alice-readonly\wor
 # Модель для code-analyze. sonnet = быстро+легко (агент всё равно сам читает реальный
 # код); opus = глубже, но заметно дольше и грузит машину. Меняется одной env-переменной.
 CODE_ANALYZE_MODEL = os.getenv("PROXY_CODE_ANALYZE_MODEL", "sonnet")
+# Дефолтный таймаут code-analyze (сек, 5 мин). Запрос может прислать свой timeout_s.
+CODE_ANALYZE_TIMEOUT_S = int(os.getenv("PROXY_CODE_ANALYZE_TIMEOUT_S", "300"))
 
 # На Max-подписке ключ должен быть пустым, иначе CLI уйдёт на платный API.
 # Подчищаем окружение дочернего процесса от ключа на всякий случай.
@@ -482,6 +484,14 @@ async def code_analyze(request: Request):
         )
 
     persona = (body.get("persona") or "").strip()
+    # Модель/таймаут по запросу (Alice кладёт по просьбе пользователя), иначе дефолты.
+    req_model = (body.get("model") or "").strip().lower()
+    model = req_model if req_model in ("sonnet", "opus", "haiku") else CODE_ANALYZE_MODEL
+    try:
+        timeout_s = int(body.get("timeout_s") or CODE_ANALYZE_TIMEOUT_S)
+    except (TypeError, ValueError):
+        timeout_s = CODE_ANALYZE_TIMEOUT_S
+    timeout_s = max(30, min(timeout_s, 1200))
     analyst = (
         "Текущая папка (cwd) — это репозиторий Worki, read-only. Исследуй код своими "
         "инструментами Read/Grep/Glob и ответь на задачу КОНКРЕТНО, по реальному коду, "
@@ -494,14 +504,14 @@ async def code_analyze(request: Request):
     prompt = f"{system}\n\nЗАДАЧА: {task}"
     argv = [
         CLAUDE_CLI, "-p",
-        "--model", CODE_ANALYZE_MODEL,
+        "--model", model,
         "--allowedTools", "Read", "Grep", "Glob",
         "--output-format", "json",
     ]
     try:
         async with _sem:
             envelope = await asyncio.to_thread(
-                _run_claude_sync, argv, prompt, OPUS_TIMEOUT_S, WORKI_CLONE
+                _run_claude_sync, argv, prompt, timeout_s, WORKI_CLONE
             )
     except subprocess.TimeoutExpired:
         return JSONResponse(status_code=504, content={"error": {"message": "code-analyze timeout"}})

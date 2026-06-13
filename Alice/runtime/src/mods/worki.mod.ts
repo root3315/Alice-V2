@@ -21,7 +21,16 @@ const log = createLogger("worki");
 
 const CODE_ANALYZE_URL =
   process.env.PROXY_CODE_ANALYZE_URL ?? "http://127.0.0.1:8787/v1/code-analyze";
-const CODE_ANALYZE_TIMEOUT_MS = 245_000;
+const DEFAULT_TIMEOUT_MIN = 5; // по умолчанию ждём до 5 мин
+const MAX_TIMEOUT_MIN = 20; // верхний предел, если просят больше
+
+/** Нормализует запрошенную модель: опус/opus → opus, хайку/haiku → haiku, иначе sonnet. */
+function normalizeModel(raw: string | undefined): "sonnet" | "opus" | "haiku" {
+  const s = (raw ?? "").toLowerCase();
+  if (/opus|опус/.test(s)) return "opus";
+  if (/haiku|хайку/.test(s)) return "haiku";
+  return "sonnet";
+}
 
 // Краткая «душа» — чтобы разбор был в голосе Алисы. Только это из её личности идёт
 // агенту: НЕ переписка, НЕ дневник, НЕ полный мануал. (Выжимка тех-голоса из SOUL.md.)
@@ -44,15 +53,21 @@ interface Pending {
 const pending = new Map<string, Pending>();
 let _seq = 0;
 
-async function runAnalysis(id: string, task: string): Promise<void> {
+async function runAnalysis(
+  id: string,
+  task: string,
+  model: string,
+  timeoutSec: number,
+): Promise<void> {
   const entry = pending.get(id);
   if (!entry) return;
   try {
     const res = await fetch(CODE_ANALYZE_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ task, persona: SOUL_BRIEF }),
-      signal: AbortSignal.timeout(CODE_ANALYZE_TIMEOUT_MS),
+      body: JSON.stringify({ task, persona: SOUL_BRIEF, model, timeout_s: timeoutSec }),
+      // ждём чуть дольше прокси (он сам убьёт зависший раньше).
+      signal: AbortSignal.timeout((timeoutSec + 20) * 1000),
     });
     if (!res.ok) {
       entry.status = "error";
@@ -84,6 +99,14 @@ export const workiMod = createMod<Record<string, never>>("worki", {
         .trim()
         .min(1)
         .describe('Вопрос/задача по коду Worki своими словами (напр. "какие парсеры и что делает tg-парсер")'),
+      model: z.coerce
+        .string()
+        .optional()
+        .describe('Модель: sonnet (по умолч., быстро) / opus (глубже, дольше) / haiku. Ставь opus, если просят «на опусе».'),
+      timeout_min: z.coerce
+        .number()
+        .optional()
+        .describe("Таймаут в минутах (по умолч. 5). Подними, если просят дольше — напр. 10 или 15."),
     }),
     description:
       "Спросить про код Worki — чистый агент прочитает реальный код и пришлёт разбор АСИНХРОННО (через ~минуту, в твой контекст)",
@@ -96,14 +119,18 @@ export const workiMod = createMod<Record<string, never>>("worki", {
     },
     impl(ctx, args): unknown {
       const task = String(args.task);
+      const model = normalizeModel(args.model as string | undefined);
+      const timeoutMin = Math.max(
+        1,
+        Math.min(Number(args.timeout_min) || DEFAULT_TIMEOUT_MIN, MAX_TIMEOUT_MIN),
+      );
       const id = `ca${ctx.tick}_${++_seq}`;
       pending.set(id, { task, status: "running", result: "" });
-      void runAnalysis(id, task); // fire-and-forget; результат подберёт contribute()
-      log.info("code-ask started (async)", { id, taskLen: task.length });
+      void runAnalysis(id, task, model, timeoutMin * 60); // fire-and-forget; результат подберёт contribute()
+      log.info("code-ask started (async)", { id, taskLen: task.length, model, timeoutMin });
       return {
         success: true,
-        message:
-          "Разбор кода запущен в фоне — придёт через ~минуту тебе в контекст. Сейчас скажи, что смотришь код, и продолжай; как будет готово — перескажешь.",
+        message: `Разбор кода запущен в фоне (${model}, до ${timeoutMin} мин) — придёт тебе в контекст. Скажи, что смотришь код, и продолжай; как будет готово — перескажешь.`,
       };
     },
   })
