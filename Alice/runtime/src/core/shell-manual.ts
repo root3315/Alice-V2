@@ -175,6 +175,22 @@ async function renderSkillCatalog(): Promise<string[]> {
 
 // ─── 入口 ────────────────────────────────────────────────────────────
 
+// ─── Код Worki (read-only, для ops-триажа) ──────────────────────────
+// Появляется в мануале только если задан WORKI_RO_CLONE (клон примонтирован).
+function renderWorkiSection(): string[] {
+  if (!process.env.WORKI_RO_CLONE) return [];
+  return [
+    "## Код Worki (read-only)",
+    "",
+    "Исходники проекта Worki примонтированы read-only в /work/worki.",
+    "При триаже инцидента или код-ревью можешь читать и цитировать код:",
+    '  grep -rn "паттерн" /work/worki/путь   — поиск (напр. HH-PY/parser_telegram или Worki/src)',
+    "  cat /work/worki/путь/к/файлу          — прочитать файл целиком",
+    "Только чтение, сети нет. Используй, чтобы найти и процитировать конкретный код по инциденту.",
+    "",
+  ];
+}
+
 export async function generateShellManual(mods: readonly ModDefinition[]): Promise<string> {
   const skillCatalog = await renderSkillCatalog();
   const parts = [
@@ -201,6 +217,7 @@ export async function generateShellManual(mods: readonly ModDefinition[]): Promi
     ...renderSelfCommands(mods),
     ...renderAlicePkgSection(),
     ...skillCatalog,
+    ...renderWorkiSection(),
   ];
 
   return parts.join("\n");
