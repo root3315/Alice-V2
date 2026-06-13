@@ -189,6 +189,11 @@ export const workiMod = createMod<Record<string, never>>("worki", {
     },
     impl(ctx, args): unknown {
       const task = String(args.task);
+      // Анти-дубль: один разбор за раз. Иначе в нетерпении плодит параллельные → грузит прокси.
+      const busy = [...pending.values()].some((p) => p.kind === "ask" && p.status === "running");
+      if (busy) {
+        return { success: true, message: "Уже разбираю код — погоди, результат вот-вот придёт в контекст. Повторно не запускай." };
+      }
       const model = normalizeModel(args.model as string | undefined);
       const tmin = clampTimeoutMin(args.timeout_min);
       const id = `ask${ctx.tick}_${++_seq}`;
