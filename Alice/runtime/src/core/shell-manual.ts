@@ -191,6 +191,25 @@ function renderWorkiSection(): string[] {
   ];
 }
 
+// ─── Гараж (деплой-платформа) — релей через оператора ──────────────
+// Появляется, только если задан OPS_GARAGE_BOT_ID (гараж сконфигурирован).
+// Прямого доступа/токена у Алисы нет (вето на креденшел) — только спросить человека.
+function renderGarageRelaySection(): string[] {
+  if (!process.env.OPS_GARAGE_BOT_ID) return [];
+  return [
+    "## Гараж (деплой-платформа) — спрашивай через оператора",
+    "",
+    "Гараж — наша платформа деплоя: статусы сервисов, история выкаток, образы, ветки, инциденты.",
+    "Прямого доступа к гаражу у тебя НЕТ. Слать команды боту бесполезно — он ответит «не зарегистрирована».",
+    "Если для триажа инцидента или ответа нужны данные из гаража — НЕ выдумывай и не говори «не знаю».",
+    "Тегни оператора в работач и попроси спросить гараж — ОДНИМ конкретным вопросом, например:",
+    "«@оператор спроси пожалуйста у гаража: статус последнего деплоя worki-api».",
+    "Гараж отвечает про: статус сервисов, историю деплоев, образы, список веток, инциденты.",
+    "Оператор принесёт ответ в чат — тогда продолжай по нему.",
+    "",
+  ];
+}
+
 export async function generateShellManual(mods: readonly ModDefinition[]): Promise<string> {
   const skillCatalog = await renderSkillCatalog();
   const parts = [
@@ -218,6 +237,7 @@ export async function generateShellManual(mods: readonly ModDefinition[]): Promi
     ...renderAlicePkgSection(),
     ...skillCatalog,
     ...renderWorkiSection(),
+    ...renderGarageRelaySection(),
   ];
 
   return parts.join("\n");
