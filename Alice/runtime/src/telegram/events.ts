@@ -404,6 +404,13 @@ export function bindEvents(
       }
     }
 
+    // Forum: трекаем топик входящего сообщения, чтобы отвечать в него, а не в General.
+    // threadId = id топика (null в General / вне топиков / в не-форумах → отправка по умолчанию).
+    const incomingTopicId = ctx.replyToMessage?.threadId ?? undefined;
+    if (G.has(channelId) && G.getChannel(channelId).current_topic_id !== incomingTopicId) {
+      G.updateChannel(channelId, { current_topic_id: incomingTopicId });
+    }
+
     // ADR-206 W5: 提取转发来源频道
     let forwardFromChannelId: string | undefined;
     let forwardFromChannelName: string | undefined;

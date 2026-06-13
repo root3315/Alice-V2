@@ -97,6 +97,8 @@ export async function sendText(
   text: string,
   options: {
     replyToMsgId?: number;
+    /** Forum: id топика (его корневого сообщения) — ответ уйдёт в этот топик, не в General. */
+    topicId?: number;
     mentions?: Array<{ offset: number; length: number; userId: number }>;
   } = {},
 ): Promise<number | undefined> {
@@ -122,12 +124,12 @@ export async function sendText(
       sent = await client.sendText(
         chatId,
         { text: mdParsed ? mdParsed.text : text, entities },
-        { replyTo: options.replyToMsgId },
+        { replyTo: options.replyToMsgId ?? options.topicId },
       );
     } else if (mdParsed) {
-      sent = await client.sendText(chatId, mdParsed, { replyTo: options.replyToMsgId });
+      sent = await client.sendText(chatId, mdParsed, { replyTo: options.replyToMsgId ?? options.topicId });
     } else {
-      sent = await client.sendText(chatId, text, { replyTo: options.replyToMsgId });
+      sent = await client.sendText(chatId, text, { replyTo: options.replyToMsgId ?? options.topicId });
     }
   } catch (err) {
     rethrowTelegramActionFailure(err, "send_text", { chatId: String(chatId) });
@@ -691,7 +693,7 @@ export async function sendVoice(
   client: TelegramClient,
   chatId: string | number,
   audioBuffer: Buffer,
-  options: { replyToMsgId?: number; duration?: number } = {},
+  options: { replyToMsgId?: number; duration?: number; topicId?: number } = {},
 ): Promise<number | undefined> {
   await globalLimiter.acquire();
   let sent: Message | undefined;
@@ -704,7 +706,7 @@ export async function sendVoice(
         fileMime: "audio/ogg",
         fileName: "voice.ogg",
       }),
-      { replyTo: options.replyToMsgId },
+      { replyTo: options.replyToMsgId ?? options.topicId },
     );
   } catch (err) {
     rethrowTelegramActionFailure(err, "send_voice", { chatId: String(chatId) });

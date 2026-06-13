@@ -522,10 +522,13 @@ async function main() {
       } catch {
         // typing 失败不阻断发送
       }
-      const msgId = await sendText(client, rawChatId, text, { replyToMsgId: replyTo });
+      // Forum: отвечаем в топик канала (current_topic_id), если он известен; иначе обычная отправка.
+      const graphId = telegramChannelId(rawChatId);
+      const topicId =
+        graphId && G.has(graphId) ? G.getChannel(graphId).current_topic_id : undefined;
+      const msgId = await sendText(client, rawChatId, text, { replyToMsgId: replyTo, topicId });
       // 显式取消 typing 定时器（mtcute 5s 自动续发，不取消会残留）
       setTyping(client, rawChatId, true).catch(() => {});
-      const graphId = telegramChannelId(rawChatId);
       if (msgId != null && graphId) {
         cacheOutgoingMsg(graphId, msgId);
       }

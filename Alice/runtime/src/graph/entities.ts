@@ -281,6 +281,8 @@ export interface ChannelAttrs {
   /** 最后 directed 消息的墙钟时间（ms）。 */
   last_directed_ms: number;
   display_name?: string;
+  /** Forum: id текущего/последнего активного топика (ответы уходят в него, не в General). */
+  current_topic_id?: number;
   // -- Observable (observer/mapper 维护，pressure/engine 读取) --
   /** Alice 最后行动的墙钟时间（ms）。 */
   last_alice_action_ms?: number;
