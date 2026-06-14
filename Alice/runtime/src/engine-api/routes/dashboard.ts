@@ -591,17 +591,45 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
     log.warn("dashboard voices failed", { err: (e as Error).message });
   }
 
+  // ── Аптайм процесса движка (дешёвая дополнительная метрика) ─────────────────
+  let uptimeSec: number | null = null;
+  try {
+    uptimeSec = Math.floor(process.uptime());
+  } catch {
+    uptimeSec = null;
+  }
+
+  // Производные сводки для шапок вкладок (всё уже посчитано выше — только агрегируем).
+  const unreachableChannels = channels.filter((c) => c.unreachable === true).length;
+  const botContacts = contacts.filter((c) => c.isBot === true).length;
+  const failedActionTypes = (() => {
+    try {
+      const bat = (db as { byActionType?: Array<{ type: string; c: number }> }).byActionType ?? [];
+      return bat
+        .filter((x) => /fail|error|provider_failed|validation_failed|script_failed/.test(x.type))
+        .reduce((s, x) => s + Number(x.c ?? 0), 0);
+    } catch {
+      return 0;
+    }
+  })();
+
   return {
     ts: Date.now(),
     tick,
+    uptimeSec,
     summary: {
       channels: channels.length,
       contacts: contacts.length,
       activeChannels: channels.filter((c) => Number(c.unread) > 0 || Number(c.pendingDirected) > 0)
         .length,
+      unreachableChannels,
+      botContacts,
+      failedActionTypes,
       facts: graph ? Number((graph as Record<string, unknown>).facts ?? 0) : null,
       openTopics: topics.length,
       reminders: reminders.length,
+      episodes: episodes.length,
+      crisisChannels: crisisChannels.length,
     },
     channels: channels.slice(0, 60),
     contacts: contacts.slice(0, 40),
@@ -652,11 +680,22 @@ const DASHBOARD_HTML = `<!doctype html>
   :root { --bg:#0e1116; --card:#171c24; --line:#252c38; --tx:#e6edf3; --mut:#8b97a7; --acc:#7aa2ff; --good:#3fb950; --bad:#f85149; --warn:#d29922; --pur:#bc8cff; --cyan:#39c5cf; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--tx); font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; }
-  header { display:flex; align-items:center; gap:14px; padding:14px 20px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:10; }
+  header { display:flex; align-items:center; gap:14px; padding:14px 20px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:20; }
   header h1 { font-size:18px; margin:0; font-weight:600; }
   header .dot { width:9px; height:9px; border-radius:50%; background:var(--good); box-shadow:0 0 8px var(--good); }
-  header .upd { color:var(--mut); font-size:12px; margin-left:auto; }
+  header .meta { color:var(--mut); font-size:12px; margin-left:auto; text-align:right; line-height:1.4; }
+  header .meta b { color:var(--tx); font-weight:600; }
+  /* ── Вкладки ── */
+  nav.tabs { display:flex; gap:4px; padding:0 20px; border-bottom:1px solid var(--line); position:sticky; top:55px; background:var(--bg); z-index:19; overflow-x:auto; }
+  nav.tabs button { background:none; border:none; border-bottom:2px solid transparent; color:var(--mut); font:inherit; font-size:13px; padding:12px 16px; cursor:pointer; white-space:nowrap; display:flex; align-items:center; gap:7px; }
+  nav.tabs button:hover { color:var(--tx); }
+  nav.tabs button.active { color:var(--tx); border-bottom-color:var(--acc); }
+  nav.tabs button .badge { background:var(--line); color:var(--mut); border-radius:10px; font-size:11px; padding:0 7px; min-width:18px; text-align:center; }
+  nav.tabs button.active .badge { background:#1f6feb33; color:var(--acc); }
+  nav.tabs button .badge.alert { background:#f8514933; color:#ff8a80; }
   .wrap { padding:20px; max-width:1400px; margin:0 auto; }
+  .tabpage { display:none; }
+  .tabpage.active { display:block; }
   .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px; margin-bottom:20px; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
   .card .k { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
@@ -668,6 +707,8 @@ const DASHBOARD_HTML = `<!doctype html>
   .panel { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
   .panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.5px; color:var(--mut); margin:0 0 12px; }
   .panel h2 .hint { text-transform:none; letter-spacing:0; color:var(--mut); font-weight:400; opacity:.7; margin-left:6px; }
+  .chartbox { position:relative; height:240px; }
+  .chartbox.tall { height:300px; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th,td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); }
   th { color:var(--mut); font-weight:500; font-size:11px; text-transform:uppercase; }
@@ -684,71 +725,90 @@ const DASHBOARD_HTML = `<!doctype html>
   .bar > i { display:block; height:100%; background:var(--acc); }
   .mini { display:flex; align-items:center; gap:6px; }
   .mini .bar { flex:1; }
-  canvas { max-height:240px; }
   .err { color:var(--bad); font-size:12px; }
   .empty { color:var(--mut); font-size:12px; font-style:italic; }
   .kv { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:10px; }
   .kv .item { background:#0e1116; border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
   .kv .item .k { color:var(--mut); font-size:11px; text-transform:uppercase; }
   .kv .item .v { font-size:16px; font-weight:600; margin-top:2px; }
+  .kv .item .v.pos { color:var(--good); } .kv .item .v.neg { color:var(--bad); }
   .tag { display:inline-block; background:#0e1116; border:1px solid var(--line); border-radius:6px; padding:1px 6px; font-size:11px; color:var(--mut); margin:2px 2px 0 0; }
-  .pbar { display:flex; height:10px; border-radius:5px; overflow:hidden; background:var(--line); margin-top:6px; }
-  .pbar > span { display:block; height:100%; }
 </style>
 </head>
 <body>
 <header>
   <span class="dot"></span><h1>Alice — Dashboard</h1>
-  <span class="upd" id="upd">загрузка…</span>
+  <span class="meta" id="meta">загрузка…</span>
 </header>
+<nav class="tabs" id="tabs"></nav>
 <div class="wrap">
-  <div class="cards" id="cards"></div>
 
-  <div class="grid">
-    <div class="panel"><h2>Личность <span class="hint">π = D / C / S / X</span></h2><canvas id="persChart"></canvas></div>
-    <div class="panel"><h2>Дрейф личности <span class="hint">по snapshot'ам</span></h2><canvas id="driftChart"></canvas></div>
-  </div>
+  <!-- ════════ ОБЗОР ════════ -->
+  <section class="tabpage" data-tab="overview">
+    <div class="cards" id="cards"></div>
+    <div class="grid">
+      <div class="panel"><h2>Активность по тикам <span class="hint">действия / успешные</span></h2><div class="chartbox"><canvas id="ovActivityChart"></canvas></div></div>
+      <div class="panel"><h2>Голоса <span class="hint">распределение выбора</span></h2><div class="chartbox"><canvas id="ovVoiceChart"></canvas></div></div>
+    </div>
+    <div class="grid3">
+      <div class="panel"><h2>Личность <span class="hint">π = D / C / S / X</span></h2><div class="chartbox"><canvas id="ovPersChart"></canvas></div></div>
+      <div class="panel"><h2>Поле давления <span class="hint">сводка</span></h2><div id="ovPressure"></div></div>
+      <div class="panel"><h2>Состояние / эмоция</h2><div id="ovState"></div></div>
+    </div>
+  </section>
 
-  <div class="panel"><h2>Поле давления <span class="hint">P1–P6 + prospect</span></h2><div id="pressure"></div></div>
+  <!-- ════════ КОГНИЦИЯ ════════ -->
+  <section class="tabpage" data-tab="cognition">
+    <div class="grid">
+      <div class="panel"><h2>Личность <span class="hint">π = D / C / S / X · текущий vs base</span></h2><div class="chartbox"><canvas id="persChart"></canvas></div></div>
+      <div class="panel"><h2>Дрейф личности <span class="hint">траектория по snapshot'ам</span></h2><div class="chartbox"><canvas id="driftChart"></canvas></div></div>
+    </div>
+    <div class="panel"><h2>Метрики личности <span class="hint">drift / velocity / per-dim shift</span></h2><div id="persMeta"></div></div>
+    <div class="panel"><h2>Поле давления <span class="hint">P1–P6 + prospect</span></h2><div id="pressure"></div></div>
+    <div class="grid">
+      <div class="panel"><h2>Эмоция <span class="hint">ADR-268</span></h2><div id="emotion"></div></div>
+      <div class="panel"><h2>Голоса <span class="hint">распределение + повторы</span></h2><div class="chartbox"><canvas id="voiceChart"></canvas></div></div>
+    </div>
+    <div class="panel"><h2>Действия по голосам <span class="hint">успех / неуспех</span></h2><div class="chartbox"><canvas id="voiceActChart"></canvas></div></div>
+    <div class="panel"><h2>Разнообразие по плоскостям <span class="hint">энтропия выбора голоса в разных точках конвейера</span></h2><div id="planes"></div></div>
+  </section>
 
-  <div class="grid3">
-    <div class="panel"><h2>Состояние / режим</h2><div id="state"></div></div>
-    <div class="panel"><h2>Эмоция <span class="hint">ADR-268</span></h2><div id="emotion"></div></div>
-    <div class="panel"><h2>Память графа</h2><div id="graphmem"></div></div>
-  </div>
+  <!-- ════════ СОЦИАЛЬНОЕ ════════ -->
+  <section class="tabpage" data-tab="social">
+    <div class="panel"><h2>Каналы <span class="hint" id="chHint"></span></h2><div id="channels"></div></div>
+    <div class="panel"><h2>Контакты <span class="hint">по давлению / tier</span></h2><div id="contacts"></div></div>
+    <div class="grid">
+      <div class="panel"><h2>Открытые темы</h2><div id="topics"></div></div>
+      <div class="panel"><h2>Кризисные каналы</h2><div id="crisis"></div></div>
+    </div>
+  </section>
 
-  <div class="grid">
-    <div class="panel"><h2>Голоса (распределение)</h2><canvas id="voiceChart"></canvas></div>
-    <div class="panel"><h2>Режимы тиков</h2><canvas id="modeChart"></canvas></div>
-  </div>
+  <!-- ════════ АКТИВНОСТЬ ════════ -->
+  <section class="tabpage" data-tab="activity">
+    <div class="grid">
+      <div class="panel"><h2>Активность по тикам <span class="hint">действия / успешные</span></h2><div class="chartbox"><canvas id="activityChart"></canvas></div></div>
+      <div class="panel"><h2>Нагрузка API <span class="hint">последние тики</span></h2><div class="chartbox"><canvas id="apiChart"></canvas></div></div>
+    </div>
+    <div class="grid">
+      <div class="panel"><h2>Типы действий</h2><div class="chartbox"><canvas id="actTypeChart"></canvas></div></div>
+      <div class="panel"><h2>Молчание <span class="hint">по причинам</span></h2><div class="chartbox"><canvas id="silenceChart"></canvas></div></div>
+    </div>
+    <div class="grid">
+      <div class="panel"><h2>Режимы тиков</h2><div class="chartbox"><canvas id="modeChart"></canvas></div></div>
+      <div class="panel"><h2>Последние действия <span class="hint">успех / неуспех по тикам</span></h2><div class="chartbox"><canvas id="actChart"></canvas></div></div>
+    </div>
+  </section>
 
-  <div class="grid">
-    <div class="panel"><h2>Активность по тикам <span class="hint">действия / успешные</span></h2><canvas id="activityChart"></canvas></div>
-    <div class="panel"><h2>Нагрузка API <span class="hint">последние тики</span></h2><canvas id="apiChart"></canvas></div>
-  </div>
+  <!-- ════════ ПАМЯТЬ ════════ -->
+  <section class="tabpage" data-tab="memory">
+    <div class="panel"><h2>Память графа <span class="hint">узлы / рёбра / типы</span></h2><div id="graphmem"></div></div>
+    <div class="grid">
+      <div class="panel"><h2>Недавние эпизоды</h2><div id="episodes"></div></div>
+      <div class="panel"><h2>Напоминания / задачи</h2><div id="reminders"></div></div>
+    </div>
+    <div class="panel"><h2>Состояние / режим <span class="hint">self-узел</span></h2><div id="state"></div></div>
+  </section>
 
-  <div class="grid">
-    <div class="panel"><h2>Действия по голосам <span class="hint">успех / неуспех</span></h2><canvas id="voiceActChart"></canvas></div>
-    <div class="panel"><h2>Активность — последние действия</h2><canvas id="actChart"></canvas></div>
-  </div>
-
-  <div class="grid">
-    <div class="panel"><h2>Типы действий</h2><canvas id="actTypeChart"></canvas></div>
-    <div class="panel"><h2>Молчание <span class="hint">по причинам</span></h2><canvas id="silenceChart"></canvas></div>
-  </div>
-
-  <div class="grid">
-    <div class="panel"><h2>Открытые темы</h2><div id="topics"></div></div>
-    <div class="panel"><h2>Напоминания / задачи</h2><div id="reminders"></div></div>
-  </div>
-
-  <div class="grid">
-    <div class="panel"><h2>Недавние эпизоды</h2><div id="episodes"></div></div>
-    <div class="panel"><h2>Кризисные каналы</h2><div id="crisis"></div></div>
-  </div>
-
-  <div class="panel"><h2>Каналы</h2><div id="channels"></div></div>
-  <div class="panel"><h2>Контакты <span class="hint">по давлению / tier</span></h2><div id="contacts"></div></div>
 </div>
 <script>
 const charts = {};
@@ -757,172 +817,290 @@ const palette = ['#7aa2ff','#3fb950','#d29922','#f85149','#bc8cff','#39c5cf','#f
 function card(k,v,sub){ return '<div class="card"><div class="k">'+k+'</div><div class="v">'+v+'</div>'+(sub?'<div class="sub">'+sub+'</div>':'')+'</div>'; }
 function fmtPct(x){ return x==null?'—':(x*100).toFixed(0)+'%'; }
 function fmtN(x,d){ return x==null?'—':Number(x).toFixed(d==null?2:d); }
+function fmtInt(x){ return x==null?'—':Number(x).toLocaleString('ru'); }
+function fmtDur(sec){ if(sec==null) return '—'; sec=Math.floor(sec); const d=Math.floor(sec/86400),h=Math.floor(sec%86400/3600),m=Math.floor(sec%3600/60); if(d>0) return d+'д '+h+'ч'; if(h>0) return h+'ч '+m+'м'; if(m>0) return m+'м'; return sec+'с'; }
+function fmtAgo(ms){ if(!ms) return '—'; const s=Math.floor((Date.now()-Number(ms))/1000); if(s<0) return 'скоро'; if(s<60) return s+'с назад'; const m=Math.floor(s/60); if(m<60) return m+'м назад'; const h=Math.floor(m/60); if(h<24) return h+'ч назад'; return Math.floor(h/24)+'д назад'; }
 function esc(s){ return String(s==null?'':s).replace(/[<>&]/g,m=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[m])); }
 const ax = { color:'#8b97a7' };
+
+/* Создаёт/обновляет график. Возвращает экземпляр (или null). Создаём ТОЛЬКО если
+   контейнер виден (offsetParent != null) — иначе Chart.js нарисует 0×0 при display:none. */
 function upsert(id, type, data, options){
-  const el = $(id); if(!el) return;
-  if(charts[id]){ charts[id].data = data; charts[id].update(); }
-  else { charts[id] = new Chart(el, { type, data, options }); }
+  const el = $(id); if(!el) return null;
+  if(charts[id]){ charts[id].data = data; if(options) charts[id].options = options; charts[id].update('none'); return charts[id]; }
+  if(el.offsetParent === null) return null; // вкладка скрыта — отложим до показа
+  charts[id] = new Chart(el, { type, data, options });
+  return charts[id];
 }
 
-async function refresh(){
-  let d; try { d = await (await fetch('/dashboard/data')).json(); } catch(e){ $('upd').textContent='offline'; return; }
-  $('upd').textContent = 'обновлено ' + new Date(d.ts).toLocaleTimeString('ru') + (d.tick!=null?(' · tick '+d.tick):'');
-  const v = d.voices || {}; const db = d.db || {};
+/* ── Вкладки ── */
+const TABS = [
+  { id:'overview',  label:'Обзор',      badge:null },
+  { id:'cognition', label:'Когниция',   badge:null },
+  { id:'social',    label:'Социальное', badge:d=>d&&d.summary?d.summary.channels:null },
+  { id:'activity',  label:'Активность', badge:d=>d&&d.db?d.db.actions:null },
+  { id:'memory',    label:'Память',     badge:d=>d&&d.summary?d.summary.facts:null },
+];
+let activeTab = (location.hash||'').replace('#','') || 'overview';
+if(!TABS.some(t=>t.id===activeTab)) activeTab = 'overview';
+let lastData = null;
 
-  // ── Карточки ──
-  const pers = d.personality || {};
-  const emo = (d.emotion && d.emotion.dominant) || null;
+function buildTabs(){
+  $('tabs').innerHTML = TABS.map(t=>'<button data-tab="'+t.id+'"><span>'+t.label+'</span><span class="badge" id="badge-'+t.id+'"></span></button>').join('');
+  for(const t of TABS){
+    $('tabs').querySelector('button[data-tab="'+t.id+'"]').addEventListener('click',()=>selectTab(t.id));
+  }
+}
+function selectTab(id){
+  activeTab = id;
+  try { history.replaceState(null,'','#'+id); } catch(e){}
+  document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab===id));
+  document.querySelectorAll('.tabpage').forEach(p=>p.classList.toggle('active', p.dataset.tab===id));
+  // Перерисовать содержимое активной вкладки из последних данных и подогнать графики.
+  if(lastData) renderTab(id, lastData);
+  // resize() нужен, т.к. график мог быть создан, пока вкладка была скрыта (0×0).
+  requestAnimationFrame(()=>{ for(const k in charts){ const c=charts[k]; if(c && c.canvas && c.canvas.offsetParent!==null){ try{ c.resize(); }catch(e){} } } });
+}
+
+/* ── Рендер шапки и бейджей (всегда, независимо от вкладки) ── */
+function renderHeader(d){
+  const db = d.db||{};
+  $('meta').innerHTML =
+    'обновлено <b>'+new Date(d.ts).toLocaleTimeString('ru')+'</b>'+
+    (d.tick!=null?(' · tick <b>'+fmtInt(d.tick)+'</b>'):'')+
+    (d.self&&d.self.mode?(' · режим <b>'+esc(d.self.mode)+'</b>'):'')+
+    (d.uptimeSec!=null?(' · uptime <b>'+fmtDur(d.uptimeSec)+'</b>'):'')+
+    '<br>тиков '+fmtInt(db.ticks)+' · действий '+fmtInt(db.actions)+' · успешность '+fmtPct(db.successRate);
+  for(const t of TABS){
+    const el = $('badge-'+t.id); if(!el) continue;
+    const val = typeof t.badge==='function' ? t.badge(d) : t.badge;
+    if(val==null||val===''){ el.style.display='none'; }
+    else { el.style.display=''; el.textContent = fmtInt(val); }
+  }
+  // Алерт-бейджи: кризисы → Социальное, ошибки → Активность.
+  const crisis = (d.summary&&d.summary.crisisChannels)||0;
+  const badS = $('badge-social');
+  if(badS){ if(crisis>0){ badS.classList.add('alert'); badS.textContent=fmtInt((d.summary&&d.summary.channels)||0)+'!'; } else badS.classList.remove('alert'); }
+  const fails = (d.summary&&d.summary.failedActionTypes)||0;
+  const badA = $('badge-activity');
+  if(badA){ if(fails>0){ badA.classList.add('alert'); } else badA.classList.remove('alert'); }
+}
+
+/* ════════ Рендеры по вкладкам ════════ */
+
+function renderOverview(d){
+  const v = d.voices||{}; const db = d.db||{}; const pers = d.personality||{};
+  const emo = (d.emotion&&d.emotion.dominant)||null;
   $('cards').innerHTML = [
-    card('Тиков', db.ticks ?? '—'),
-    card('Действий', db.actions ?? '—', 'молчание: '+((db.silence&&db.silence.total)??'—')),
-    card('Успешность', fmtPct(db.successRate)),
-    card('Каналов', d.summary?.channels ?? '—', 'активных: '+(d.summary?.activeChannels ?? '—')),
-    card('Контактов', d.summary?.contacts ?? '—'),
-    card('Фактов', d.summary?.facts ?? (d.graph?.facts ?? '—'), 'потоков: '+(d.graph?.threads ?? '—')),
-    card('Тем', d.summary?.openTopics ?? '—', 'напоминаний: '+(d.summary?.reminders ?? '—')),
-    card('API', fmtN(d.pressure?.api), 'A: '+fmtN(d.pressure?.arousalDrive)),
-    card('Энтропия голосов', v.normalizedEntropy!=null ? v.normalizedEntropy.toFixed(2) : '—'),
-    card('Здоровье π', pers.health ?? '—', pers.driftMagnitude!=null?('drift '+fmtN(pers.driftMagnitude,4)):''),
-    card('Настроение', fmtN(d.self?.mood), d.self?.mode?('режим: '+d.self.mode):''),
-    card('Эмоция', emo?emo.kind:'—', emo?('инт. '+fmtN(emo.intensity)):''),
+    card('Тиков', fmtInt(db.ticks), d.uptimeSec!=null?('uptime '+fmtDur(d.uptimeSec)):''),
+    card('Действий', fmtInt(db.actions), 'молчание: '+fmtInt(db.silence&&db.silence.total)),
+    card('Успешность', fmtPct(db.successRate), (d.summary&&d.summary.failedActionTypes)?('ошибок: '+fmtInt(d.summary.failedActionTypes)):''),
+    card('Каналов', fmtInt(d.summary&&d.summary.channels), 'активных: '+fmtInt(d.summary&&d.summary.activeChannels)),
+    card('Контактов', fmtInt(d.summary&&d.summary.contacts), (d.summary&&d.summary.botContacts)?('ботов: '+fmtInt(d.summary.botContacts)):''),
+    card('Фактов', fmtInt(d.summary&&d.summary.facts), 'потоков: '+fmtInt(d.graph&&d.graph.threads)),
+    card('Тем', fmtInt(d.summary&&d.summary.openTopics), 'напоминаний: '+fmtInt(d.summary&&d.summary.reminders)),
+    card('API', fmtN(d.pressure&&d.pressure.api), 'arousal: '+fmtN(d.pressure&&d.pressure.arousalDrive)),
+    card('Энтропия голосов', v.normalizedEntropy!=null?v.normalizedEntropy.toFixed(2):'—', v.consecutiveRepeatRate!=null?('повторы '+fmtPct(v.consecutiveRepeatRate)):''),
+    card('Здоровье π', pers.health??'—', pers.driftMagnitude!=null?('drift '+fmtN(pers.driftMagnitude,4)):''),
+    card('Настроение', fmtN(d.self&&d.self.mood), 'valence '+fmtN(d.self&&d.self.valence)),
+    card('Эмоция', emo?esc(emo.kind):'нейтр.', emo?('инт. '+fmtN(emo.intensity)):''),
   ].join('');
 
-  // ── Личность: бар D/C/S/X ──
-  if(pers.weights && pers.labels){
-    const labels = pers.labels.map(l=>l.display);
-    const cur = pers.weights;
-    const home = pers.home;
-    const ds = [{label:'текущий', data:cur, backgroundColor:palette[0]}];
-    if(home && home.length===cur.length) ds.push({label:'базовый (home)', data:home, backgroundColor:'#30363d'});
-    upsert('persChart','bar',{labels,datasets:ds},
-      {plugins:{legend:{labels:{color:'#e6edf3'}}},scales:{y:{beginAtZero:true,max:0.5,ticks:ax},x:{ticks:ax}}});
-  }
-
-  // ── Дрейф личности: траектория каждого измерения ──
-  if(pers.trajectory && pers.trajectory.length && pers.labels){
-    const labels = pers.trajectory.map(p=>'t'+p.tick);
-    const ds = pers.labels.map((l,i)=>({label:l.short, data:pers.trajectory.map(p=>p.w[i]), borderColor:palette[i], backgroundColor:palette[i], tension:.3, pointRadius:0, borderWidth:2}));
-    upsert('driftChart','line',{labels,datasets:ds},
-      {plugins:{legend:{labels:{color:'#e6edf3'}}},scales:{y:{ticks:ax},x:{ticks:{color:'#8b97a7',maxTicksLimit:8}}}});
-  } else if(!pers.trajectory || !pers.trajectory.length){ $('driftChart').parentElement.querySelector('canvas').style.display='none'; }
-
-  // ── Поле давления ──
-  const pr = d.pressure;
-  if(pr){
-    const dims = [['P1','attention',pr.P1],['P2','information',pr.P2],['P3','relationship',pr.P3],['P4','threads',pr.P4],['P5','obligation',pr.P5],['P6','curiosity',pr.P6],['prospect','horizon',pr.prospect]];
-    const mx = Math.max(0.001, ...dims.map(x=>Number(x[2])||0));
-    $('pressure').innerHTML = '<div class="kv">'+dims.map(x=>{
-      const val = Number(x[2])||0; const w = Math.min(100, val/mx*100);
-      return '<div class="item"><div class="k">'+x[0]+' · '+x[1]+'</div><div class="v">'+fmtN(val)+'</div><div class="bar"><i style="width:'+w+'%"></i></div></div>';
-    }).join('')+'</div>'+
-    '<div style="margin-top:10px;color:#8b97a7;font-size:12px">API '+fmtN(pr.api)+' · API peak '+fmtN(pr.apiPeak)+' · arousal drive '+fmtN(pr.arousalDrive)+'</div>';
-  } else $('pressure').innerHTML='<div class="empty">нет данных давления</div>';
-
-  // ── Состояние / режим ──
-  const s = d.self || {};
-  $('state').innerHTML = '<div class="kv">'+[
-    ['Режим', s.mode ?? '—'],['Valence', fmtN(s.valence)],['Arousal', fmtN(s.arousal)],
-    ['Mood', fmtN(s.mood)],['Думает о', s.thinkingTarget ?? '—'],['Отдых', s.restingReason ?? '—'],
-  ].map(x=>'<div class="item"><div class="k">'+x[0]+'</div><div class="v">'+esc(x[1])+'</div></div>').join('')+'</div>';
-
-  // ── Эмоция ──
-  if(d.emotion && (d.emotion.dominant||d.emotion.secondary)){
-    const row = (e,tag)=> e? '<div class="item"><div class="k">'+tag+': '+esc(e.kind)+'</div><div class="v">инт '+fmtN(e.intensity)+'</div><div class="sub">val '+fmtN(e.valence)+' · ar '+fmtN(e.arousal)+'</div>'+(e.summary?'<div class="sub" style="margin-top:4px">'+esc(e.summary)+'</div>':'')+'</div>' : '';
-    $('emotion').innerHTML = '<div class="kv">'+row(d.emotion.dominant,'доминирует')+row(d.emotion.secondary,'фон')+'</div>';
-  } else $('emotion').innerHTML='<div class="empty">нейтральное состояние</div>';
-
-  // ── Память графа ──
-  const g = d.graph;
-  if(g){
-    $('graphmem').innerHTML = '<div class="kv">'+[
-      ['Факты', g.facts],['Потоки', g.threads],['Диалоги', g.conversations],
-      ['Узлы', g.totalNodes],['Рёбра', g.edges],
-    ].map(x=>'<div class="item"><div class="k">'+x[0]+'</div><div class="v">'+(x[1]??'—')+'</div></div>').join('')+'</div>';
-  } else $('graphmem').innerHTML='<div class="empty">нет данных</div>';
-
-  // ── Голоса ──
-  const vf = (v.voiceFrequencies)||{}; const vlabels=Object.keys(vf); const vdata=vlabels.map(k=>vf[k]);
-  if(vlabels.length) upsert('voiceChart','doughnut',{labels:vlabels,datasets:[{data:vdata,backgroundColor:palette}]},{plugins:{legend:{labels:{color:'#e6edf3'}}}});
-
-  // ── Режимы тиков ──
-  const bm = db.byMode||[];
-  if(bm.length) upsert('modeChart','doughnut',{labels:bm.map(x=>x.mode),datasets:[{data:bm.map(x=>x.c),backgroundColor:palette}]},{plugins:{legend:{labels:{color:'#e6edf3'}}}});
-
-  // ── Активность по бакетам тиков ──
+  // headline: активность
   const ab = db.activityBuckets||[];
-  if(ab.length) upsert('activityChart','line',{labels:ab.map(x=>'t'+x.bucket),datasets:[
+  if(ab.length) upsert('ovActivityChart','line',{labels:ab.map(x=>'t'+Math.round(x.bucket)),datasets:[
       {label:'всего', data:ab.map(x=>x.total), borderColor:palette[0], backgroundColor:palette[0], tension:.3, pointRadius:0, borderWidth:2},
       {label:'успешные', data:ab.map(x=>x.ok), borderColor:palette[1], backgroundColor:palette[1], tension:.3, pointRadius:0, borderWidth:2},
-    ]},{plugins:{legend:{labels:{color:'#e6edf3'}}},scales:{y:{beginAtZero:true,ticks:ax},x:{ticks:{color:'#8b97a7',maxTicksLimit:10}}}});
+    ]},{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#e6edf3'}}},scales:{y:{beginAtZero:true,ticks:ax},x:{ticks:{color:'#8b97a7',maxTicksLimit:10}}}});
 
-  // ── API серия ──
-  const apis = db.apiSeries||[];
-  if(apis.length) upsert('apiChart','line',{labels:apis.map(x=>'t'+x.tick),datasets:[{data:apis.map(x=>x.api), borderColor:palette[5], backgroundColor:'rgba(57,197,207,.15)', fill:true, tension:.3, pointRadius:0, borderWidth:2}]},
-      {plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:ax},x:{ticks:{color:'#8b97a7',maxTicksLimit:10}}}});
+  // headline: голоса
+  const vf = v.voiceFrequencies||{}; const vl=Object.keys(vf);
+  if(vl.length) upsert('ovVoiceChart','doughnut',{labels:vl,datasets:[{data:vl.map(k=>vf[k]),backgroundColor:palette}]},{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#e6edf3'}}}});
 
-  // ── Действия по голосам (стек успех/неуспех) ──
-  const bvo = db.byVoiceOutcome||[];
+  // личность мини-бар
+  if(pers.weights&&pers.labels){
+    const ds=[{label:'текущий',data:pers.weights,backgroundColor:palette[0]}];
+    if(pers.home&&pers.home.length===pers.weights.length) ds.push({label:'base',data:pers.home,backgroundColor:'#30363d'});
+    upsert('ovPersChart','bar',{labels:pers.labels.map(l=>l.short),datasets:ds},{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,max:0.5,ticks:ax},x:{ticks:ax}}});
+  }
+
+  // давление сводка
+  const pr=d.pressure;
+  if(pr){
+    const dims=[['P1',pr.P1],['P2',pr.P2],['P3',pr.P3],['P4',pr.P4],['P5',pr.P5],['P6',pr.P6],['prosp',pr.prospect]];
+    const mx=Math.max(0.001,...dims.map(x=>Number(x[1])||0));
+    $('ovPressure').innerHTML='<div class="kv">'+dims.map(x=>{const val=Number(x[1])||0;const w=Math.min(100,val/mx*100);return '<div class="item"><div class="k">'+x[0]+'</div><div class="v">'+fmtN(val)+'</div><div class="bar"><i style="width:'+w+'%"></i></div></div>';}).join('')+'</div>';
+  } else $('ovPressure').innerHTML='<div class="empty">нет данных</div>';
+
+  // состояние / эмоция сводка
+  const s=d.self||{};
+  const rows=[['Режим',s.mode??'—'],['Valence',fmtN(s.valence)],['Arousal',fmtN(s.arousal)],['Эмоция',emo?esc(emo.kind):'нейтр.']];
+  $('ovState').innerHTML='<div class="kv">'+rows.map(x=>'<div class="item"><div class="k">'+x[0]+'</div><div class="v">'+x[1]+'</div></div>').join('')+'</div>'+(emo&&emo.summary?'<div class="sub" style="margin-top:8px;color:#8b97a7">'+esc(emo.summary)+'</div>':'');
+}
+
+function renderCognition(d){
+  const v = d.voices||{}; const db = d.db||{}; const pers=d.personality||{};
+  // личность бар
+  if(pers.weights&&pers.labels){
+    const ds=[{label:'текущий',data:pers.weights,backgroundColor:palette[0]}];
+    if(pers.home&&pers.home.length===pers.weights.length) ds.push({label:'базовый (home)',data:pers.home,backgroundColor:'#30363d'});
+    upsert('persChart','bar',{labels:pers.labels.map(l=>l.display),datasets:ds},{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#e6edf3'}}},scales:{y:{beginAtZero:true,max:0.5,ticks:ax},x:{ticks:ax}}});
+  }
+  // дрейф траектория
+  if(pers.trajectory&&pers.trajectory.length&&pers.labels){
+    const labels=pers.trajectory.map(p=>'t'+p.tick);
+    const ds=pers.labels.map((l,i)=>({label:l.short,data:pers.trajectory.map(p=>p.w[i]),borderColor:palette[i],backgroundColor:palette[i],tension:.3,pointRadius:0,borderWidth:2}));
+    upsert('driftChart','line',{labels,datasets:ds},{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#e6edf3'}}},scales:{y:{ticks:ax},x:{ticks:{color:'#8b97a7',maxTicksLimit:8}}}});
+  }
+  // метрики личности
+  const pm=[];
+  pm.push(['Здоровье', pers.health??'—', '']);
+  pm.push(['Drift', pers.driftMagnitude!=null?fmtN(pers.driftMagnitude,5):'—', '']);
+  pm.push(['Velocity', pers.velocity!=null?Number(pers.velocity).toExponential(2):'—', '']);
+  pm.push(['Snapshot\\'ов', fmtInt(pers.snapshotCount), '']);
+  if(pers.perDimDrift&&pers.labels){
+    pers.labels.forEach((l,i)=>{ const dv=pers.perDimDrift[i]; pm.push(['Δ '+l.short, (dv>0?'+':'')+fmtN(dv,4), dv>0?'pos':(dv<0?'neg':'')]); });
+  }
+  $('persMeta').innerHTML='<div class="kv">'+pm.map(x=>'<div class="item"><div class="k">'+x[0]+'</div><div class="v '+x[2]+'">'+x[1]+'</div></div>').join('')+'</div>';
+
+  // давление поле
+  const pr=d.pressure;
+  if(pr){
+    const dims=[['P1','attention',pr.P1],['P2','information',pr.P2],['P3','relationship',pr.P3],['P4','threads',pr.P4],['P5','obligation',pr.P5],['P6','curiosity',pr.P6],['prospect','horizon',pr.prospect]];
+    const mx=Math.max(0.001,...dims.map(x=>Number(x[2])||0));
+    $('pressure').innerHTML='<div class="kv">'+dims.map(x=>{const val=Number(x[2])||0;const w=Math.min(100,val/mx*100);return '<div class="item"><div class="k">'+x[0]+' · '+x[1]+'</div><div class="v">'+fmtN(val)+'</div><div class="bar"><i style="width:'+w+'%"></i></div></div>';}).join('')+'</div>'+
+      '<div style="margin-top:10px;color:#8b97a7;font-size:12px">API '+fmtN(pr.api)+' · API peak '+fmtN(pr.apiPeak)+' · arousal drive '+fmtN(pr.arousalDrive)+'</div>';
+  } else $('pressure').innerHTML='<div class="empty">нет данных давления</div>';
+
+  // эмоция
+  if(d.emotion&&(d.emotion.dominant||d.emotion.secondary)){
+    const row=(e,tag)=>e?'<div class="item"><div class="k">'+tag+': '+esc(e.kind)+'</div><div class="v">инт '+fmtN(e.intensity)+'</div><div class="sub">val '+fmtN(e.valence)+' · ar '+fmtN(e.arousal)+'</div>'+(e.summary?'<div class="sub" style="margin-top:4px">'+esc(e.summary)+'</div>':'')+'</div>':'';
+    $('emotion').innerHTML='<div class="kv">'+row(d.emotion.dominant,'доминирует')+row(d.emotion.secondary,'фон')+'</div>'+(d.emotion.updatedAtMs?'<div class="sub" style="margin-top:8px;color:#8b97a7">обновлено '+fmtAgo(d.emotion.updatedAtMs)+'</div>':'');
+  } else $('emotion').innerHTML='<div class="empty">нейтральное состояние</div>';
+
+  // голоса doughnut
+  const vf=v.voiceFrequencies||{}; const vl=Object.keys(vf);
+  if(vl.length) upsert('voiceChart','doughnut',{labels:vl,datasets:[{data:vl.map(k=>vf[k]),backgroundColor:palette}]},{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#e6edf3'}}}});
+
+  // голоса успех/неуспех
+  const bvo=db.byVoiceOutcome||[];
   if(bvo.length) upsert('voiceActChart','bar',{labels:bvo.map(x=>x.voice),datasets:[
-      {label:'успех', data:bvo.map(x=>x.ok), backgroundColor:palette[1]},
-      {label:'неуспех', data:bvo.map(x=>x.fail), backgroundColor:palette[3]},
-    ]},{plugins:{legend:{labels:{color:'#e6edf3'}}},scales:{x:{stacked:true,ticks:ax},y:{stacked:true,beginAtZero:true,ticks:ax}}});
-  else { const bv=db.byVoice||[]; if(bv.length) upsert('voiceActChart','bar',{labels:bv.map(x=>x.voice||'?'),datasets:[{data:bv.map(x=>x.c),backgroundColor:palette[4]}]},{plugins:{legend:{display:false}},scales:{y:{ticks:ax},x:{ticks:ax}}}); }
+      {label:'успех',data:bvo.map(x=>x.ok),backgroundColor:palette[1]},
+      {label:'неуспех',data:bvo.map(x=>x.fail),backgroundColor:palette[3]},
+    ]},{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#e6edf3'}}},scales:{x:{stacked:true,ticks:ax},y:{stacked:true,beginAtZero:true,ticks:ax}}});
+  else { const bv=db.byVoice||[]; if(bv.length) upsert('voiceActChart','bar',{labels:bv.map(x=>x.voice||'?'),datasets:[{data:bv.map(x=>x.c),backgroundColor:palette[4]}]},{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{ticks:ax},x:{ticks:ax}}}); }
 
-  // ── Последние действия (успех/неуспех по тикам) ──
-  const rec=db.recent||[]; if(rec.length){ const cols=rec.map(r=>r.success?'#3fb950':'#f85149');
-    upsert('actChart','bar',{labels:rec.map(r=>'t'+r.tick),datasets:[{data:rec.map(r=>r.success?1:0),backgroundColor:cols}]},{plugins:{legend:{display:false}},scales:{y:{display:false},x:{ticks:{color:'#8b97a7',maxTicksLimit:12}}}}); }
+  // плоскости разнообразия
+  const planes = v.planes||{};
+  const pk = Object.keys(planes);
+  if(pk.length){
+    $('planes').innerHTML='<table><tr><th>Плоскость</th><th>Выборок</th><th>Норм. энтропия</th><th>Повторы</th><th>Топ-голос</th></tr>'+
+      pk.map(k=>{ const p=planes[k]||{}; const vf2=p.voiceFrequencies||{}; let top='—',tv=-1; for(const vn in vf2){ if(vf2[vn]>tv){tv=vf2[vn];top=vn;} }
+        const auth = (k===v.authorityPlane)?' <span class="tag" style="border-color:#7aa2ff;color:#7aa2ff">authority</span>':'';
+        return '<tr><td>'+esc(k)+auth+'</td><td class="num">'+fmtInt(p.sampleCount)+'</td><td class="num">'+fmtN(p.normalizedEntropy)+'</td><td class="num">'+fmtPct(p.consecutiveRepeatRate)+'</td><td>'+esc(top)+(tv>=0?' ('+fmtPct(tv)+')':'')+'</td></tr>';
+      }).join('')+'</table>';
+  } else $('planes').innerHTML='<div class="empty">нет данных по плоскостям</div>';
+}
 
-  // ── Типы действий ──
-  const bat = db.byActionType||[];
-  if(bat.length) upsert('actTypeChart','bar',{labels:bat.map(x=>x.type),datasets:[{data:bat.map(x=>x.c),backgroundColor:palette[2]}]},
-      {indexAxis:'y',plugins:{legend:{display:false}},scales:{y:{ticks:ax},x:{beginAtZero:true,ticks:ax}}});
+function renderSocial(d){
+  // каналы
+  const ch=d.channels||[];
+  $('chHint').textContent = ch.length+' всего'+((d.summary&&d.summary.unreachableChannels)?(' · '+d.summary.unreachableChannels+' недостижимо'):'');
+  $('channels').innerHTML = ch.length ? '<table><tr><th>Канал</th><th>Тип</th><th>Непрочит.</th><th>Роль</th><th>Pending</th><th>Подряд исх.</th><th>Привыкание</th><th>Давление</th><th>Риск</th><th>Достижим</th></tr>'+
+    ch.map(c=>'<tr><td>'+(c.unreachable?'<span class="gone">'+esc(c.name)+' (нет)</span>':esc(c.name))+'</td><td>'+esc(c.chatType||'')+'</td><td class="num">'+c.unread+'</td><td><span class="pill '+(c.role==='owner'?'owner':c.role==='admin'?'admin':'sub')+'">'+esc(c.role)+'</span></td><td class="num">'+c.pendingDirected+'</td><td class="num">'+(c.consecutiveOutgoing??0)+'</td><td class="num">'+fmtN(c.habituation)+'</td><td class="num">'+fmtN(c.pressure)+'</td><td>'+(c.risk&&c.risk!=='none'?'<span class="pill risk-'+esc(c.risk)+'">'+esc(c.risk)+'</span>':'—')+'</td><td class="num">'+(c.unreachable?'✗':fmtPct(c.reachability))+'</td></tr>').join('')+'</table>'
+    : '<div class="empty">нет каналов</div>';
 
-  // ── Молчание по причинам ──
-  const sr = (db.silence&&db.silence.byReason)||[];
-  if(sr.length) upsert('silenceChart','bar',{labels:sr.map(x=>x.reason),datasets:[{data:sr.map(x=>x.c),backgroundColor:palette[7]}]},
-      {indexAxis:'y',plugins:{legend:{display:false}},scales:{y:{ticks:ax},x:{beginAtZero:true,ticks:ax}}});
-  else $('silenceChart').style.display='none';
+  // контакты
+  const ct=d.contacts||[];
+  $('contacts').innerHTML = ct.length ? '<table><tr><th>Контакт</th><th>Tier</th><th>Отношения</th><th>Доверие</th><th>Привяз.</th><th>Взаимод.</th><th>Давление</th><th>Активность</th></tr>'+
+    ct.map(c=>{
+      const rt=c.relationType||'unknown'; const trust=c.trust; const tw=trust!=null?Math.max(0,Math.min(100,((trust+1)/2)*100)):0;
+      const phase=(c.romanticPhase&&c.romanticPhase!=='none')?(' <span class="tag">'+esc(c.romanticPhase)+'</span>'):'';
+      return '<tr><td>'+esc(c.name)+(c.isBot?' <span class="tag">bot</span>':'')+phase+'</td><td class="num">'+c.tier+'</td><td><span class="pill r-'+esc(rt)+'">'+esc(rt)+'</span></td><td><div class="mini">'+(trust!=null?'<div class="bar"><i style="width:'+tw+'%"></i></div><span>'+fmtN(trust)+'</span>':'—')+'</div></td><td class="num">'+(c.affection!=null?fmtN(c.affection):'—')+'</td><td class="num">'+(c.interactions??0)+'</td><td class="num">'+fmtN(c.pressure)+'</td><td class="num">'+(c.lastSeen?fmtAgo(c.lastSeen):'—')+'</td></tr>';
+    }).join('')+'</table>'
+    : '<div class="empty">нет контактов</div>';
 
-  // ── Открытые темы ──
-  const tp = d.topics||[];
-  $('topics').innerHTML = tp.length ? '<table><tr><th>#</th><th>Тема</th><th>Статус</th><th>Вес</th><th>Давл.</th></tr>'+
-    tp.map(t=>'<tr><td>'+(t.id??'')+'</td><td>'+esc(t.title)+(t.involves&&t.involves.length?'<br><span class="tag">'+t.involves.map(esc).join('</span><span class="tag">')+'</span>':'')+'</td><td>'+esc(t.status)+'</td><td>'+esc(t.weight)+'</td><td class="num">'+fmtN(t.pressure)+'</td></tr>').join('')+'</table>'
+  // открытые темы
+  const tp=d.topics||[];
+  $('topics').innerHTML = tp.length ? '<table><tr><th>#</th><th>Тема</th><th>Статус</th><th>Вес</th><th>Давл.</th><th>Релев.</th></tr>'+
+    tp.map(t=>'<tr><td>'+(t.id??'')+'</td><td>'+esc(t.title)+(t.involves&&t.involves.length?'<br><span class="tag">'+t.involves.map(esc).join('</span><span class="tag">')+'</span>':'')+'</td><td>'+esc(t.status)+'</td><td>'+esc(t.weight)+'</td><td class="num">'+fmtN(t.pressure)+'</td><td class="num">'+fmtN(t.relevance)+'</td></tr>').join('')+'</table>'
     : '<div class="empty">нет открытых тем</div>';
 
-  // ── Напоминания ──
-  const rm = d.reminders||[];
-  $('reminders').innerHTML = rm.length ? '<table><tr><th>#</th><th>Тип</th><th>Действие</th><th>Цель</th></tr>'+
-    rm.map(r=>'<tr><td>'+(r.id??'')+'</td><td>'+esc(r.type)+'</td><td>'+esc(r.action)+'</td><td>'+esc(r.target??'')+'</td></tr>').join('')+'</table>'
-    : '<div class="empty">нет активных напоминаний</div>';
+  // кризисные каналы
+  const cc=d.crisisChannels||[];
+  $('crisis').innerHTML = cc.length ? cc.map(c=>'<span class="tag" style="border-color:#f85149;color:#ff8a80">'+esc(c)+'</span>').join(' ')
+    : '<div class="empty">кризисных каналов нет</div>';
+}
 
-  // ── Эпизоды ──
-  const ep = d.episodes||[];
+function renderActivity(d){
+  const db=d.db||{};
+  const ab=db.activityBuckets||[];
+  if(ab.length) upsert('activityChart','line',{labels:ab.map(x=>'t'+Math.round(x.bucket)),datasets:[
+      {label:'всего',data:ab.map(x=>x.total),borderColor:palette[0],backgroundColor:palette[0],tension:.3,pointRadius:0,borderWidth:2},
+      {label:'успешные',data:ab.map(x=>x.ok),borderColor:palette[1],backgroundColor:palette[1],tension:.3,pointRadius:0,borderWidth:2},
+    ]},{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#e6edf3'}}},scales:{y:{beginAtZero:true,ticks:ax},x:{ticks:{color:'#8b97a7',maxTicksLimit:10}}}});
+
+  const apis=db.apiSeries||[];
+  if(apis.length) upsert('apiChart','line',{labels:apis.map(x=>'t'+x.tick),datasets:[{data:apis.map(x=>x.api),borderColor:palette[5],backgroundColor:'rgba(57,197,207,.15)',fill:true,tension:.3,pointRadius:0,borderWidth:2}]},
+      {responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:ax},x:{ticks:{color:'#8b97a7',maxTicksLimit:10}}}});
+
+  const bat=db.byActionType||[];
+  if(bat.length) upsert('actTypeChart','bar',{labels:bat.map(x=>x.type),datasets:[{data:bat.map(x=>x.c),backgroundColor:bat.map(x=>/fail|error/.test(x.type)?palette[3]:palette[2])}]},
+      {responsive:true,maintainAspectRatio:false,indexAxis:'y',plugins:{legend:{display:false}},scales:{y:{ticks:ax},x:{beginAtZero:true,ticks:ax}}});
+
+  const sr=(db.silence&&db.silence.byReason)||[];
+  if(sr.length) upsert('silenceChart','bar',{labels:sr.map(x=>x.reason),datasets:[{data:sr.map(x=>x.c),backgroundColor:palette[7]}]},
+      {responsive:true,maintainAspectRatio:false,indexAxis:'y',plugins:{legend:{display:false}},scales:{y:{ticks:ax},x:{beginAtZero:true,ticks:ax}}});
+
+  const bm=db.byMode||[];
+  if(bm.length) upsert('modeChart','doughnut',{labels:bm.map(x=>x.mode),datasets:[{data:bm.map(x=>x.c),backgroundColor:palette}]},{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#e6edf3'}}}});
+
+  const rec=db.recent||[];
+  if(rec.length){ const cols=rec.map(r=>r.success?'#3fb950':'#f85149');
+    upsert('actChart','bar',{labels:rec.map(r=>'t'+r.tick),datasets:[{data:rec.map(r=>r.success?1:0),backgroundColor:cols}]},{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:(c)=>{const r=rec[c.dataIndex];return (r.voice||'?')+' · '+(r.success?'ok':'fail');}}}},scales:{y:{display:false},x:{ticks:{color:'#8b97a7',maxTicksLimit:12}}}}); }
+}
+
+function renderMemory(d){
+  const g=d.graph;
+  if(g){
+    $('graphmem').innerHTML='<div class="kv">'+[
+      ['Факты',g.facts],['Потоки',g.threads],['Диалоги',g.conversations],['Контакты',g.contacts],['Каналы',g.channels],['Узлы всего',g.totalNodes],['Рёбра',g.edges],
+    ].map(x=>'<div class="item"><div class="k">'+x[0]+'</div><div class="v">'+fmtInt(x[1])+'</div></div>').join('')+'</div>';
+  } else $('graphmem').innerHTML='<div class="empty">нет данных</div>';
+
+  const ep=d.episodes||[];
   $('episodes').innerHTML = ep.length ? '<table><tr><th>ID</th><th>Цель</th><th>Исход</th><th>Residue</th></tr>'+
     ep.map(e=>'<tr><td>'+esc(e.id)+'</td><td>'+esc(e.target??'?')+'</td><td>'+esc(e.outcome??'open')+'</td><td>'+esc(e.residue??'')+'</td></tr>').join('')+'</table>'
     : '<div class="empty">нет недавних эпизодов</div>';
 
-  // ── Кризисные каналы ──
-  const cc = d.crisisChannels||[];
-  $('crisis').innerHTML = cc.length ? cc.map(c=>'<span class="tag" style="border-color:#f85149;color:#ff8a80">'+esc(c)+'</span>').join(' ')
-    : '<div class="empty">кризисных каналов нет</div>';
+  const rm=d.reminders||[];
+  $('reminders').innerHTML = rm.length ? '<table><tr><th>#</th><th>Тип</th><th>Действие</th><th>Цель</th><th>Когда</th></tr>'+
+    rm.map(r=>'<tr><td>'+(r.id??'')+'</td><td>'+esc(r.type)+'</td><td>'+esc(r.action)+'</td><td>'+esc(r.target??'')+'</td><td class="num">'+(r.targetMs?new Date(Number(r.targetMs)).toLocaleString('ru'):(r.intervalMs?('каждые '+fmtDur(Number(r.intervalMs)/1000)):'—'))+'</td></tr>').join('')+'</table>'
+    : '<div class="empty">нет активных напоминаний</div>';
 
-  // ── Каналы ──
-  const ch=d.channels||[];
-  $('channels').innerHTML = '<table><tr><th>Канал</th><th>Тип</th><th>Непрочит.</th><th>Роль</th><th>Pending</th><th>Давление</th><th>Риск</th><th>Достижим</th></tr>'+
-    ch.map(c=>'<tr><td>'+(c.unreachable?'<span class="gone">'+esc(c.name)+' (нет)</span>':esc(c.name))+'</td><td>'+esc(c.chatType||'')+'</td><td class="num">'+c.unread+'</td><td><span class="pill '+(c.role==='owner'?'owner':c.role==='admin'?'admin':'sub')+'">'+esc(c.role)+'</span></td><td class="num">'+c.pendingDirected+'</td><td class="num">'+fmtN(c.pressure)+'</td><td>'+(c.risk&&c.risk!=='none'?'<span class="pill risk-'+esc(c.risk)+'">'+esc(c.risk)+'</span>':'—')+'</td><td class="num">'+(c.unreachable?'✗':fmtPct(c.reachability))+'</td></tr>').join('')+'</table>';
-
-  // ── Контакты ──
-  const ct=d.contacts||[];
-  $('contacts').innerHTML = '<table><tr><th>Контакт</th><th>Tier</th><th>Отношения</th><th>Доверие</th><th>Взаимод.</th><th>Давление</th></tr>'+
-    ct.map(c=>{
-      const rt = c.relationType||'unknown';
-      const trust = c.trust;
-      const tw = trust!=null?Math.max(0,Math.min(100,((trust+1)/2)*100)):0;
-      return '<tr><td>'+esc(c.name)+(c.isBot?' <span class="tag">bot</span>':'')+'</td><td class="num">'+c.tier+'</td><td><span class="pill r-'+esc(rt)+'">'+esc(rt)+'</span></td><td><div class="mini">'+(trust!=null?'<div class="bar"><i style="width:'+tw+'%"></i></div><span>'+fmtN(trust)+'</span>':'—')+'</div></td><td class="num">'+(c.interactions??0)+'</td><td class="num">'+fmtN(c.pressure)+'</td></tr>';
-    }).join('')+'</table>';
+  const s=d.self||{};
+  $('state').innerHTML='<div class="kv">'+[
+    ['Режим',s.mode??'—'],['Mood',fmtN(s.mood)],['Valence',fmtN(s.valence)],['Arousal',fmtN(s.arousal)],['Энергия',s.energy!=null?fmtN(s.energy):'—'],
+    ['Думает о',esc(s.thinkingTarget??'—')],['Причина отдыха',esc(s.restingReason??'—')],['Отдых до',s.restingUntilMs?new Date(Number(s.restingUntilMs)).toLocaleTimeString('ru'):'—'],
+  ].map(x=>'<div class="item"><div class="k">'+x[0]+'</div><div class="v">'+x[1]+'</div></div>').join('')+'</div>';
 }
-refresh(); setInterval(refresh, 5000);
+
+const RENDERERS = { overview:renderOverview, cognition:renderCognition, social:renderSocial, activity:renderActivity, memory:renderMemory };
+function renderTab(id, d){ try { (RENDERERS[id]||(()=>{}))(d); } catch(e){ console.error('render '+id, e); } }
+
+async function refresh(){
+  let d; try { d = await (await fetch('/dashboard/data')).json(); } catch(e){ $('meta').textContent='offline'; return; }
+  lastData = d;
+  renderHeader(d);
+  // Рендерим только активную вкладку (графики на скрытых вкладках создались бы 0×0).
+  renderTab(activeTab, d);
+}
+
+buildTabs();
+selectTab(activeTab);     // выставляет active-классы + первый рендер (после первого fetch)
+refresh();
+setInterval(refresh, 5000);
+window.addEventListener('resize', ()=>{ for(const k in charts){ const c=charts[k]; if(c&&c.canvas&&c.canvas.offsetParent!==null){ try{ c.resize(); }catch(e){} } } });
 </script>
 </body>
 </html>`;
