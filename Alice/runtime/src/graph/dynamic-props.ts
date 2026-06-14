@@ -86,6 +86,9 @@ function isForwardRegistry(value: unknown): value is ForwardRegistry {
   );
 }
 
+/** M3: кап реестра пересылок — иначе растёт без предела (раздувание снапшота/памяти). */
+const FORWARD_REGISTRY_CAP = 100;
+
 /** Записывает факт пересылки: msgId из srcChannel переслан в targetName. */
 function writeForwardEntry(
   G: WorldModel,
@@ -97,6 +100,12 @@ function writeForwardEntry(
   const key = String(msgId);
   if (!registry[key]) registry[key] = [];
   if (!registry[key].includes(targetName)) registry[key].push(targetName);
+  // M3: держим только последние N msgId (они растут со временем → дропаем самые старые/маленькие).
+  const keys = Object.keys(registry);
+  if (keys.length > FORWARD_REGISTRY_CAP) {
+    const sorted = keys.map(Number).sort((a, b) => a - b);
+    for (const k of sorted.slice(0, keys.length - FORWARD_REGISTRY_CAP)) delete registry[String(k)];
+  }
   G.setDynamic(channelId, "forwarded_msgs", registry);
 }
 

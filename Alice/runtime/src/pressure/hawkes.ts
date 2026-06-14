@@ -152,7 +152,11 @@ export function queryIntensity(
   // Для таблицы параметров α/β ∈ [0.36, 0.91] это значение в 1.6–11 раз больше α/β,
   // что обеспечивает непрерывную чувствительность normalizedHeat в диапазоне 2–20 сообщений.
   const branchRatio = beta > 0 ? alpha / beta : 0;
-  const theoreticalMax = branchRatio < 1 && beta > alpha ? (alpha * beta) / (beta - alpha) : alpha;
+  // M1: при β≈α знаменатель (β−α)→0 → theoreticalMax→∞ и heat исчезает для самых горячих чатов
+  // (а при β≤α — наоборот пиннится к 1). Ограничиваем разумным окном [α, 12α]: нормальные
+  // параметры (1.6–11α) не затрагиваются, лечится только вырожденный случай β≈α.
+  const rawMax = branchRatio < 1 && beta > alpha ? (alpha * beta) / (beta - alpha) : alpha;
+  const theoreticalMax = Math.min(Math.max(rawMax, alpha), alpha * 12);
   const normalizedHeat = Math.min(1, theoreticalMax > 0 ? excitation / theoreticalMax : 0);
 
   return { lambda, mu, excitation, normalizedHeat };
