@@ -193,6 +193,12 @@ export function routeRequest(
   // /config/timezoneOffset → ["config", "timezoneOffset"]
   const segments = pathname.split("/").filter(Boolean);
 
+  // --- dashboard (read-only stats UI; /dashboard — 1 сегмент, обрабатываем ДО гейта length<2) ---
+  if (segments[0] === "dashboard" && method === "GET") {
+    handleDashboard(segments[1], req, res, deps);
+    return;
+  }
+
   if (segments.length < 2) {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "not found" }));
@@ -200,12 +206,6 @@ export function routeRequest(
   }
 
   const resource = segments[0];
-
-  // --- dashboard (read-only stats UI) ---
-  if (resource === "dashboard" && method === "GET") {
-    handleDashboard(segments[1], req, res, deps);
-    return;
-  }
 
   // --- config ---
   if (resource === "config" && method === "GET" && segments.length === 2) {
