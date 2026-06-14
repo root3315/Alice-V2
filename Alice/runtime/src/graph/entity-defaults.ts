@@ -89,7 +89,11 @@ export function channelDefaults(partial: ChannelDefaultsInput): ChannelAttrs {
   let unread_ewms_ms = partial.unread_ewms_ms;
   if (unread > 0 && unread_ewms == null) {
     unread_ewms = unread;
-    unread_ewms_ms = Date.now();
+    // H2: при рестарте берём ВРЕМЯ последнего входящего (persisted), а не Date.now() — иначе
+    // EWMS-часы сбрасываются и P1-свежесть прыгает в пик после ребута. Новый канал (нет
+    // last_incoming_ms) → now, как и было.
+    const lastIncoming = Number((partial as { last_incoming_ms?: number }).last_incoming_ms ?? 0);
+    unread_ewms_ms = lastIncoming > 0 ? lastIncoming : Date.now();
   }
 
   return {

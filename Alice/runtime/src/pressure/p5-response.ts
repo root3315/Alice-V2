@@ -65,8 +65,10 @@ export function p5ResponseObligation(G: WorldModel, _n: number, nowMs: number): 
 
   for (const hid of G.getEntitiesByType("channel")) {
     const attrs = G.getChannel(hid);
-    const directedRaw = attrs.pending_directed;
-    if (directedRaw <= 0) continue;
+    // H1: числовая коэрция (как effectiveObligation/iaus-scorer) — иначе один канал с
+    // undefined pending_directed даёт NaN, который отравляет ВСЁ поле давления (total→API→NaN).
+    const directedRaw = Number(attrs.pending_directed ?? 0);
+    if (!(directedRaw > 0)) continue;
 
     // ADR-215: логарифмическое масштабирование directed, предотвращает насыщение в крупных графах
     const directed = effectiveDirected(directedRaw);

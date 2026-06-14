@@ -2432,6 +2432,8 @@ export function startEvolveLoop(state: EvolveState): AbortController {
     // ADR-64 I-1: механизм directed wakeup
     let directedResolve: (() => void) | null = null;
     let directedDebounce: ReturnType<typeof setTimeout> | null = null;
+    // H3: событие могло прийти, пока шёл тик (waiter ещё не создан) — запоминаем, не теряем wakeup.
+    let pendingDirectedWake = false;
 
     state.buffer.onDirected = () => {
       if (directedDebounce) clearTimeout(directedDebounce);
@@ -2440,6 +2442,8 @@ export function startEvolveLoop(state: EvolveState): AbortController {
         if (directedResolve) {
           directedResolve();
           directedResolve = null;
+        } else {
+          pendingDirectedWake = true; // нет waiter'а сейчас → разбудимся на следующем витке
         }
       }, DIRECTED_DEBOUNCE_MS);
     };
@@ -2447,6 +2451,7 @@ export function startEvolveLoop(state: EvolveState): AbortController {
     // механизм anyEvent wakeup (низкий приоритет)
     let anyEventResolve: (() => void) | null = null;
     let anyEventDebounce: ReturnType<typeof setTimeout> | null = null;
+    let pendingAnyEventWake = false; // H3: аналогично — не теряем событие, пришедшее во время тика
 
     state.buffer.onAnyEvent = () => {
       if (anyEventDebounce) clearTimeout(anyEventDebounce);
@@ -2455,6 +2460,8 @@ export function startEvolveLoop(state: EvolveState): AbortController {
         if (anyEventResolve) {
           anyEventResolve();
           anyEventResolve = null;
+        } else {
+          pendingAnyEventWake = true;
         }
       }, ANY_EVENT_DEBOUNCE_MS);
     };
@@ -2512,6 +2519,13 @@ export function startEvolveLoop(state: EvolveState): AbortController {
       }
       if (elapsed > backedOffInterval) {
         log.warn("Tick overran interval", { elapsed, adaptiveIntervalMs: backedOffInterval });
+      }
+
+      // H3: событие пришло, пока шёл тик (waiter не существовал) — не засыпаем, сразу следующий тик.
+      if (pendingDirectedWake || pendingAnyEventWake) {
+        pendingDirectedWake = false;
+        pendingAnyEventWake = false;
+        continue;
       }
 
       // Тройной Promise.race
