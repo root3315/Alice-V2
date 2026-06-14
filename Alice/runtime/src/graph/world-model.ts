@@ -467,6 +467,12 @@ export class WorldModel {
     return this.dirtyNodes.size > 0 || this.dirtyEdgesRebuild;
   }
 
+  /** H12: пометить рёбра грязными. deserialize() строит рёбра приватным _insertEdge БЕЗ
+   *  dirty-флага, поэтому миграция обязана вызвать это, иначе flushGraph пропустит все рёбра. */
+  markEdgesDirty(): void {
+    this.dirtyEdgesRebuild = true;
+  }
+
   /** 获取 dirty 节点集合（flush 时使用）。 */
   getDirtyNodes(): ReadonlySet<string> {
     return this.dirtyNodes;

@@ -336,6 +336,7 @@ export function migrateFromSnapshots(): boolean {
   // 解析旧 JSON 快照并写入新表
   const data = JSON.parse(row.graph_json);
   const G = WorldModel.deserialize(data);
+  G.markEdgesDirty(); // H12: иначе flushGraph пропустит ВСЕ рёбра (deserialize строит их без dirty-флага)
   flushGraph(G);
 
   log.info("Migrated from graph_snapshots to graph_nodes/graph_edges", {

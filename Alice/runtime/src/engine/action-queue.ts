@@ -109,6 +109,10 @@ export class ActionQueue {
           newTarget: item.target,
           newScore: newScore.toFixed(2),
         });
+        // H3: дропнутый re-enqueue preempted-таргета не должен оставить processing-lock навсегда.
+        if (item.target && !this.items.some((i) => i.target === item.target)) {
+          this.processing.delete(item.target);
+        }
         return { outcome: "rejected_overflow", delivery: "dropped" };
       }
       // 淘汰优先级最低的已有行动
@@ -121,6 +125,11 @@ export class ActionQueue {
         newScore: newScore.toFixed(2),
       });
       this.items.push(item);
+      // H3: вытесненный item (мог быть preempted re-enqueue) — снять processing-lock, если его
+      // больше нет в очереди, иначе таргет навсегда выпадает из всех будущих engagements.
+      if (evicted.target && !this.items.some((i) => i.target === evicted.target)) {
+        this.processing.delete(evicted.target);
+      }
       return { outcome: "accepted", delivery: "queued", evicted };
     }
     const waiter = this.waiters.shift();
