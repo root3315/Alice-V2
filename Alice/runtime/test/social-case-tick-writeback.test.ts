@@ -12,6 +12,11 @@ import { startEngineApi } from "../src/engine-api/server.js";
 import { WorldModel } from "../src/graph/world-model.js";
 import { socialCaseMod } from "../src/mods/social-case.mod.js";
 import type { SocialEvent } from "../src/social-case/types.js";
+import { hasBinSh } from "./helpers/env-available.js";
+
+// Прогоняет shell-скрипты через реальный /bin/sh (мок docker → /bin/sh).
+// На Windows без /bin/sh — SKIP, на Linux/CI выполняется как обычно.
+const HAS_SH = hasBinSh();
 
 type ExecFileCallback = (
   error: Error | null,
@@ -130,7 +135,7 @@ function addOpenCaseFacts(): void {
   );
 }
 
-describe("ADR-262 social case tick writeback path", () => {
+describe.skipIf(!HAS_SH)("ADR-262 social case tick writeback path", () => {
   beforeEach(() => {
     initDb(":memory:");
     vi.mocked(generateText).mockReset();

@@ -6,6 +6,11 @@ import { listSocialEventsForRelation } from "../src/db/social-case.js";
 import { startEngineApi } from "../src/engine-api/server.js";
 import { WorldModel } from "../src/graph/world-model.js";
 import { socialCaseMod } from "../src/mods/social-case.mod.js";
+import { hasBinSh } from "./helpers/env-available.js";
+
+// Исполняет shell-скрипты через реальный /bin/sh (мок docker → /bin/sh).
+// На Windows без /bin/sh — SKIP, на Linux/CI выполняется как обычно.
+const HAS_SH = hasBinSh();
 
 type ExecFileCallback = (
   error: Error | null,
@@ -74,7 +79,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 const { executeShellScript, setEnginePort } = await import("../src/core/shell-executor.js");
 
-describe("ADR-262 social case shell executor path", () => {
+describe.skipIf(!HAS_SH)("ADR-262 social case shell executor path", () => {
   beforeEach(() => initDb(":memory:"));
   afterEach(() => {
     setEnginePort(0);

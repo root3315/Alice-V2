@@ -7,6 +7,11 @@ import { generateShellManual } from "../src/core/shell-manual.js";
 import { socialCaseMod } from "../src/mods/social-case.mod.js";
 import { ALICE_CONTAINER_PATHS } from "../src/skills/container-runner.js";
 import type { Registry } from "../src/skills/registry.js";
+import { hasSymlink } from "./helpers/env-available.js";
+
+// Эти два теста создают symlink (store→system-bin). На Windows без Developer Mode/прав
+// symlinkSync бросает EPERM → SKIP. На Linux/CI выполняются как обычно.
+const HAS_SYMLINK = hasSymlink();
 
 vi.mock("../src/skills/backends/docker.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("../src/skills/backends/docker.js")>();
@@ -17,7 +22,7 @@ vi.mock("../src/skills/backends/docker.js", async (importOriginal) => {
 });
 
 describe("command catalog", () => {
-  it("probes command visibility via container and builds the catalog", async () => {
+  it.skipIf(!HAS_SYMLINK)("probes command visibility via container and builds the catalog", async () => {
     const { executeDockerCommand } = await import("../src/skills/backends/docker.js");
     const mockDocker = executeDockerCommand as ReturnType<typeof vi.fn>;
     mockDocker.mockResolvedValue("irc\nctl\nweather\n");
@@ -208,7 +213,7 @@ describe("container probe mode", () => {
     expect(catalog.commands).toEqual([expect.objectContaining({ name: "irc" })]);
   });
 
-  it("falls back to the host catalog when the container probe fails", async () => {
+  it.skipIf(!HAS_SYMLINK)("falls back to the host catalog when the container probe fails", async () => {
     const { executeDockerCommand } = await import("../src/skills/backends/docker.js");
     const mockDocker = executeDockerCommand as ReturnType<typeof vi.fn>;
     mockDocker.mockRejectedValue(new Error("probe failed"));

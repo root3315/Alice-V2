@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { hasBinSh } from "./helpers/env-available.js";
+
+// Эти тесты исполняют скрипты через реальный /bin/sh (мок docker → /bin/sh).
+// На Windows без /bin/sh они должны SKIP, а не FAIL. На Linux/CI выполняются как обычно.
+const HAS_SH = hasBinSh();
 
 type ExecFileCallback = (
   error: Error | null,
@@ -58,7 +63,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 // 必须在 vi.mock 之后动态导入
 const { executeShellScript } = await import("../src/core/shell-executor.js");
 
-describe("executeShellScript", () => {
+describe.skipIf(!HAS_SH)("executeShellScript", () => {
   // ADR-213: CONTROL_PREFIX 解析已移除。流控信号通过 tool calling flow 参数传递。
 
   it("filters ACTION_PREFIX lines from visible logs", async () => {

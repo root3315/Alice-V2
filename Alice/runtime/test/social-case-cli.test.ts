@@ -7,6 +7,11 @@ import { listSocialEventsForRelation } from "../src/db/social-case.js";
 import { startEngineApi } from "../src/engine-api/server.js";
 import { WorldModel } from "../src/graph/world-model.js";
 import { socialCaseMod } from "../src/mods/social-case.mod.js";
+import { canSpawnNodeBin } from "./helpers/env-available.js";
+
+// Спавнит реальный `./node_modules/.bin/tsx` через execFile. На Windows безрасширенный
+// shim не запускается напрямую (spawn ENOENT) → SKIP. На Linux/CI выполняется как обычно.
+const HAS_TSX = canSpawnNodeBin("tsx");
 
 const execFileAsync = promisify(execFile);
 const VISIBLE_CASE_ID = "case:visible-public-insult";
@@ -58,7 +63,7 @@ async function runSelfCliFailure(
   throw new Error("expected self CLI command to fail");
 }
 
-describe("ADR-262 social case self CLI", () => {
+describe.skipIf(!HAS_TSX)("ADR-262 social case self CLI", () => {
   beforeEach(() => initDb(":memory:"));
   afterEach(() => closeDb());
 

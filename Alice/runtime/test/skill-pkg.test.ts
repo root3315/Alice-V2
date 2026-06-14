@@ -4,6 +4,11 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { installSkill, removeSkill, rollbackSkill, upgradeSkill } from "../src/skills/pkg.js";
 import { getEntry } from "../src/skills/registry.js";
+import { hasGo } from "./helpers/env-available.js";
+
+// install/upgrade компилируют skill через `go build` (compileSkillExecutable),
+// если нет prebuilt-бинарника в dist/bin/. Без Go на хосте — SKIP, на CI с Go — выполняется.
+const HAS_GO = hasGo();
 
 interface TestRoots {
   root: string;
@@ -72,7 +77,7 @@ function expectExportedWrapper(binDir: string, name: string): void {
   expect(existsSync(join(binDir, `.${name}.real`))).toBe(true);
 }
 
-describe("skill package lifecycle", () => {
+describe.skipIf(!HAS_GO)("skill package lifecycle", () => {
   it("installs, upgrades, and rolls back through the exported system prefix", async () => {
     const roots = makeRoots();
     const v1Manifest = writeSkillVersion(roots.root, "1.0.0", "demo skill v1");

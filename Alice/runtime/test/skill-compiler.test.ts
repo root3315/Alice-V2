@@ -45,6 +45,16 @@ import {
   removeFromStore,
 } from "../src/skills/store.js";
 import { TELEGRAM_ACTION_MAP } from "../src/telegram/actions/index.js";
+import { hasBinSh, hasGo, hasSymlink } from "./helpers/env-available.js";
+
+// Гейты окружения: на Windows без этих инструментов соответствующие тесты SKIP,
+// а не FAIL. На Linux/CI всё выполняется как обычно.
+//  - HAS_GO: export-пути компилируют skill через `go build` (нет prebuilt в dist/bin/)
+//  - HAS_SYMLINK: ensureAllArtifacts создаёт symlink (EPERM на Windows без прав)
+//  - HAS_SH: shell backend исполняет команды через /bin/sh
+const HAS_GO = hasGo();
+const HAS_SYMLINK = hasSymlink();
+const HAS_SH = hasBinSh();
 
 // ── Test fixtures ──
 
@@ -295,7 +305,8 @@ describe("registry", () => {
     expect(path).not.toContain("/tmp/skills/store/abc123");
   });
 
-  it("exports installed skill command into Alice bin", () => {
+  // Требует `go build` (нет prebuilt-бинарника weather в dist/bin/).
+  it.skipIf(!HAS_GO)("exports installed skill command into Alice bin", () => {
     const tmpRoot = resolve(import.meta.dirname, ".test-exported-roots");
     const skillDir = resolve(tmpRoot, "store", "hash-weather");
     const binDir = resolve(tmpRoot, "bin");
@@ -332,7 +343,8 @@ describe("registry", () => {
     }
   });
 
-  it("atomically switches exported command wrapper when a skill is re-exported", () => {
+  // Требует `go build` (нет prebuilt-бинарника weather в dist/bin/).
+  it.skipIf(!HAS_GO)("atomically switches exported command wrapper when a skill is re-exported", () => {
     const tmpRoot = resolve(import.meta.dirname, ".test-exported-command-switch");
     const oldSkillDir = resolve(tmpRoot, "store", "hash-old");
     const newSkillDir = resolve(tmpRoot, "store", "hash-new");
@@ -381,7 +393,8 @@ describe("registry", () => {
     }
   });
 
-  it("ensureAllArtifacts detects and fixes broken wrappers", () => {
+  // Создаёт symlink напрямую (EPERM на Windows без Developer Mode/прав).
+  it.skipIf(!HAS_SYMLINK)("ensureAllArtifacts detects and fixes broken wrappers", () => {
     const tmpRoot = resolve(import.meta.dirname, ".test-ensure-artifacts");
     const storeRoot = resolve(tmpRoot, "store");
     const binDir = resolve(tmpRoot, "bin");
@@ -480,7 +493,8 @@ describe("hot loader", () => {
 // Shell Backend — injection prevention
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("shell backend", () => {
+// executeShellCommand исполняет через /bin/sh — на Windows без него SKIP.
+describe.skipIf(!HAS_SH)("shell backend", () => {
   it("wraps params in single quotes for shell safety", async () => {
     // executeShellCommand 用 execFile + /bin/sh -c，
     // 我们验证参数值被安全引用（通过 echo 命令）

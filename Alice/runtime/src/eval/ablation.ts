@@ -305,6 +305,7 @@ function computeAblationSummary(pairs: readonly AblationPair[]): AblationSummary
   if (pairs.length === 0) {
     return {
       deltaStructural: 0,
+      // Нет пар → нет данных. Layer 2 в принципе не агрегируется (см. TODO(L2) ниже).
       deltaQuality: null,
       pressureLift: null,
       scenarioCount: 0,
@@ -332,7 +333,16 @@ function computeAblationSummary(pairs: readonly AblationPair[]): AblationSummary
 
   return {
     deltaStructural,
-    deltaQuality: null, // L2 ещё не реализован
+    // deltaQuality (Layer 2 = LLM-as-Judge, аналог deltaStructural по среднему качеству):
+    // данных нет на уровне агрегата. ScenarioAggregateResult.qualityMeans объявлен в
+    // types.ts, но runner.ts:aggregateScenario его НЕ заполняет, а per-run
+    // EvalRunResult.quality не агрегируется. Без подделки значения возвращаем null.
+    // TODO(L2): чтобы вычислить — (1) runEvalSuite должен прогонять Layer 2 при
+    // includeQuality=true и (2) aggregateScenario должен усреднять
+    // EvalRunResult.quality.overall по запускам в ScenarioAggregateResult.qualityMeans
+    // (или новое поле qualityOverall); тогда здесь: deltaQuality = mean(full.quality) -
+    // mean(baseline.quality), как deltaStructural выше.
+    deltaQuality: null,
     pressureLift,
     scenarioCount: pairs.length,
     effectSize,

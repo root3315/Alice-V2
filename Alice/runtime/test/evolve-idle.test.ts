@@ -192,6 +192,21 @@ function buildDirectedIausState(): EvolveState {
 // -- 测试 -------------------------------------------------------------------
 
 describe("★A1+A3 空闲自启动", () => {
+  // Детерминируем «сейчас»: фиксируем Date, чтобы circadianMultiplier (evolve.ts:1145
+  // → new Date().getUTCHours()) и idle/recovery wall-clock дельты не зависели от времени
+  // суток машины (тесты раньше флакали по time-of-day). Фейкаем только Date, не таймеры —
+  // как в dormant-mode.test.ts.
+  //
+  // ВАЖНО: 07:00Z при дефолтном config.timezone_offset=5 → localHour=12 (полдень),
+  // ВНЕ quiet window (23–7). Эти тесты ждут обычное patrol-поведение; если localHour
+  // попадает в quiet window, evolveTick делает patrol→dormant и подавляет proactive →
+  // ложные провалы. Полдень держит сценарии вне сна детерминированно.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-01T07:00:00Z"));
+  });
+  afterEach(() => vi.useRealTimers());
+
   it("idle 达到 idleThreshold 后触发声部行动入队", async () => {
     // dt 迁移：空闲判断基于墙钟秒差 (Date.now() - lastActionMs) / 1000
     // 设置 lastActionMs 足够久远以超过 idleThreshold
@@ -604,6 +619,14 @@ describe("★A1+A3 空闲自启动", () => {
 // ADR-81: gateReflectionGuarantee 测试已移除（Reflection 声部已消除）。
 
 describe("ADR-252: IAUS queue backpressure", () => {
+  // Фиксируем Date (см. комментарий в «★A1+A3 空闲自启动»): circadianMultiplier зависит
+  // от настенного UTC-часа, что делало пороги API/floor зависимыми от времени суток.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-01T07:00:00Z"));
+  });
+  afterEach(() => vi.useRealTimers());
+
   it("未饱和时同一个普通 proactive IAUS 目标可以入队", () => {
     const state = buildProactiveIausState();
 
@@ -688,6 +711,14 @@ describe("ADR-252: IAUS queue backpressure", () => {
 });
 
 describe("post-wakeup recovery target spread control", () => {
+  // Фиксируем Date (см. комментарий в «★A1+A3 空闲自启动»): recovery-окно и
+  // circadianMultiplier зависят от настенных часов → раньше флакало по времени суток.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-01T07:00:00Z"));
+  });
+  afterEach(() => vi.useRealTimers());
+
   it("恢复窗口内超过目标预算时抑制普通 proactive 新目标", () => {
     const state = buildProactiveIausState();
     state.mode = "patrol";
@@ -756,6 +787,14 @@ describe("post-wakeup recovery target spread control", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("ADR-136: proactive cooldown 连续化后的管线行为", () => {
+  // Фиксируем Date (см. комментарий в «★A1+A3 空闲自启动»): circadianMultiplier зависит
+  // от настенного UTC-часа → пороги меняются по времени суток.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-01T07:00:00Z"));
+  });
+  afterEach(() => vi.useRealTimers());
+
   it("alice_turn 对话延续：System 1 升级到 System 2（isContinuation 正确传播）", () => {
     const config = loadConfig();
     config.idleThreshold = 999;
