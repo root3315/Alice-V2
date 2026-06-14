@@ -46,6 +46,7 @@ class CircuitBreaker {
   private state: CircuitState = "closed";
   private consecutiveFailures = 0;
   private lastFailureTime = 0;
+  private probing = false; // H10: ровно один probe в half-open (anti thundering-herd)
 
   constructor(
     private readonly threshold: number,
@@ -69,23 +70,32 @@ class CircuitBreaker {
   /** 检查是否允许请求通过。 */
   allowRequest(): boolean {
     this.tick();
-    return this.state === "closed" || this.state === "half-open";
+    if (this.state === "closed") return true;
+    if (this.state === "half-open") {
+      if (this.probing) return false; // H10: только один пробный запрос на восстановлении
+      this.probing = true;
+      return true;
+    }
+    return false; // open
   }
 
   /** 记录成功。 */
   recordSuccess(): void {
+    if (this.state === "open") return; // H9: устаревший in-flight успех не воскрешает open breaker
     if (this.state === "half-open") {
       log.info("Circuit breaker → closed (probe succeeded)");
       this.onStateChange?.("closed");
     }
     this.state = "closed";
     this.consecutiveFailures = 0;
+    this.probing = false; // H10
   }
 
   /** 记录失败。 */
   recordFailure(): void {
     this.consecutiveFailures++;
     this.lastFailureTime = Date.now();
+    this.probing = false; // H10: probe завершился → следующий half-open выдаст новый
 
     if (this.state === "half-open") {
       // 探测失败，重新打开

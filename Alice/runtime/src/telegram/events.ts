@@ -610,6 +610,8 @@ export function bindEvents(
     }
     const displayName = ctx.sender?.displayName;
     const msgText = ctx.text ? ctx.text.slice(0, 4096) : undefined;
+    // H7: без senderIsBot правки ботов поднимали pending_directed → AI-AI реплай-луп.
+    const senderIsBot = ctx.sender instanceof User && ctx.sender.isBot;
 
     pushCanonicalPerturbation(
       buffer,
@@ -618,6 +620,7 @@ export function bindEvents(
         channelId,
         contactId: contactId ?? undefined,
         isDirected,
+        senderIsBot,
         tick,
         novelty: 0.3, // 编辑的新奇度较低
         nowMs: ctx.date.getTime(),
