@@ -227,7 +227,8 @@ export function withRequestLog(
       const tag = skill ? ` [${skill}]` : "";
       log.info(`${req.method} ${req.url}${tag} → ${res.statusCode} (${duration}ms)`);
     });
-    // handler 可能返回 Promise（async）或同步 throw — оба случая роняли процесс (C1).
+    // handler 可能返回 Promise（async）或同步 throw. Async-reject ловился и раньше (ниже);
+    // новый try/catch добавляет обработку СИНХРОННОГО throw — именно он ронял процесс (C1).
     const fail = (err: unknown) => {
       log.error("unhandled error in request handler", err);
       if (!res.headersSent) {

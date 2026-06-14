@@ -105,8 +105,9 @@ function bumpDirected(graph: WorldModel, e: Pending): void {
     if (graph.has(e.askGraphId)) {
       const cur = Number((graph.getChannel(e.askGraphId) as { pending_directed?: number }).pending_directed ?? 0);
       graph.updateChannel(e.askGraphId, { pending_directed: cur + 1, last_directed_ms: Date.now() });
+      e.directed = true; // только если канал есть и давление реально выставлено
     }
-    e.directed = true; // даже если канала нет в графе — не долбим повторно
+    // канал ещё не в графе → directed=false, повторим на следующем onTickEnd (не эмитим в чужой чат)
   } catch (err) {
     log.warn("directed bump failed", { ch: e.askGraphId, err: (err as Error).message });
   }
@@ -342,7 +343,9 @@ export const workiMod = createMod<WorkiState>("worki", {
     const chatId = args.chatId ? String(args.chatId) : null;
     if (!chatId) return;
     for (const p of pending.values()) {
-      if (p.askGraphId === chatId && (p.status === "done" || p.status === "error") && !p.delivered) {
+      // delivered ставим ТОЛЬКО если результат уже доставляется (directed) — иначе постороннее
+      // сообщение в этот чат до показа результата тихо «съело» бы его (MEDIUM regression).
+      if (p.askGraphId === chatId && p.directed && (p.status === "done" || p.status === "error") && !p.delivered) {
         p.delivered = true;
       }
     }
@@ -352,9 +355,10 @@ export const workiMod = createMod<WorkiState>("worki", {
     const ready: string[] = [];
     for (const p of pending.values()) {
       if (p.status === "running" || p.delivered) continue;
-      // Анти-утечка: эмитим ТОЛЬКО после направленного давления (ставится в onTickEnd) —
-      // тогда следующий тик уже в спросившем чате, и результат не мелькнёт в чужом промпте.
-      if (!p.directed) continue;
+      // Анти-утечка: при заданном askGraphId эмитим ТОЛЬКО после направленного давления
+      // (ставится в onTickEnd) — тогда следующий тик уже в спросившем чате. Если канала нет
+      // (askGraphId undefined — self/системный тик), скоупить некуда → эмитим без гейта.
+      if (p.askGraphId && !p.directed) continue;
       if (p.status === "error") {
         ready.push(`«${p.task}» — не вышло: ${p.result}. Скажи честно в чат, где спросили, что не получилось.`);
       } else if (p.kind === "ask") {

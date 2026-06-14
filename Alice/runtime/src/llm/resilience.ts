@@ -299,8 +299,10 @@ export async function withResilience<T>(
 
       await new Promise((resolve) => setTimeout(resolve, delay));
 
-      // 重试前再次检查熔断器（可能在等待期间被其他调用触发）
-      if (!breaker.allowRequest()) {
+      // 重试前再次检查熔断器（可能在等待期间被其他调用触发）。
+      // getState(), а НЕ allowRequest(): этот вызов уже держит probe-слот в half-open;
+      // allowRequest() отклонил бы его собственный retry (probing=true) и запер бы breaker (fix H10-регрессии).
+      if (breaker.getState() === "open") {
         throw new CircuitOpenError();
       }
     }
