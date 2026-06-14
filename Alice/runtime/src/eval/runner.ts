@@ -1,19 +1,19 @@
 /**
- * ADR-136: Eval Runner — 统一到生产 tick() 的端到端评估执行器。
+ * ADR-136: Eval Runner — сквозной исполнитель оценки, унифицированный с продакшн tick().
  *
- * 核心流程（每场景每次运行）：
- * 1. createEvalFixture → 组装 fixture
- * 2. buildEvalTickDeps → 构建 eval 专用 TickDeps（录制模式）
- * 3. tick(board, allTools, deps, ctx) → 调用生产 tick 循环
- * 4. gradeStructural → 分层评分（goal/budget/process）
+ * Основной поток (каждый запуск каждого сценария):
+ * 1. createEvalFixture → собирает fixture
+ * 2. buildEvalTickDeps → строит TickDeps для eval (режим записи)
+ * 3. tick(board, allTools, deps, ctx) → вызывает продакшн-цикл tick
+ * 4. gradeStructural → послойная оценка (goal/budget/process)
  *
- * 设计决策：
- * - 直接调用生产 tick()，通过 TickDeps 注入 eval 行为差异
- * - LLM 调用使用独立的 evalCallLLM，允许 temperature 覆盖 + 跳过审计
- * - 不执行 Telegram 动作（录制模式）——只关心决策，不关心执行
- * - eval 消息是静态的，不 fetch
- * - 消融实验通过 deps.buildPrompt 路由
- * - 诊断快照通过 deps.onStep 收集
+ * Решения по дизайну:
+ * - Напрямую вызывает продакшн tick(), различия поведения eval инжектируются через TickDeps
+ * - LLM-вызовы используют отдельный evalCallLLM, допускающий переопределение temperature + пропуск аудита
+ * - Telegram-действия не выполняются (режим записи) — интересует только принятие решений, не исполнение
+ * - eval-сообщения статичны, не загружаются
+ * - Абляционные эксперименты маршрутизируются через deps.buildPrompt
+ * - Диагностические снимки собираются через deps.onStep
  *
  * @see docs/adr/136-model-eval-suite.md
  * @see docs/adr/142-action-space-architecture/README.md
@@ -21,7 +21,11 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { generateText } from "ai";
 import { type Config, getLlmProviderByRoute, loadConfig } from "../config.js";
-import { mergeScriptExecutionResults } from "../core/script-execution.js";
+import {
+  type CompletedAction,
+  encodeCompletedAction,
+  mergeScriptExecutionResults,
+} from "../core/script-execution.js";
 import { extractRuntimeConfig } from "../engine/act/runtime-config.js";
 import { collectAllTools } from "../engine/tick/affordance-filter.js";
 import { createBlackboard } from "../engine/tick/blackboard.js";
@@ -36,6 +40,7 @@ import { buildAblationPrompt } from "./ablation.js";
 import { type EvalCache, isCachedPass, loadCache, saveCache } from "./cache.js";
 import { createEvalFixture, type EvalFixture, setupEvalDb, teardownEvalDb } from "./fixtures.js";
 import { gradeStructural, toEvalTickResult } from "./graders.js";
+import { parseScriptActions } from "./script-actions.js";
 import { ALL_SCENARIOS } from "./scenarios/index.js";
 import type {
   AblationCondition,
@@ -49,7 +54,7 @@ import type {
 
 const log = createLogger("eval");
 
-// ── Eval LLM 调用 ─────────────────────────────────────────────────────────
+// ── LLM-вызов для Eval ─────────────────────────────────────────────────────────
 
 type EvalLLMResult = {
   script: string;
@@ -57,8 +62,8 @@ type EvalLLMResult = {
 };
 
 /**
- * Eval 专用 LLM 调用 — 与 callTickLLM 逻辑一致，
- * 但允许 temperature 覆盖 + 不写审计日志。
+ * LLM-вызов для Eval — логика идентична callTickLLM,
+ * но допускает переопределение temperature и не пишет в аудит-лог.
  *
  * @see docs/adr/211-instructor-js-script-prevalidation.md
  */
@@ -85,9 +90,9 @@ async function evalCallLLM(
   }
 }
 
-// ── FeatureFlags 推导 ─────────────────────────────────────────────────────
+// ── Вывод FeatureFlags ─────────────────────────────────────────────────────
 
-/** 从 eval Config + Graph 推导 FeatureFlags（与 tick/bridge.ts 逻辑一致）。 */
+/** Выводит FeatureFlags из eval Config + Graph (логика идентична tick/bridge.ts). */
 function deriveEvalFeatureFlags(config: Config, G: WorldModel): FeatureFlags {
   return {
     hasWeather: true,
@@ -103,23 +108,78 @@ function deriveEvalFeatureFlags(config: Config, G: WorldModel): FeatureFlags {
   };
 }
 
-// ── Eval TickDeps 构建 ──────────────────────────────────────────────────
+// ── Построение TickDeps для Eval ──────────────────────────────────────────────────
 
-/** 诊断数据容器 — onStep 回调回写。 */
+/** Контейнер диагностических данных — записывается из обратного вызова onStep. */
 interface EvalDiagnostics {
   promptSnapshots: Array<{ round: number; system: string; user: string; script: string | null }>;
 }
 
 /**
- * 构建 eval 专用的 TickDeps — 将 eval fixture 适配到生产 tick() 接口。
+ * Строит TickDeps для Eval — адаптирует eval fixture к интерфейсу продакшн tick().
  *
- * 与生产版 buildTickDeps（bridge.ts）的差异：
- * - callLLM: 使用 evalCallLLM（temperature 覆盖 + 无审计日志）
- * - executeActions: no-op（录制模式，不执行 Telegram 动作）
- * - fetchMessages: 空（eval 消息是静态的）
- * - buildPrompt: 消融条件路由（contextVars.__ablation_condition）
- * - onStep: 诊断快照收集
+ * Отличия от продакшн buildTickDeps (bridge.ts):
+ * - callLLM: использует evalCallLLM (переопределение temperature + без аудит-лога)
+ * - executeActions: no-op (режим записи, Telegram-действия не выполняются)
+ * - fetchMessages: пусто (eval-сообщения статичны)
+ * - buildPrompt: маршрутизация по условию абляции (contextVars.__ablation_condition)
+ * - onStep: сбор диагностических снимков
  */
+/**
+ * H17: выводит completedActions (как факты CompletedAction) из распарсенного скрипта.
+ *
+ * Eval работает в режиме записи и не исполняет контейнер, поэтому реальных строк
+ * `__ALICE_ACTION__` нет. Здесь мы воспроизводим те completedActions, которые runtime
+ * сгенерировал бы для telegram-сайд-эффектов и внутренних инструкций self — чтобы
+ * управление в production tick() (hasCompletedSend, продолжения, reply-ветка) вело себя
+ * реалистично. App-вызовы (use_*_app/google/visit) НЕ являются telegram-сайд-эффектами и
+ * не дают completedActions (в runtime это просто вывод навыка); grader читает их из
+ * распарсенного скрипта через toEvalTickResult.
+ *
+ * @see src/core/script-execution.ts — CompletedAction / encodeCompletedAction
+ */
+function deriveCompletedActions(
+  script: string,
+  contextVars: Record<string, unknown> | undefined,
+): { completedActions: string[]; completedActionFacts: CompletedAction[] } {
+  const chatId = String(contextVars?.TARGET_CHAT ?? "channel:eval");
+  const parsed = parseScriptActions(script);
+  const facts: CompletedAction[] = [];
+  let msgSeq = 1;
+
+  for (const action of parsed.actions) {
+    if (action.type !== "telegram") continue; // App-вызовы не дают completedActions
+    const msgId = String(msgSeq++);
+    switch (action.fn) {
+      case "send_message":
+        facts.push({ kind: "sent", chatId, msgId });
+        break;
+      case "react":
+        facts.push({
+          kind: "react",
+          chatId,
+          msgId,
+          emoji: typeof action.args.emoji === "string" ? action.args.emoji : undefined,
+        });
+        break;
+      case "send_sticker":
+        facts.push({ kind: "sticker", chatId, msgId });
+        break;
+      case "send_file":
+        facts.push({ kind: "sent-file", chatId, msgId });
+        break;
+    }
+  }
+  for (const instruction of parsed.instructions) {
+    facts.push({ kind: "internal", command: instruction.fn });
+  }
+
+  return {
+    completedActions: facts.map((fact) => encodeCompletedAction(fact)),
+    completedActionFacts: facts,
+  };
+}
+
 function buildEvalTickDeps(
   _fx: EvalFixture,
   temperature: number,
@@ -128,9 +188,16 @@ function buildEvalTickDeps(
   diagnostics: EvalDiagnostics,
 ): TickDeps {
   return {
-    callLLM: async (system, user, _tick, _target, _voice, _contextVars) => {
+    callLLM: async (system, user, _tick, _target, _voice, contextVars) => {
       const result = await evalCallLLM(system, user, temperature, timeout);
       if (!result) return null;
+      // H17: правдиво выводим completedActions/silenceReason из сгенерированного скрипта,
+      // вместо жёстких []/null. Это то, что сделал бы runtime, исполнив скрипт.
+      const { completedActions, completedActionFacts } = deriveCompletedActions(
+        result.script,
+        contextVars,
+      );
+      const silenceReason = parseScriptActions(result.script).silenceReason;
       return {
         afterward: result.afterward,
         toolCallCount: 1,
@@ -145,49 +212,65 @@ function buildEvalTickDeps(
         thinks: [],
         queryLogs: [],
         observations: [],
-        completedActions: [],
-        silenceReason: null,
+        completedActions,
+        completedActionFacts,
+        silenceReason,
         llmProvider: "eval",
         llmModel: "eval",
       };
     },
 
-    // 消融路由
+    // Маршрутизация абляции
     buildPrompt:
       ablationCondition && ablationCondition !== "full"
         ? (board, allTools, ctx) => buildAblationPrompt(ablationCondition, board, allTools, ctx)
         : undefined,
 
-    // 诊断快照
+    // Диагностический снимок
     onStep: (info) => diagnostics.promptSnapshots.push(info),
   };
 }
 
-// ── Multi-round: App stay() 模拟 ──────────────────────────────────────────
+// ── Многораундовая симуляция App stay() ──────────────────────────────────────────
 //
-// BT 框架的核心价值是多步执行。当 LLM 正确使用 stay() 等待 App 异步结果时，
-// eval 必须模拟 round 2（注入模拟 App 结果 → 重新 tick），否则只测了半个 BT 循环。
+// Ключевая ценность BT-фреймворка — многошаговое выполнение. Когда LLM правильно использует stay()
+// для ожидания асинхронного результата App, eval обязан симулировать round 2
+// (инжектировать мок-результат App → повторить tick), иначе тестируется лишь половина BT-цикла.
 //
-// 生产流程：round 1 → stay() → watcher 等待 → round 2 拿到结果 → send_message
-// eval 模拟：round 1 → stay() → 注入 mock 结果 → round 2 → 合并两轮结果评分
+// Продакшн-поток: round 1 → stay() → watcher ожидает → round 2 получает результат → send_message
+// Симуляция eval: round 1 → stay() → инжект mock-результата → round 2 → оценка объединённых раундов
 
-/** 提取 App 异步调用动作（use_*_app 模式）。
- * ADR-214 Wave A: TickResult 不再有 actions。此函数始终返回空数组。
- * Wave B 将基于 completedActions 重写。
+/** Извлекает действия асинхронного вызова App (паттерн use_*_app) из сгенерированного скрипта.
+ *
+ * H17 (реализация намерения "Wave B"): раньше всегда возвращала [], из-за чего многораундовая
+ * симуляция была отключена. Теперь выводим App-вызовы из распарсенного скрипта — это App-действия
+ * (use_*_app/google/visit), которые в runtime порождают асинхронный результат, ожидаемый stay()/expect_reply().
  */
-function getAppActions(_actions: unknown): Array<{ fn: string; args?: Record<string, unknown> }> {
-  return [];
+function getAppActions(script: string | null): Array<{ fn: string; args?: Record<string, unknown> }> {
+  if (!script) return [];
+  return parseScriptActions(script)
+    .actions.filter((action) => action.type === "dispatch")
+    .map((action) => ({ fn: action.fn, args: action.args }));
+}
+
+/** Последний непустой скрипт из диагностических снимков (= скрипт самого свежего раунда). */
+function lastSnapshotScript(diagnostics: EvalDiagnostics): string | null {
+  for (let i = diagnostics.promptSnapshots.length - 1; i >= 0; i--) {
+    const script = diagnostics.promptSnapshots[i].script;
+    if (script) return script;
+  }
+  return null;
 }
 
 /**
- * 为 App 调用生成模拟结果（eval round 2 注入用）。
+ * Генерирует мок-результаты для вызовов App (используется при инжекте в round 2 eval).
  *
- * 格式设计：`[use_X_app 结果] 具体数据`
- * - 前缀包含原始函数名，让 LLM 关联"这是我上一步调用的结果"
- * - 数据足够具体以支持 LLM 生成有意义的回复
+ * Формат: `[use_X_app результат] конкретные данные`
+ * - Префикс содержит оригинальное имя функции, чтобы LLM мог связать "это результат моего предыдущего вызова"
+ * - Данные достаточно конкретны для генерации осмысленного ответа LLM
  */
 function mockAppResults(actions: Array<{ fn: string; args?: Record<string, unknown> }>): string[] {
-  return getAppActions(actions).map((a) => {
+  return actions.map((a) => {
     const q = String(a.args?.query ?? a.args?.location ?? a.args?.date ?? a.args?.event ?? "");
     switch (a.fn) {
       case "use_weather_app":
@@ -213,7 +296,7 @@ function mockAppResults(actions: Array<{ fn: string; args?: Record<string, unkno
 }
 
 /**
- * 合并两轮 TickResult — round 2 的 outcome 为准，其余累积。
+ * Объединяет TickResult двух раундов — outcome берётся из round 2, остальное накапливается.
  */
 function mergeTickResults(r1: TickResult, r2: TickResult): TickResult {
   return {
@@ -229,7 +312,7 @@ function mergeTickResults(r1: TickResult, r2: TickResult): TickResult {
   };
 }
 
-// ── 单场景运行 ─────────────────────────────────────────────────────────────
+// ── Запуск одного сценария ─────────────────────────────────────────────────────────────
 
 async function runScenarioOnce(
   scenario: EvalScenario,
@@ -243,11 +326,11 @@ async function runScenarioOnce(
   try {
     const fx = createEvalFixture(scenario);
 
-    // 1. 推导 FeatureFlags + 收集全量工具
+    // 1. Выводим FeatureFlags + собираем полный набор инструментов
     const features = deriveEvalFeatureFlags(fx.ctx.config, fx.graph);
     const allTools = collectAllTools(fx.dispatcher.mods, TELEGRAM_ACTIONS);
 
-    // 2. 创建 Blackboard
+    // 2. Создаём Blackboard
     const board = createBlackboard({
       pressures: fx.ctx.getCurrentPressures(),
       voice: fx.item.action,
@@ -256,7 +339,7 @@ async function runScenarioOnce(
       contextVars: fx.contextVars,
     });
 
-    // 3. 构建 eval TickDeps
+    // 3. Строим eval TickDeps
     const ablationCondition = fx.contextVars.__ablation_condition as AblationCondition | undefined;
     const diagnostics: EvalDiagnostics = { promptSnapshots: [] };
     const deps = buildEvalTickDeps(
@@ -267,7 +350,7 @@ async function runScenarioOnce(
       diagnostics,
     );
 
-    // 4. 调用生产 tick()
+    // 4. Вызываем продакшн tick()
     const tickCtx = {
       G: fx.graph,
       dispatcher: fx.dispatcher,
@@ -284,40 +367,31 @@ async function runScenarioOnce(
     };
     let result = await tick(board, allTools, deps, tickCtx);
 
-    // 4b. Multi-round: App continuation (stay/expect_reply)
-    // 当 LLM 使用 stay() 或 expect_reply() 等待 App 异步结果时，模拟 round 2。
-    // 复现生产 engagement watcher：round 1 调用 App → round 2 拿到结果后回复。
-    // LLM 可能用 stay()（观望等待）或 expect_reply()（等待回复），两者都是合法的等待信号。
-    // ADR-214 Wave A: getAppActions 始终返回空（TickResult 无 actions 字段）。
-    // Multi-round eval 暂时禁用，Wave B 将基于 completedActions 重写。
-    const appActions = getAppActions(null);
+    // 4b. Multi-round: продолжение App (stay/expect_reply)
+    // Когда LLM использует stay() или expect_reply() для ожидания асинхронного результата App — симулируем round 2.
+    // Воспроизводим продакшн engagement watcher: round 1 вызывает App → round 2 отвечает после получения результата.
+    // LLM может использовать stay() (наблюдение-ожидание) или expect_reply() (ожидание ответа) — оба сигнала валидны.
+    // H17: getAppActions выводит App-вызовы из скрипта round 1 (последний снимок onStep).
+    // Если LLM ждёт (stay/expect_reply) после вызова App — симулируем round 2 с мок-результатом App.
+    const round1Script = lastSnapshotScript(diagnostics);
+    const appActions = getAppActions(round1Script);
     const isWaiting = result.outcome === "watching" || result.outcome === "waiting_reply";
     if (isWaiting && appActions.length > 0) {
       log.info(
         `  → ${result.outcome}() with ${appActions.length} app action(s), simulating round 2`,
       );
 
-      // 保存 round 1 数据（board arrays 与 result 共享引用，必须先拷贝）
+      // Сохраняем данные round 1 (board arrays разделяют ссылки с result — необходимо сначала скопировать).
+      // mergeScriptExecutionResults делает глубокую копию execution (включая completedActionFacts/errorDetails).
       const r1: TickResult = {
         ...result,
         observations: [...result.observations],
-        execution: {
-          logs: [...result.execution.logs],
-          errors: [...result.execution.errors],
-          instructionErrors: [...result.execution.instructionErrors],
-          errorCodes: [...result.execution.errorCodes],
-          duration: result.execution.duration,
-          thinks: [...result.execution.thinks],
-          queryLogs: [...result.execution.queryLogs],
-          observations: [...result.execution.observations],
-          completedActions: [...result.execution.completedActions],
-          silenceReason: result.execution.silenceReason,
-        },
+        execution: mergeScriptExecutionResults([result.execution]),
         preparedCategories: [...result.preparedCategories],
       };
 
-      // 重置 board 可变状态（保留 preparedCategories — 兼容旧 eval 断言）
-      const appObs = mockAppResults([]);
+      // Сбрасываем изменяемое состояние board (сохраняем preparedCategories — совместимость со старыми eval-утверждениями)
+      const appObs = mockAppResults(appActions);
       board.observations = appObs;
       board.execution = mergeScriptExecutionResults([]);
       board.budget.usedSteps = 0;
@@ -332,19 +406,24 @@ async function runScenarioOnce(
       result = mergeTickResults(r1, r2);
     }
 
-    // 5. 评分
+    // 5. Оценка
+    // H17: передаём grader сгенерированные скрипты по раундам (из диагностических снимков),
+    // чтобы toEvalTickResult правдиво вывел actions/instructions/silenceReason.
+    const executedScripts = diagnostics.promptSnapshots
+      .map((snap) => snap.script)
+      .filter((script): script is string => script !== null);
     const structural = gradeStructural(
-      toEvalTickResult(result),
+      toEvalTickResult(result, executedScripts),
       scenario.structural,
       result.stepsUsed,
     );
 
-    // ADR-139: prompt dump — 失败场景导出诊断快照
+    // ADR-139: prompt dump — экспорт диагностических снимков для провалившихся сценариев
     if (dumpDir && !structural.pass && diagnostics.promptSnapshots.length > 0) {
       const safeId = scenario.id.replace(/[^a-zA-Z0-9._-]/g, "_");
       for (let si = 0; si < diagnostics.promptSnapshots.length; si++) {
         const snap = diagnostics.promptSnapshots[si];
-        // 用数组索引替代 snap.round 避免多轮 tick 中 usedSteps 重置导致文件名冲突
+        // Используем индекс массива вместо snap.round, чтобы избежать конфликтов имён файлов при сбросе usedSteps в многораундовом tick
         const prefix = `${dumpDir}/${safeId}_s${si}`;
         writeFileSync(`${prefix}_system.txt`, snap.system, "utf-8");
         writeFileSync(`${prefix}_user.txt`, snap.user, "utf-8");
@@ -360,7 +439,7 @@ async function runScenarioOnce(
       structural,
       duration: Date.now() - start,
       errors: result.execution.errors,
-      // `needs` 是旧 eval 输出字段名；值来自 legacy preparedCategories。
+      // `needs` — старое имя поля в выводе eval; значение берётся из legacy preparedCategories.
       needs: result.preparedCategories as string[],
     };
   } catch (e) {
@@ -378,7 +457,7 @@ async function runScenarioOnce(
   }
 }
 
-// ── 聚合 ───────────────────────────────────────────────────────────────────
+// ── Агрегация ───────────────────────────────────────────────────────────────────
 
 function aggregateScenario(scenario: EvalScenario, runs: EvalRunResult[]): ScenarioAggregateResult {
   const structuralPasses = runs.filter((r) => r.structural.pass).length;
@@ -395,39 +474,39 @@ function aggregateScenario(scenario: EvalScenario, runs: EvalRunResult[]): Scena
   };
 }
 
-// ── 主入口 ──────────────────────────────────────────────────────────────────
+// ── Главная точка входа ──────────────────────────────────────────────────────────────────
 
-/** 可选参数对象 — 替代位置参数，支持后续扩展。 */
+/** Объект необязательных параметров — заменяет позиционные параметры, упрощает расширение. */
 export interface EvalSuiteOptions {
-  /** 场景列表（默认全部 BRANCH_SCENARIOS） */
+  /** Список сценариев (по умолчанию все BRANCH_SCENARIOS) */
   readonly scenarios?: readonly EvalScenario[];
-  /** 每完成一个场景的所有 runs 后回调（用于 CLI 流式输出） */
+  /** Обратный вызов после завершения всех runs одного сценария (для потокового вывода CLI) */
   readonly onScenarioComplete?: (result: ScenarioAggregateResult) => void;
-  /** ADR-139: 失败场景 prompt dump 目录。设置后自动导出失败场景的 system/user/script。 */
+  /** ADR-139: Директория для дампа промптов провалившихся сценариев. При установке автоматически экспортирует system/user/script. */
   readonly dumpDir?: string;
-  /** 跳过已 pass 的场景（默认 true — 顺序测试模式）。设为 false 全量重跑。 */
+  /** Пропускать уже прошедшие сценарии (по умолчанию true — режим последовательного тестирования). Установить false для полного перезапуска. */
   readonly skipPassed?: boolean;
-  /** 遇到 FAIL 不停止（默认 false — fail-fast 模式）。设为 true 跑完所有场景。 */
+  /** Не останавливаться при FAIL (по умолчанию false — режим fail-fast). Установить true для прохождения всех сценариев. */
   readonly runAll?: boolean;
 }
 
 /**
- * 运行完整 eval suite。
+ * Запускает полный eval suite.
  *
- * @param config — eval runner 配置
- * @param options — 可选参数（场景列表、流式回调等）
+ * @param config — конфигурация eval runner
+ * @param options — необязательные параметры (список сценариев, потоковый обратный вызов и т.д.)
  */
 export async function runEvalSuite(
   config: EvalRunnerConfig,
   options?: EvalSuiteOptions,
 ): Promise<EvalReport> {
-  // 初始化 LLM provider
+  // Инициализируем LLM provider
   const runtimeConfig = loadConfig();
   initProviders(runtimeConfig);
 
   const allScenarios = options?.scenarios ?? ALL_SCENARIOS;
 
-  // 过滤
+  // Фильтрация
   let filtered: readonly EvalScenario[] = allScenarios;
   if (config.filterTags && config.filterTags.length > 0) {
     const tags = new Set(config.filterTags);
@@ -438,14 +517,14 @@ export async function runEvalSuite(
     filtered = filtered.filter((s) => s.id.startsWith(prefix));
   }
 
-  // ADR-139: prompt dump 目录初始化
+  // ADR-139: Инициализация директории для дампа промптов
   const dumpDir = options?.dumpDir;
   if (dumpDir) {
     mkdirSync(dumpDir, { recursive: true });
     log.info(`Prompt dump enabled → ${dumpDir}`);
   }
 
-  // ── 缓存：顺序测试 skip-on-pass ──
+  // ── Кэш: skip-on-pass при последовательном тестировании ──
   const skipPassed = options?.skipPassed ?? true;
   const cache: EvalCache = skipPassed ? loadCache() : {};
   let skippedCount = 0;
@@ -453,7 +532,7 @@ export async function runEvalSuite(
   const results: ScenarioAggregateResult[] = [];
 
   for (const scenario of filtered) {
-    // Skip-on-pass: 已 pass 的场景生成 cached 结果，不调用 LLM
+    // Skip-on-pass: для уже прошедших сценариев генерируем cached-результат, LLM не вызывается
     if (skipPassed && isCachedPass(cache, scenario.id)) {
       skippedCount++;
       const cachedAgg: ScenarioAggregateResult = {
@@ -483,7 +562,7 @@ export async function runEvalSuite(
     results.push(agg);
     options?.onScenarioComplete?.(agg);
 
-    // 写入缓存（每个场景完成后立即持久化，中断不丢进度）
+    // Записываем в кэш (персистим немедленно после каждого сценария, чтобы прогресс не терялся при прерывании)
     cache[scenario.id] = {
       pass: agg.passAtK,
       timestamp: new Date().toISOString(),
@@ -492,7 +571,7 @@ export async function runEvalSuite(
     };
     saveCache(cache);
 
-    // Fail-fast: 遇到失败立即停止，不浪费后续 LLM 调用
+    // Fail-fast: при отказе немедленно останавливаемся, не тратим последующие LLM-вызовы
     if (!agg.passAtK && !options?.runAll) {
       log.info(`FAIL on ${scenario.id} — stopping (use --full to continue past failures)`);
       break;
@@ -503,10 +582,10 @@ export async function runEvalSuite(
     log.info(`Skipped ${skippedCount} cached-pass scenarios (use --full to re-run all)`);
   }
 
-  // ── 按标签聚合（只统计实际运行的场景）──
+  // ── Агрегация по тегам (только фактически запущенные сценарии) ──
   const tagStats: Record<string, AggregatedStat> = {};
   for (const agg of results) {
-    if (agg.cached) continue; // 缓存跳过的不计入统计
+    if (agg.cached) continue; // Пропущенные через кэш не учитываются в статистике
     for (const tag of agg.tags) {
       if (!tagStats[tag]) tagStats[tag] = { pass: 0, total: 0, rate: 0 };
       tagStats[tag].total += agg.runs.length;
@@ -517,11 +596,11 @@ export async function runEvalSuite(
     stat.rate = stat.total > 0 ? stat.pass / stat.total : 0;
   }
 
-  // ── 按社交意图聚合（ADR-138：Intent 取代 Branch 为主聚合维度）──
-  // 可接受集场景按第一个意图归类（主意图）
+  // ── Агрегация по социальному интенту (ADR-138: Intent заменяет Branch как основное измерение) ──
+  // Сценарии с допустимым набором группируются по первому интенту (основной интент)
   const intentStats: Record<string, AggregatedStat> = {};
   for (const agg of results) {
-    if (agg.cached) continue; // 缓存跳过的不计入统计
+    if (agg.cached) continue; // Пропущенные через кэш не учитываются в статистике
     const raw = agg.expectedIntent;
     const intent = Array.isArray(raw) ? raw[0] : raw;
     if (!intentStats[intent]) intentStats[intent] = { pass: 0, total: 0, rate: 0 };

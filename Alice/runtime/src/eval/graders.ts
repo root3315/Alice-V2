@@ -1,15 +1,20 @@
 /**
- * ADR-136 + ADR-138: 结构性评分器。
+ * ADR-136 + ADR-138: Структурный оценщик.
  *
- * ADR-214 Wave B: RecordedAction 已删除。
- * EvalTickResult 使用简化的 EvalAction 接口（fn + type + args）。
- * shell-native 架构下 actions/instructions 始终为空（TickResult 不含这些字段），
- * 但 Eval 场景需要手动注入以测试 grader 逻辑。
+ * ADR-214 Wave B: RecordedAction удалён.
+ * EvalTickResult использует упрощённый интерфейс EvalAction (fn + type + args).
+ *
+ * H17: actions/instructions/silenceReason теперь заполняются ПРАВДИВО из сгенерированного
+ * скрипта (parseScriptActions), а не остаются пустыми. В shell-native архитектуре сам TickResult
+ * не несёт actions/instructions, поэтому eval парсит текст скрипта и сопоставляет командные строки
+ * формам, которые проверяет grader. Это устраняет ложные FAIL в сценариях engage/silence/action/instruction.
  *
  * @see docs/adr/136-model-eval-suite.md
  * @see docs/adr/138-social-intent-truth-model.md
+ * @see src/eval/script-actions.ts — parseScriptActions (источник actions/instructions/silenceReason)
  */
 import type { TickResult } from "../engine/tick/types.js";
+import { parseScriptActions } from "./script-actions.js";
 import type {
   Check,
   CheckTier,
@@ -19,10 +24,10 @@ import type {
   StructuralGradeResult,
 } from "./types.js";
 
-// ── Eval 专用类型 ────────────────────────────────────────────────────────
+// ── Типы, специфичные для Eval ────────────────────────────────────────────────────────
 
 /**
- * Eval 专用动作记录 — 替代旧 RecordedAction，仅保留 grader 需要的字段。
+ * Запись действия для Eval — заменяет старый RecordedAction, сохраняет только поля, нужные grader.
  */
 export interface EvalAction {
   type: "telegram" | "dispatch";
@@ -32,8 +37,8 @@ export interface EvalAction {
 }
 
 /**
- * Eval 专用 TickResult — 添加 actions/instructions/silenceReason 供 graders 使用。
- * shell-native 架构下这些字段在真实运行时始终为空，Eval 场景手动注入。
+ * TickResult для Eval — добавляет actions/instructions/silenceReason для использования в graders.
+ * В shell-native архитектуре эти поля всегда пусты в реальном запуске; в сценариях Eval инжектируются вручную.
  */
 export interface EvalTickResult extends TickResult {
   actions: EvalAction[];
@@ -41,17 +46,45 @@ export interface EvalTickResult extends TickResult {
   silenceReason: string | null;
 }
 
-/** 从 TickResult 创建 EvalTickResult（默认空值）。 */
-export function toEvalTickResult(result: TickResult): EvalTickResult {
+/**
+ * Создаёт EvalTickResult из TickResult, ПРАВДИВО заполняя actions/instructions/silenceReason
+ * из сгенерированных скриптов (по одному на раунд tick).
+ *
+ * H17: раньше здесь жёстко возвращались actions:[] / instructions:[], из-за чего structural grader
+ * никогда не видел действий и систематически выдавал ложный FAIL для engage/silence/action/instruction.
+ * Теперь мы парсим фактический текст скрипта (parseScriptActions) — то же, что сделал бы runtime,
+ * исполнив скрипт.
+ *
+ * @param result — итоговый TickResult (после слияния раундов)
+ * @param scripts — сырые скрипты, выведенные LLM по раундам (из диагностических снимков onStep).
+ *                  Пустой/отсутствующий → действий нет; silenceReason берётся из result.execution.
+ */
+export function toEvalTickResult(result: TickResult, scripts: readonly string[] = []): EvalTickResult {
+  const actions: EvalAction[] = [];
+  const instructions: EvalAction[] = [];
+  // silenceReason из реального исполнения имеет приоритет (runtime мог пометить молчание явно);
+  // иначе выводим из парсинга скрипта (скрипт только из комментариев → no_executable_script).
+  let silenceReason: string | null = result.execution.silenceReason;
+
+  for (const script of scripts) {
+    if (!script) continue;
+    const parsed = parseScriptActions(script);
+    actions.push(...parsed.actions);
+    instructions.push(...parsed.instructions);
+    if (silenceReason === null && parsed.silenceReason !== null) {
+      silenceReason = parsed.silenceReason;
+    }
+  }
+
   return {
     ...result,
-    actions: [],
-    instructions: [],
-    silenceReason: result.execution.silenceReason,
+    actions,
+    instructions,
+    silenceReason,
   };
 }
 
-// ── 分支分类 ─────────────────────────────────────────────────────────────
+// ── Классификация ветвей ─────────────────────────────────────────────────────────────
 
 export type ActualBranch = ExpectedBranch | "no_action" | "llm_failed";
 
@@ -60,7 +93,7 @@ function hasMessage(actions: readonly EvalAction[]): boolean {
 }
 
 /**
- * 根据 EvalTickResult 信号字段判定分支类型。
+ * Определяет тип ветви по сигнальным полям EvalTickResult.
  */
 export function classifyBranch(result: EvalTickResult, steps: number): ActualBranch {
   if (result.outcome === "empty") return "llm_failed";
@@ -85,7 +118,7 @@ export function classifyBranch(result: EvalTickResult, steps: number): ActualBra
   return "no_action";
 }
 
-// ── Intent 分类（ADR-138）─────────────────────────────────────────────────
+// ── Классификация интентов (ADR-138) ─────────────────────────────────────────────────
 
 export const BRANCH_INTENT_MAP: Readonly<Record<ActualBranch, SocialIntent | null>> = {
   reply: "engage",
@@ -103,7 +136,7 @@ export function classifyIntent(branch: ActualBranch): SocialIntent | null {
   return BRANCH_INTENT_MAP[branch];
 }
 
-// ── 内部工具函数 ──────────────────────────────────────────────────────────
+// ── Внутренние вспомогательные функции ──────────────────────────────────────────────────────────
 
 function check(
   name: string,
@@ -115,7 +148,7 @@ function check(
   return { name, pass, expected, actual, tier };
 }
 
-// ── 结构性评分 ────────────────────────────────────────────────────────────
+// ── Структурная оценка ────────────────────────────────────────────────────────────
 
 export function gradeStructural(
   result: EvalTickResult,
