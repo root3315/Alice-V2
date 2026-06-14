@@ -110,6 +110,9 @@ CLEAN_CWD = os.path.join(tempfile.gettempdir(), "claude_proxy_cwd")
 os.makedirs(CLEAN_CWD, exist_ok=True)
 
 _sem = asyncio.Semaphore(MAX_CONCURRENCY)
+# Отдельный бюджет для worki (code-analyze/code-fix): фоновый агентный разбор НЕ должен
+# занимать слоты разговорных тиков Alice — иначе её ответы тормозят даже на sonnet (HIGH-6).
+_worki_sem = asyncio.Semaphore(int(os.getenv("PROXY_WORKI_CONCURRENCY", "2")))
 
 app = FastAPI(title="claude-proxy", version="0.1.0")
 
@@ -514,7 +517,7 @@ async def code_analyze(request: Request):
         "--output-format", "json",
     ]
     try:
-        async with _sem:
+        async with _worki_sem:
             envelope = await asyncio.to_thread(
                 _run_claude_sync, argv, prompt, timeout_s, WORKI_CLONE
             )
@@ -586,7 +589,7 @@ async def code_fix(request: Request):
         "--output-format", "json",
     ]
     try:
-        async with _sem:
+        async with _worki_sem:
             envelope = await asyncio.to_thread(_run_claude_sync, argv, prompt, timeout_s, WORKI_DEV_CLONE)
     except subprocess.TimeoutExpired:
         return JSONResponse(status_code=504, content={"error": {"message": "code-fix timeout"}})

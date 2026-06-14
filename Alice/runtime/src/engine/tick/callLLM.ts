@@ -204,7 +204,7 @@ async function generateBlockStep(
           messages,
           temperature: BLOCK_TEMPERATURE,
           maxRetries: 0,
-          abortSignal: AbortSignal.timeout(BLOCK_TIMEOUT_MS),
+          abortSignal: AbortSignal.timeout(timeoutMs),
         }),
       { maxRetries: 0 },
       name,
