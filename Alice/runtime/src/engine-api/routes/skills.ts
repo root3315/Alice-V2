@@ -79,7 +79,14 @@ function matchesQuery(manifest: SkillManifest, query: string): boolean {
 function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let data = "";
+    let total = 0;
     req.on("data", (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > 1024 * 1024) {
+        req.destroy();
+        reject(new Error("body too large"));
+        return;
+      }
       data += chunk.toString();
     });
     req.on("end", () => {
