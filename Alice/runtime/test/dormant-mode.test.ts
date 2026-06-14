@@ -125,6 +125,14 @@ function buildDormantState(
 // -- 测试 -------------------------------------------------------------------
 
 describe("ADR-225: Dormant Mode", () => {
+  // Детерминируем «сейчас»: фиксируем Date, чтобы quiet-window не зависел от времени суток
+  // машины (T2/T4 раньше падали днём и проходили ночью). Фейкаем только Date, таймеры не трогаем.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  });
+  afterEach(() => vi.useRealTimers());
+
   // T1: quiet window 判断
   describe("T1: isInQuietWindow", () => {
     it("跨午夜 23-7: 凌晨 2 点在 window 内", () => {
