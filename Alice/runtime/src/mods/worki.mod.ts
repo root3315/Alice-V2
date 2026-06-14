@@ -178,7 +178,9 @@ async function pollProgress(id: string): Promise<void> {
     if (!res.ok) return;
     const d = (await res.json()) as { latest?: string; recent?: string[]; updated?: number };
     if (d && (d.latest || (d.recent && d.recent.length))) {
+      const changed = e.progress?.latest !== d.latest;
       e.progress = { latest: d.latest, recent: d.recent, updated: d.updated };
+      if (changed && d.latest) log.info("worki: прогресс агента", { id, latest: d.latest });
     }
   } catch {
     /* прогресс — best-effort, молча */
@@ -468,9 +470,10 @@ export const workiMod = createMod<WorkiState>("worki", {
           p.lastPollMs = now;
           void pollProgress(id);
         }
-        // Ack при старте + периодический прогресс (~75с) → нудж в спросивший чат, чтоб не молчала 5 минут.
-        const dueProgress = !!p.progress?.latest && now - (p.lastNarrateMs ?? p.createdMs) > 75_000;
+        // Ack при старте + периодический прогресс (~45с) → нудж в спросивший чат, чтоб не молчала.
+        const dueProgress = !!p.progress?.latest && now - (p.lastNarrateMs ?? p.createdMs) > 45_000;
         if (p.askGraphId && (!p.acked || dueProgress)) {
+          if (dueProgress) log.info("worki: даю показать прогресс", { id, latest: p.progress?.latest });
           ensureDirected(ctx.graph, p);
         }
         continue;
