@@ -89,6 +89,8 @@ export const channelMod = createMod<ChannelModState>("channel", {
       const attrs = G.getChannel(nodeId);
       // 只处理 Telegram channel 类型（不是 private/group/supergroup）
       if (attrs.chat_type !== "channel") continue;
+      // Недостижимые/удалённые каналы (кикнули/удалили) — не показываем как живые.
+      if (attrs.failure_type === "permanent" || (attrs.reachability_score ?? 1) <= 0) continue;
 
       const unread = attrs.unread ?? 0;
       const role = String(attrs.alice_role ?? "subscriber");
