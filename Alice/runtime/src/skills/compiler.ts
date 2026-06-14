@@ -79,9 +79,9 @@ function compileParams(params: ManifestParam[]): [string, ActionParamDef][] {
 function formatResultAsJson(data: unknown): string[] | null {
   if (data == null) return null;
   const m = new PromptBuilder();
-  // По строке: PromptBuilder.line() схлопывает \n (H15), поэтому pretty-JSON разбиваем сами,
-  // иначе двух-пробельные отступы осиротеют в одну строку. Структура сохраняется.
-  for (const l of JSON.stringify(data, null, 2).split("\n")) m.line(l);
+  // Компактный JSON одной строкой: PromptBuilder.line() схлопывает \n (H15), а потребители/тесты
+  // ждут результат как ОДНУ строку (result[0]). Компактный — и читаемо, и контракт не ломается.
+  m.line(JSON.stringify(data));
   return m.build();
 }
 
