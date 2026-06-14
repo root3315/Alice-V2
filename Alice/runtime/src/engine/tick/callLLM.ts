@@ -305,13 +305,11 @@ export async function callTickLLM(
   contextVars: Record<string, unknown> | undefined,
   selectedProvider?: AvailableProvider,
 ): Promise<TickCallResult> {
+  // M3: LLM-вызов и исполнение шелла/песочницы — РАЗНЫЕ try. Падение Docker/sandbox — это
+  // инфра-аутэйдж, а НЕ ошибка LLM; нельзя штрафовать настроение/каденс как llm_invalid (ADR-274).
+  let generated: Awaited<ReturnType<typeof generateBlockStep>>;
   try {
-    const generated = await generateBlockStep(system, user, selectedProvider);
-    if (generated.terminalSilence) {
-      return makeNoExecutableResult(generated);
-    }
-    const execution = await executeShellScript(generated.step.script, { contextVars });
-    return makeBlockResult(generated, execution);
+    generated = await generateBlockStep(system, user, selectedProvider);
   } catch (e) {
     log.error("Tick LLM call failed", e);
     const provider = safeAuditProviderContext(selectedProvider);
@@ -326,6 +324,30 @@ export async function callTickLLM(
     return {
       ok: false,
       failureKind: classifyTickFailure(e),
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+  if (generated.terminalSilence) {
+    return makeNoExecutableResult(generated);
+  }
+  try {
+    const execution = await executeShellScript(generated.step.script, { contextVars });
+    return makeBlockResult(generated, execution);
+  } catch (e) {
+    // Шелл/песочница упали (напр. Docker Desktop down) — LLM отработал, это host-проблема.
+    log.error("Tick shell execution failed (host/sandbox infra)", e);
+    const provider = safeAuditProviderContext(selectedProvider);
+    writeAuditEvent(tick, "error", "tick", "shell execution failed", {
+      voice,
+      target,
+      error: e instanceof Error ? e.message : String(e),
+      provider: provider?.provider ?? "none",
+      model: provider?.model ?? "none",
+      breakerState: provider?.breakerState ?? "unknown",
+    });
+    return {
+      ok: false,
+      failureKind: "provider_unavailable",
       error: e instanceof Error ? e.message : String(e),
     };
   }
