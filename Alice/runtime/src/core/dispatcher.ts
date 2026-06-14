@@ -254,7 +254,8 @@ export function createAliceDispatcher(options: CreateDispatcherOptions): Dispatc
           // 回滚到执行前状态
           modStates.set(modName, stateBackup);
           log.error(`Instruction ${instruction} failed`, e);
-          return undefined;
+          // H1: sentinel вместо undefined — иначе роут рапортует LLM «успех» и упавшее действие теряется.
+          return { __dispatchError: e instanceof Error ? e.message : String(e) };
         }
 
         // 2. 广播给所有 listener
@@ -294,7 +295,8 @@ export function createAliceDispatcher(options: CreateDispatcherOptions): Dispatc
         return entry.def.impl(c, preparedArgs);
       } catch (e) {
         log.error(`Query ${name} failed`, e);
-        return undefined;
+        // H1: sentinel вместо undefined — чтобы роут не выдал «успех» при упавшем query.
+        return { __dispatchError: e instanceof Error ? e.message : String(e) };
       }
     },
 

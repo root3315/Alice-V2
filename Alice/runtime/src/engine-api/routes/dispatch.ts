@@ -65,6 +65,12 @@ export async function handleDispatchInstruction(
 
   try {
     const result = await deps.dispatchInstruction(instruction, body as Record<string, unknown>);
+    if (result && typeof result === "object" && "__dispatchError" in result) {
+      // H1: impl упал — это НЕ успех, отдаём 500, чтобы вызывающий знал и мог повторить.
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: (result as { __dispatchError: string }).__dispatchError }));
+      return;
+    }
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true, result: result ?? null }));
   } catch (err) {

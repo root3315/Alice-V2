@@ -360,10 +360,12 @@ describe("createAliceDispatcher", () => {
 
   // -- 边缘情况 ----------------------------------------------------------------
 
-  it("dispatch 失败的指令 → 返回 undefined（不崩溃）", () => {
+  it("dispatch 失败的指令 → 返回 sentinel ошибки (не падает)", () => {
     const { dispatcher } = setup();
     const result = dispatcher.dispatch("FAILING_INSTRUCTION", {});
-    expect(result).toBeUndefined();
+    // H1: упавший impl возвращает {__dispatchError} вместо undefined — чтобы вызывающий
+    // знал о провале (роут мапит это в ok:false), а не считал ложным успехом. Диспетчер не падает.
+    expect(result).toMatchObject({ __dispatchError: expect.any(String) });
   });
 
   it("dispatch 失败不影响 listener", () => {

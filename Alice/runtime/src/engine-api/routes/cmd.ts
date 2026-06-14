@@ -1,8 +1,8 @@
 /**
- * Engine API — 统一指令/查询端点。
+ * Engine API — единая точка входа для команд и запросов.
  *
- * POST /cmd/:name → 先查 query index，再查 instruction index。
- * CLI 只需 kebab→snake 后 POST 到 /cmd/，无需知道 query 还是 instruction。
+ * POST /cmd/:name → сначала ищет в query index, затем в instruction index.
+ * CLI достаточно сделать kebab→snake и POST на /cmd/ — не нужно знать, query это или instruction.
  *
  * @see docs/adr/217-cli-unification.md
  */
@@ -63,6 +63,11 @@ export async function handleCmd(
   if (kind === "query" && deps.query) {
     try {
       const result = await deps.query(name, args);
+      if (result && typeof result === "object" && "__dispatchError" in result) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: (result as { __dispatchError: string }).__dispatchError }));
+        return;
+      }
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, kind: "query", result: result ?? null }));
       return;
@@ -80,6 +85,11 @@ export async function handleCmd(
   if (kind === "instruction" && deps.dispatchInstruction) {
     try {
       const result = await deps.dispatchInstruction(name, args);
+      if (result && typeof result === "object" && "__dispatchError" in result) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: (result as { __dispatchError: string }).__dispatchError }));
+        return;
+      }
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, kind: "instruction", result: result ?? null }));
       return;

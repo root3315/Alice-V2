@@ -61,6 +61,12 @@ export async function handleQuery(
 
   try {
     const result = await deps.query(name, body as Record<string, unknown>);
+    if (result && typeof result === "object" && "__dispatchError" in result) {
+      // H1: query-impl упал — отдаём 500, а не ложный «успех».
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: (result as { __dispatchError: string }).__dispatchError }));
+      return;
+    }
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true, result: result ?? null }));
   } catch (err) {
