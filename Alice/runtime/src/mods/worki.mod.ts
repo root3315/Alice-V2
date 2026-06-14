@@ -125,6 +125,31 @@ const STATUS_LEADS = ["ага, ", "так, ", "сейчас ", "о, ", "угу, 
 const STATUS_THROTTLE_DM_MS = 18_000;
 const STATUS_THROTTLE_GROUP_MS = 60_000;
 
+/**
+ * Похоже ли отправленное сообщение на ДОСТАВКУ результата (а не на короткий ack/реакцию/
+ * постороннюю реплику в том же чате)? Она пересказывает результат СВОИМИ словами, поэтому
+ * точный матч не годится: для готового разбора ловим топикальное пересечение (файлы/длинные
+ * термины из задачи+результата), для ошибки — маркеры провала. Так короткое «привет/секунду»
+ * больше не «съедает» готовый ответ (КРИТ-баг доставки: раньше delivered ставился от ЛЮБОГО
+ * сообщения в спросивший чат).
+ */
+export function looksLikeDelivery(text: string | undefined, p: Pending): boolean {
+  const t = (text ?? "").toLowerCase();
+  if (t.length < 24) return false; // ack / реакция / приветствие — это не результат
+  if (t.length >= 200) return true; // длинный текст — почти наверняка пересказ разбора
+  if (
+    p.status === "error" &&
+    /не вы|не получ|не смог|не могу|ошибк|сбой|упал|fail|недоступ|увы|таймаут|завис/.test(t)
+  ) {
+    return true; // объявление провала общими словами, без терминов задачи
+  }
+  const src = `${p.task} ${p.result}`.toLowerCase();
+  const distinctive = (src.match(/[a-zа-яё0-9_./-]{5,}/gi) ?? []).filter(
+    (w) => w.length >= 8 || /[._/-]/.test(w),
+  );
+  return distinctive.some((tok) => t.includes(tok));
+}
+
 /** Канал-источник из авто-параметра _reply_chat (deriveParams ← TARGET_CHAT, числовой ID). */
 function askGraphFromArgs(args: Record<string, unknown>): string | undefined {
   const n = Number(args._reply_chat);
@@ -405,7 +430,14 @@ export const workiMod = createMod<WorkiState>("worki", {
       // delivered ставим ТОЛЬКО если результат уже доставляется (directed) — иначе постороннее
       // сообщение в этот чат до показа результата тихо «съело» бы его (MEDIUM regression).
       if (p.askGraphId !== chatId) continue;
-      if (p.directed && (p.status === "done" || p.status === "error") && !p.delivered) {
+      if (
+        p.directed &&
+        (p.status === "done" || p.status === "error") &&
+        !p.delivered &&
+        // КРИТ-фикс: засчитываем доставку ТОЛЬКО если сообщение похоже на пересказ результата,
+        // а не короткий ack/реакция/посторонняя реплика в том же чате (иначе ответ терялся).
+        looksLikeDelivery(args.text != null ? String(args.text) : "", p)
+      ) {
         p.delivered = true;
       } else if (p.status === "running" && p.directed) {
         // Она черкнула в спросивший чат во время работы → засчитываем ack/нарратив прогресса.
