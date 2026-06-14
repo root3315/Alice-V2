@@ -198,15 +198,21 @@ export async function editMessage(
   text: string,
 ): Promise<void> {
   await globalLimiter.acquire();
-  const mdParsed = tryParseMarkdown(text);
-  if (mdParsed) {
-    await client.editMessage({
-      chatId,
-      message: msgId,
-      text: { text: mdParsed.text, entities: mdParsed.entities },
-    });
-  } else {
-    await client.editMessage({ chatId, message: msgId, text });
+  try {
+    const mdParsed = tryParseMarkdown(text);
+    if (mdParsed) {
+      await client.editMessage({
+        chatId,
+        message: msgId,
+        text: { text: mdParsed.text, entities: mdParsed.entities },
+      });
+    } else {
+      await client.editMessage({ chatId, message: msgId, text });
+    }
+  } catch (err) {
+    // M8: классифицируем сбой как и другие действия (кик/forbidden → канал unreachable),
+    // иначе сырой error мог привести к опасному ретраю в чат, откуда выгнали → риск бана.
+    rethrowTelegramActionFailure(err, "edit_message", { chatId: String(chatId), msgId });
   }
 }
 
