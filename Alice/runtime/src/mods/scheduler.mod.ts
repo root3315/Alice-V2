@@ -33,8 +33,16 @@ const UPCOMING_WINDOW_MS = 3 * 60_000;
 // -- Состояние Mod -----------------------------------------------------------
 
 interface SchedulerState {
-  /** Список задач, сработавших в этом тике (для отображения в contribute). */
-  firedThisTick: Array<{ id: number; action: string; target: string | null }>;
+  /** Задачи, сработавшие недавно (показываются в contribute несколько тиков — против потери). */
+  firedThisTick: Array<{
+    id: number;
+    action: string;
+    target: string | null;
+    /** Сколько раз уже показана в contribute (#4: дроп после нескольких показов, а не одного). */
+    shown?: number;
+    /** Когда сработала (мс) — для TTL-бэкстопа. */
+    firedMs?: number;
+  }>;
 }
 
 // -- Определение Mod ---------------------------------------------------------
@@ -202,10 +210,16 @@ export const schedulerMod = createMod<SchedulerState>("scheduler", {
     // Логика очистки перенесена в начало onTickEnd (до обработки просроченных задач)
   })
   .onTickEnd((ctx) => {
-    // Сначала очистить записи о срабатываниях прошлого тика, затем обработать просроченные задачи текущего
-    // Жизненный цикл: onTickStart → contribute → LLM → onTickEnd
-    // Таким образом contribute видит firedThisTick, записанный onTickEnd предыдущего тика
-    ctx.state.firedThisTick = [];
+    // Жизненный цикл: onTickStart → contribute → LLM → onTickEnd. contribute видит firedThisTick,
+    // записанный на предыдущем onTickEnd. #4: НЕ стираем сразу (раньше — один показ, и если тот тик
+    // был «тихим»/упал LLM, напоминание терялось навсегда: at-задача уже деактивирована). Считаем
+    // показы (этот тик их уже показал) и дропаем после FIRED_MAX_SHOWS или по TTL.
+    const now = ctx.nowMs;
+    const FIRED_MAX_SHOWS = 2; // переживает один «плохой» тик; больше — риск повторного напоминания
+    const FIRED_TTL_MS = 10 * 60_000;
+    ctx.state.firedThisTick = ctx.state.firedThisTick
+      .map((t) => ({ ...t, shown: (t.shown ?? 0) + 1 }))
+      .filter((t) => (t.shown ?? 0) < FIRED_MAX_SHOWS && now - (t.firedMs ?? now) < FIRED_TTL_MS);
 
     const db = getDb();
 
@@ -217,11 +231,14 @@ export const schedulerMod = createMod<SchedulerState>("scheduler", {
       .all();
 
     for (const task of dueTasks) {
-      // Записать срабатывание
+      if (ctx.state.firedThisTick.some((t) => t.id === task.id)) continue; // уже показывается — не дублируем
+      // Записать срабатывание (shown=0 → покажется в contribute следующего тика)
       ctx.state.firedThisTick.push({
         id: task.id,
         action: task.action,
         target: task.target,
+        shown: 0,
+        firedMs: now,
       });
 
       if (task.type === "at") {
