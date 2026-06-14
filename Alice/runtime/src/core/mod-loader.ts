@@ -12,6 +12,7 @@ import { consolidationMod } from "../mods/consolidation.mod.js";
 import { diaryMod } from "../mods/diary.mod.js";
 import { episodeMod } from "../mods/episode.mod.js";
 import { feedsMod } from "../mods/feeds.mod.js";
+import { healthWatchMod } from "../mods/health-watch.mod.js";
 import { learningMod } from "../mods/learning.mod.js";
 import { memoryMod } from "../mods/memory.mod.js";
 import { observerMod } from "../mods/observer.mod.js";
@@ -53,5 +54,6 @@ export function loadAllMods(): ModDefinition[] {
     diaryMod,
     episodeMod, // ADR-215: причинно-следственный граф когнитивных эпизодов — после diary
     workiMod, // code_ask/code_fix/code_pr: чистые агенты по коду Worki (async, через прокси)
+    healthWatchMod, // проактивный инцидент-алёрт: замечает свои error-аномалии → говорит владельцу в личку
   ];
 }
