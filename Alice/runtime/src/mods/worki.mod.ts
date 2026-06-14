@@ -37,7 +37,10 @@ const DEFAULT_TIMEOUT_MIN = 5;
 const MAX_TIMEOUT_MIN = 20;
 // Готовый-но-недоставленный результат держим по WALL-CLOCK (а не по счётчику тиков —
 // прошлый костыль SHOW_TICKS ронял ответ, пока она отвлекалась на другие чаты).
-const RESULT_TTL_MS = 5 * 60_000;
+// Раньше было 5 мин → ответ терялся, если она надолго занята в другом чате. Теперь держим ДОЛГО:
+// она НЕ должна «забыть» отдать результат. Дроп лишь по жёсткому хард-капу (защита от накопления)
+// или если спросивший чат стал недостижим (см. onTickEnd).
+const UNDELIVERED_MAX_MS = 6 * 60 * 60_000; // 6h
 // Сторож зависших running (AbortSignal в postJson обычно снимает раньше — это belt-and-suspenders).
 const RUNNING_TTL_MS = (MAX_TIMEOUT_MIN + 5) * 60_000;
 const GIT_TIMEOUT_MS = 120_000;
@@ -98,14 +101,20 @@ function askGraphFromArgs(args: Record<string, unknown>): string | undefined {
   return Number.isFinite(n) ? (telegramChannelId(n) as string) : undefined;
 }
 
-/** Один раз ставим направленное давление на спросивший канал → движок приведёт тик туда. */
-function bumpDirected(graph: WorldModel, e: Pending): void {
-  if (e.directed || !e.askGraphId) return;
+/**
+ * Держим направленное давление на спросивший канал, ПОКА результат не доставлен → движок будет
+ * приводить тик туда. Re-assert: если давление уже потрачено (упало до 0), а ответ ещё не отдан —
+ * ставим снова (без инфляции, только до 1), чтобы она не «забыла» доделать доставку.
+ */
+function ensureDirected(graph: WorldModel, e: Pending): void {
+  if (!e.askGraphId) return;
   try {
     if (graph.has(e.askGraphId)) {
       const cur = Number((graph.getChannel(e.askGraphId) as { pending_directed?: number }).pending_directed ?? 0);
-      graph.updateChannel(e.askGraphId, { pending_directed: cur + 1, last_directed_ms: Date.now() });
-      e.directed = true; // только если канал есть и давление реально выставлено
+      if (cur <= 0) {
+        graph.updateChannel(e.askGraphId, { pending_directed: 1, last_directed_ms: Date.now() });
+      }
+      e.directed = true; // канал есть → давление активно (и переустанавливаем при потере)
     }
     // канал ещё не в графе → directed=false, повторим на следующем onTickEnd (не эмитим в чужой чат)
   } catch (err) {
@@ -403,10 +412,30 @@ export const workiMod = createMod<WorkiState>("worki", {
         }
         continue;
       }
-      // done/error: один раз толкаем спросивший чат, чтобы движок привёл тик туда.
-      if (!p.directed) bumpDirected(ctx.graph, p);
-      // Недоставленный результат живёт по wall-clock, потом сдаёмся.
-      if (p.completedMs && now - p.completedMs > RESULT_TTL_MS) pending.delete(id);
+      // done/error. Если спросивший чат стал недостижим (кикнули/удалён) — отдавать некуда,
+      // НЕ зацикливаемся: бросаем результат с логом (доставлять в чужой чат нельзя).
+      if (p.askGraphId && ctx.graph.has(p.askGraphId)) {
+        const ch = ctx.graph.getChannel(p.askGraphId) as {
+          failure_type?: string;
+          reachability_score?: number;
+        };
+        if (ch.failure_type === "permanent" || (ch.reachability_score ?? 1) <= 0) {
+          log.warn("worki: спросивший чат недостижим — отдавать некуда, бросаю результат", {
+            id,
+            kind: p.kind,
+            ch: p.askGraphId,
+          });
+          pending.delete(id);
+          continue;
+        }
+      }
+      // Держим направленное давление на спросивший чат, ПОКА не доставим (re-assert) → не «забывает».
+      ensureDirected(ctx.graph, p);
+      // Хард-кап: снимаем лишь если очень долго (часы) не смогли отдать — защита от вечного накопления.
+      if (p.completedMs && now - p.completedMs > UNDELIVERED_MAX_MS) {
+        log.warn("worki: результат не доставлен за хард-кап, снимаю", { id, kind: p.kind });
+        pending.delete(id);
+      }
     }
     // Персист готовых-недоставленных (running-промисы рестарт не переживают) → переживут рестарт.
     const saved: Record<string, Pending> = {};
