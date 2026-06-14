@@ -19,6 +19,16 @@ import { recordConsults } from "../engine/episode.js";
 import { ensureChannelId, ensureContactId } from "../graph/constants.js";
 import { safeDisplayName } from "../graph/display.js";
 
+/** #11: безопасный JSON.parse — null/битый ряд → null (не роняем результат запроса). */
+function safeJson(s: string | null | undefined): unknown {
+  if (!s) return null;
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
 const CONTINUITY_FRESHNESS_MS = 2 * 60 * 60 * 1000;
 const CONTINUITY_TYPES = new Set(["unfinished", "unresolved_emotion", "interrupted"]);
 
@@ -73,10 +83,10 @@ export const episodeMod = createMod<{}>("episode", {
         voice: row.voice,
         outcome: row.outcome,
         tickRange: [row.tickStart, row.tickEnd],
-        residue: row.residue ? JSON.parse(row.residue) : null,
-        causedBy: row.causedBy ? JSON.parse(row.causedBy) : null,
-        consults: row.consults ? JSON.parse(row.consults) : null,
-        resolves: row.resolves ? JSON.parse(row.resolves) : null,
+        residue: safeJson(row.residue),
+        causedBy: safeJson(row.causedBy),
+        consults: safeJson(row.consults),
+        resolves: safeJson(row.resolves),
       };
     },
     format(result) {
@@ -117,8 +127,8 @@ export const episodeMod = createMod<{}>("episode", {
         id: r.id,
         target: r.target ? safeDisplayName(ctx.graph, r.target) : null,
         outcome: r.outcome,
-        residue: r.residue ? JSON.parse(r.residue) : null,
-        causedBy: r.causedBy ? JSON.parse(r.causedBy) : null,
+        residue: safeJson(r.residue),
+        causedBy: safeJson(r.causedBy),
       }));
     },
     format(result) {

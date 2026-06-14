@@ -202,7 +202,8 @@ export function p6CuriosityWithHistory(
   for (const cid of contacts) {
     const attrs = G.getContact(cid);
 
-    const wTier = DUNBAR_TIER_WEIGHT[attrs.tier] / MAX_TIER_WEIGHT;
+    // L2: fallback 0.8 как в p5-response — иначе «грязный» tier даёт undefined→NaN, отравляя P6.
+    const wTier = (DUNBAR_TIER_WEIGHT[attrs.tier] ?? 0.8) / MAX_TIER_WEIGHT;
     const surprise = computeSurprise(attrs, nowMs, graphAgeDays);
 
     // γ: скидка информационного прироста (снижение для недавно активных контактов)

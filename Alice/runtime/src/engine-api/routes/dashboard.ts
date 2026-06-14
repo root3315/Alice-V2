@@ -820,7 +820,7 @@ function fmtN(x,d){ return x==null?'—':Number(x).toFixed(d==null?2:d); }
 function fmtInt(x){ return x==null?'—':Number(x).toLocaleString('ru'); }
 function fmtDur(sec){ if(sec==null) return '—'; sec=Math.floor(sec); const d=Math.floor(sec/86400),h=Math.floor(sec%86400/3600),m=Math.floor(sec%3600/60); if(d>0) return d+'д '+h+'ч'; if(h>0) return h+'ч '+m+'м'; if(m>0) return m+'м'; return sec+'с'; }
 function fmtAgo(ms){ if(!ms) return '—'; const s=Math.floor((Date.now()-Number(ms))/1000); if(s<0) return 'скоро'; if(s<60) return s+'с назад'; const m=Math.floor(s/60); if(m<60) return m+'м назад'; const h=Math.floor(m/60); if(h<24) return h+'ч назад'; return Math.floor(h/24)+'д назад'; }
-function esc(s){ return String(s==null?'':s).replace(/[<>&]/g,m=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[m])); }
+function esc(s){ return String(s==null?'':s).replace(/[<>&"']/g,m=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[m])); }
 const ax = { color:'#8b97a7' };
 
 /* Создаёт/обновляет график. Возвращает экземпляр (или null). Создаём ТОЛЬКО если

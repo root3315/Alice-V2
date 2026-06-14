@@ -22,7 +22,7 @@
 
 import { type BeliefDict, BeliefStore } from "../belief/store.js";
 import { LEGACY_TICK_INTERVAL_MS } from "../pressure/clock.js";
-import { labelToCategory } from "./constants.js";
+import { ALICE_SELF, labelToCategory } from "./constants.js";
 import type {
   AgentAttrs,
   ChannelAttrs,
@@ -266,7 +266,7 @@ export class WorldModel {
    * Читает created_ms узла self; при отсутствии — возвращает оценку tick × 60s.
    */
   getGraphAgeMs(nowMs: number): number {
-    const entry = this.nodes.get("self");
+    const entry = this.nodes.get(ALICE_SELF);
     if (entry && entry.type === "agent") {
       const createdMs = entry.attrs.created_ms ?? 0;
       if (createdMs > 0) return Math.max(0, nowMs - createdMs);
