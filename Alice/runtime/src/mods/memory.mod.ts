@@ -272,9 +272,9 @@ export const memoryMod = createMod<MemoryState>("memory", {
           recapLines.push(
             PromptBuilder.of(`[${startAgo} ago — ${endAgo} ago] ${seg.length} messages`),
           );
-          recapLines.push(PromptBuilder.of(`First: ${firstSender}: ${firstText}`));
+          recapLines.push(PromptBuilder.of(`First: ${firstSender}: ${firstText}`.replace(/\s*\n\s*/g, " ")));
           if (seg.length > 1) {
-            recapLines.push(PromptBuilder.of(`Last: ${lastSender}: ${lastText}`));
+            recapLines.push(PromptBuilder.of(`Last: ${lastSender}: ${lastText}`.replace(/\s*\n\s*/g, " ")));
           }
         }
 
@@ -320,11 +320,9 @@ export const memoryMod = createMod<MemoryState>("memory", {
           // ADR-110/166: 统一使用 estimateAgeS
           const agoS = estimateAgeS(m, ctx.nowMs, ctx.tick);
           const ago = humanDurationAgo(agoS);
-          const preview = m.text
-            ? m.text.length > 80
-              ? `${m.text.slice(0, 80)}...`
-              : m.text
-            : "(no text)";
+          // Сплющиваем переносы: .of() — однострочный (её код-ответы бывают многострочными).
+          const flat = (m.text ?? "").replace(/\s*\n\s*/g, " ").trim();
+          const preview = flat ? (flat.length > 80 ? `${flat.slice(0, 80)}...` : flat) : "(no text)";
           echoLines.push(PromptBuilder.of(`[${ago}] you: "${preview}"`));
         }
         items.push(

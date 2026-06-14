@@ -32,6 +32,7 @@ export const messagingActions: TelegramActionDef[] = [
       chatId: z.number().describe("Target chat"),
       text: z.string().describe("Message text"),
       replyTo: z.number().optional().describe("Message ID to reply to"),
+      topicId: z.number().optional().describe("Forum: id топика (по умолчанию — активный топик чата)"),
       mentions: z
         .array(z.object({ offset: z.number(), length: z.number(), userId: z.number() }))
         .optional()
@@ -74,8 +75,14 @@ export const messagingActions: TelegramActionDef[] = [
         }
       }
 
+      // Forum: если топик не задан явно — слать в активный топик чата (#25 хранит
+      // current_topic_id из входящих). В не-форумах он undefined → обычная отправка.
+      const topicId =
+        (args.topicId as number | undefined) ??
+        (ctx.G.has(graphId) ? (ctx.G.getChannel(graphId) as { current_topic_id?: number }).current_topic_id : undefined);
       const msgId = await sendText(ctx.client, rawId, text, {
         replyToMsgId: args.replyTo,
+        topicId,
         mentions: args.mentions,
       });
 
