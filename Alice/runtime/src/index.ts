@@ -1014,7 +1014,16 @@ async function main() {
 
   // 6. Запуск трёх потоков
   const evolveController = startEvolveLoop(evolveState);
-  const actPromise = startActLoop(actCtx);
+  // C2: ACT-цикл с fatal-guard (симметрично EVOLVE). Ошибки забора задач уже ловятся внутри
+  // startReActLoop (release lock + skip); этот guard — на НЕОЖИДАННЫЙ краш: логируем fatal и
+  // гасим EVOLVE тоже, чтобы не остаться «думающей, но не действующей» — супервайзер перезапустит.
+  // .catch на самом промисе → await actPromise при shutdown не выбросит.
+  const actPromise = startActLoop(actCtx).catch((err) => {
+    log.fatal("ACT loop crashed unexpectedly", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    evolveController.abort(err instanceof Error ? err.message : String(err));
+  });
   log.info("EVOLVE + ACT loops started", {
     dtMin: config.dtMin,
     dtMax: config.dtMax,

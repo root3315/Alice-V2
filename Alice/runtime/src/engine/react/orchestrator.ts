@@ -274,7 +274,20 @@ export async function startReActLoop(ctx: ActContext): Promise<void> {
       // чтобы не тратить токены LLM на группы, из которых уже вышли.
       if (item.target) {
         const rawId = extractNumericId(item.target) ?? item.target;
-        if (await isGroupOutboundBlocked(ctx.client, ctx.G, item.target, rawId)) {
+        let memberBlocked = false;
+        try {
+          memberBlocked = await isGroupOutboundBlocked(ctx.client, ctx.G, item.target, rawId);
+        } catch (err) {
+          // C1+C2: транзиентная ошибка проверки членства не должна ни ронять ACT-поток,
+          // ни оставлять processing-lock на таргете навсегда. Снимаем lock и пропускаем.
+          log.warn("membership check failed → release lock + skip", {
+            target: item.target,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          ctx.queue.markComplete(item.target);
+          continue;
+        }
+        if (memberBlocked) {
           log.info("Engagement skipped: not a group member", { target: item.target });
           ctx.queue.markComplete(item.target);
           if (item.observation) {
@@ -309,7 +322,19 @@ export async function startReActLoop(ctx: ActContext): Promise<void> {
           reasonCode: "slot_created",
         });
       }
-      const slot = await initSlot(ctx, item);
+      let slot: EngagementSlot;
+      try {
+        slot = await initSlot(ctx, item);
+      } catch (err) {
+        // C1+C2: ошибка инициализации слота (fetchRecentMessages: flood-wait/дисконнект) не должна
+        // ни ронять весь ACT-поток, ни оставлять processing-lock на таргете навсегда.
+        log.error("initSlot failed → release lock + skip", {
+          target: item.target,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        if (item.target) ctx.queue.markComplete(item.target);
+        continue;
+      }
       active.push(slot);
       log.info("Engagement slot created", {
         target: item.target,
