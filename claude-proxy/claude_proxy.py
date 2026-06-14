@@ -341,7 +341,10 @@ def _run_claude_streaming_progress(
         argv,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        # stderr СЛИВАЕМ в stdout: иначе на длинной --verbose задаче буфер stderr переполняется,
+        # claude блокируется на записи, поток стопорится → соединение рвётся (fetch failed).
+        # Один дренируемый поток; не-JSON строки (шум stderr) пропускаются парсером ниже.
+        stderr=subprocess.STDOUT,
         text=True,
         encoding="utf-8",
         env=_CHILD_ENV,
@@ -377,8 +380,7 @@ def _run_claude_streaming_progress(
         if proc.poll() is None:
             proc.kill()
     if result is None:
-        err = proc.stderr.read() if proc.stderr else ""
-        raise RuntimeError(f"streaming: нет result-event (rc={proc.returncode}): {(err or '')[:500]}")
+        raise RuntimeError(f"streaming: нет result-event (rc={proc.returncode})")
     return result
 
 

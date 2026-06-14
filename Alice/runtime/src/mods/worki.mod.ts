@@ -197,7 +197,7 @@ async function pollProgress(id: string): Promise<void> {
     if (d && (d.latest || (d.recent && d.recent.length))) {
       const changed = e.progress?.latest !== d.latest;
       e.progress = { latest: d.latest, recent: d.recent, updated: d.updated };
-      if (changed && d.latest) log.info("worki: прогресс агента", { id, latest: d.latest });
+      if (changed && d.latest) log.debug("worki: прогресс агента", { id, latest: d.latest });
     }
   } catch {
     /* прогресс — best-effort, молча */
@@ -515,7 +515,7 @@ export const workiMod = createMod<WorkiState>("worki", {
               p.lastStatusMs = now;
               p.lastStatusText = latest;
               p.statusCount = (p.statusCount ?? 0) + 1;
-              log.info("worki: статус отправлен", { id, latest });
+              log.debug("worki: статус отправлен", { id, latest });
             } catch (err) {
               log.warn("worki: статус не отправлен", { id, err: (err as Error).message });
             }
