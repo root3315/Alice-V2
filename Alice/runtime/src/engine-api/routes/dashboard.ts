@@ -93,12 +93,18 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
       .orderBy(desc(actionLog.id))
       .limit(40)
       .all();
+    const byVoice = d
+      .select({ voice: actionLog.voice, c: sql<number>`count(*)` })
+      .from(actionLog)
+      .groupBy(actionLog.voice)
+      .all();
     db = {
       ok: true,
       ticks,
       actions,
       successRate: actions > 0 ? ok / actions : null,
       recent: recent.reverse(),
+      byVoice,
     };
   } catch (e) {
     db = { ok: false, error: (e as Error).message };
@@ -198,11 +204,12 @@ const DASHBOARD_HTML = `<!doctype html>
     <div class="panel"><h2>Голоса (распределение)</h2><canvas id="voiceChart"></canvas></div>
     <div class="panel"><h2>Активность — последние действия</h2><canvas id="actChart"></canvas></div>
   </div>
+  <div class="panel"><h2>Действия по голосам</h2><canvas id="voiceActChart"></canvas></div>
   <div class="panel"><h2>Каналы</h2><div id="channels"></div></div>
   <div class="panel"><h2>Контакты (по tier)</h2><div id="contacts"></div></div>
 </div>
 <script>
-let voiceChart, actChart;
+let voiceChart, actChart, vaChart;
 const $ = (id) => document.getElementById(id);
 function card(k,v){ return '<div class="card"><div class="k">'+k+'</div><div class="v">'+v+'</div></div>'; }
 function fmtPct(x){ return x==null?'—':(x*100).toFixed(0)+'%'; }
@@ -233,6 +240,12 @@ async function refresh(){
     const cols=rec.map(r=>r.success?'#3fb950':'#f85149');
     if(!actChart){ actChart=new Chart($('actChart'),{type:'bar',data:{labels:al,datasets:[{data:ad,backgroundColor:cols}]},options:{plugins:{legend:{display:false}},scales:{y:{display:false},x:{ticks:{color:'#8b97a7',maxTicksLimit:12}}}}}); }
     else { actChart.data.labels=al; actChart.data.datasets[0].data=ad; actChart.data.datasets[0].backgroundColor=cols; actChart.update(); }
+  }
+  // действия по голосам
+  const bv=(d.db&&d.db.byVoice)||[]; const bvl=bv.map(x=>x.voice||'?'); const bvd=bv.map(x=>x.c);
+  if(bv.length){
+    if(!vaChart){ vaChart=new Chart($('voiceActChart'),{type:'bar',data:{labels:bvl,datasets:[{data:bvd,backgroundColor:'#bc8cff'}]},options:{plugins:{legend:{display:false}},scales:{y:{ticks:{color:'#8b97a7'}},x:{ticks:{color:'#8b97a7'}}}}}); }
+    else { vaChart.data.labels=bvl; vaChart.data.datasets[0].data=bvd; vaChart.update(); }
   }
   // каналы
   const ch=(d.channels)||[];
