@@ -240,8 +240,15 @@ function analyzePersonalityDrift(db: ReturnType<typeof getDb>): PersonalityDrift
   // π 变化速率：相邻快照的 L2 距离 / tick 差
   const drifts: number[] = [];
   for (let i = 1; i < snapshots.length; i++) {
-    const prev = z.array(z.number()).parse(JSON.parse(snapshots[i - 1].weights));
-    const curr = z.array(z.number()).parse(JSON.parse(snapshots[i].weights));
+    let prev: number[];
+    let curr: number[];
+    try {
+      // M20: одна битая строка weights не должна ронять весь diagnose.
+      prev = z.array(z.number()).parse(JSON.parse(snapshots[i - 1].weights));
+      curr = z.array(z.number()).parse(JSON.parse(snapshots[i].weights));
+    } catch {
+      continue;
+    }
     const tickDiff = snapshots[i].tick - snapshots[i - 1].tick;
     if (tickDiff <= 0) continue;
 

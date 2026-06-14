@@ -123,7 +123,7 @@ function parseSinceMs(value: string | undefined): number | null {
 }
 
 function readPromptSnapshot(path: string): PromptExecutionSnapshot | null {
-  const filename = path.split("/").at(-1) ?? path;
+  const filename = path.split(/[\\/]/).at(-1) ?? path; // M19: и win32 (\), не только posix (/) — иначе grain-диагностик слеп на Windows
   const match = PROMPT_LOG_RE.exec(filename);
   if (!match) return null;
 
