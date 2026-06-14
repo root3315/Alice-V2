@@ -589,8 +589,8 @@ export function computeClassPacingUtility(opts: {
 /**
  * ADR-261 Wave 3: timing utility по ритмическому профилю, только в режиме shadow.
  *
- * Функция производит только диагностические значения, не участвует в текущем мультипликативном оценивании IAUS. В будущем Wave 4, если будет включена,
- * сможет действовать только на non-bypass unsolicited private/channel proactive.
+ * Wave 4 (ВКЛЮЧЕНО): utility умножается в итоговый скор кандидата. Действует только на non-bypass
+ * unsolicited private/channel proactive (для bypass/группы/без профиля utility=1.0 — эффекта нет).
  */
 export function computeTimingShadowUtility(opts: {
   chatType: string | undefined;
@@ -1261,6 +1261,11 @@ export function scoreAllCandidatesDetailed(
           compensatedScore *= 1 + dBoost * topDesire.urgency;
         }
       }
+
+      // ADR-261 Wave 4 (ВКЛЮЧЕНО): IAUS-тайминг — для проактива (non-bypass unsolicited) в неудобный
+      // по ритму собеседника момент снижаем скор, чтобы не писать первой не вовремя. utility = 1.0 во
+      // всех неприменимых случаях (bypass/группа/нет профиля) → ответы и срочное НЕ задеваются.
+      compensatedScore *= timingShadow.utility;
 
       // Фильтрация по ε
       if (compensatedScore <= EPSILON) {

@@ -2208,7 +2208,7 @@ describe("ADR-268: emotion action utility", () => {
 describe("ADR-261 Wave 3: rhythm timing shadow utility", () => {
   const nowMs = BASE_NOW_MS;
 
-  it("eligible profile computes shadow utility without changing IAUS score", () => {
+  it("eligible profile applies timing utility to IAUS score (Wave 4 enabled)", () => {
     const G = buildGraph([{ id: "channel:quiet", tierContact: 50, chatType: "private" }]);
     const tensionMap = new Map([["channel:quiet", tension({ tau1: 1.0, tau3: 1.0 })]]);
     const baseConfig = buildIAUSConfig(G, tensionMap, {
@@ -2234,10 +2234,12 @@ describe("ADR-261 Wave 3: rhythm timing shadow utility", () => {
     expect(base).not.toBeNull();
     expect(shadow).not.toBeNull();
     if (base && shadow) {
-      expect(shadow.bestV).toBeCloseTo(base.bestV, 8);
+      const u = shadow.candidate.diagnostics?.timingShadow?.utility ?? 1;
+      expect(u).toBeLessThan(1);
       expect(shadow.candidate.diagnostics?.timingShadow?.reason).toBe("eligible");
-      expect(shadow.candidate.diagnostics?.timingShadow?.utility).toBeLessThan(1);
-      expect(shadow.candidate.diagnostics?.timingShadow?.shadowNetValue).toBeLessThan(shadow.bestV);
+      // Wave 4 ВКЛЮЧЕНО: eligible-тайминг теперь снижает итоговый скор (раньше shadow-only).
+      expect(shadow.bestV).toBeLessThan(base.bestV);
+      expect(shadow.bestV).toBeCloseTo(base.bestV * u, 6);
     }
   });
 
