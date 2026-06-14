@@ -142,8 +142,8 @@ export async function initSlot(ctx: ActContext, item: ActionQueueItem): Promise<
     }
   }
 
-  // 群聊 subcycle 上限收束：群聊每次 engagement 最多 2 条消息（私聊保持 5）
-  const maxSubcycles = ChatTarget.isGroupChat(targetChatType ?? "private") ? 2 : undefined;
+  // M4: до 5 сообщений за engagement и в группе, и в лс — она сама решает сколько (не режем до 2).
+  const maxSubcycles = ChatTarget.isGroupChat(targetChatType ?? "private") ? 5 : undefined;
 
   return {
     item,
