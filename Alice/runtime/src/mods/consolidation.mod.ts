@@ -1,12 +1,12 @@
 /**
- * Consolidation Mod — M4 记忆压缩。
+ * Consolidation Mod — M4 сжатие памяти.
  *
- * 当 Reflection 声部激活时，检查是否有衰减事实（R < 0.2）需要压缩。
- * 如果某联系人有 >= 3 条 R < 0.2 事实 → 标记可压缩。
- * LLM 调用 consolidate_facts 生成摘要后原子替换。
+ * При активации голоса Reflection проверяет, есть ли угасающие факты (R < 0.2) для сжатия.
+ * Если у контакта >= 3 фактов с R < 0.2 → помечаются как сжимаемые.
+ * LLM вызывает consolidate_facts для генерации сводки, затем атомарная замена.
  *
- * 指令：consolidate_facts
- * contribute：memory-housekeeping section（提示 LLM 执行压缩）
+ * Инструкция: consolidate_facts
+ * contribute: секция memory-housekeeping (подсказывает LLM выполнить сжатие)
  */
 import { z } from "zod";
 import { createMod } from "../core/mod-builder.js";
@@ -22,13 +22,13 @@ import {
   normalizeFactContent,
 } from "./relationships.mod.js";
 
-// -- 常量 --------------------------------------------------------------------
+// -- Константы ---------------------------------------------------------------
 
-/** 一次压缩中需要的最少衰减事实数。 */
+/** Минимальное количество угасающих фактов для одного сжатия. */
 const MIN_FADING_FACTS = 3;
-/** 压缩后生成的摘要事实的 stability。 */
+/** Stability сводного факта, создаваемого после сжатия. */
 const CONSOLIDATED_STABILITY = 2.0;
-/** 衰减阈值（与 relationships.mod 一致）。 */
+/** Порог угасания (согласован с relationships.mod). */
 const FORGET_THRESHOLD = 0.2;
 
 // -- Mod 状态 ----------------------------------------------------------------
@@ -123,15 +123,18 @@ export const consolidationMod = createMod<ConsolidationState>("consolidation", {
       const facts = getContactFacts(ctx.graph, contactId);
       if (facts.length === 0) return { success: false, error: "no facts for contact" };
 
-      // 删除原始事实节点（归一化匹配，与 RECALL_FACT 一致）
+      // H2: сначала СОБИРАЕМ цели удаления (без мутации графа) — удалим в самом конце, после того
+      // как саммари надёжно создано. Иначе сбой addFact/addRelation оставит факты удалёнными
+      // без саммари (потеря данных). Конечное состояние идентично, порядок безопаснее.
       const removedContents: string[] = [];
+      const toRemove: string[] = [];
       for (const content of originalFacts) {
         const normalized = normalizeFactContent(content);
         const target = facts.find(
           (f) => normalizeFactContent(f.attrs.content ?? "") === normalized,
         );
         if (target) {
-          ctx.graph.removeEntity(target.id);
+          toRemove.push(target.id);
           removedContents.push(content);
         }
       }
@@ -168,6 +171,8 @@ export const consolidationMod = createMod<ConsolidationState>("consolidation", {
         source: "consolidation",
       });
       ctx.graph.addRelation(contactId, "knows", iid);
+      // H2: саммари создано и связано — теперь безопасно удаляем исходные факты (атомарность отката).
+      for (const id of toRemove) ctx.graph.removeEntity(id);
       ctx.state.consolidationCount++;
 
       return {
