@@ -1,8 +1,8 @@
 /**
- * Engine API 服务器 — TCP HTTP 接口。
+ * Engine API сервер — TCP HTTP интерфейс.
  *
- * Skill CLI 脚本通过 TCP 与运行中的 Alice 引擎通信，
- * 读写配置和图属性。容器内通过 host.docker.internal 访问。
+ * Skill CLI скрипты общаются с работающим движком Alice по TCP,
+ * читают и записывают конфиг и атрибуты графа. Внутри контейнера доступен через host.docker.internal.
  *
  * @see docs/adr/202-engine-api.md
  */
@@ -19,6 +19,7 @@ import { handleAlbum } from "./routes/album.js";
 import { handleChatTail } from "./routes/chat.js";
 import { handleCmd } from "./routes/cmd.js";
 import { handleConfigGet } from "./routes/config.js";
+import { handleDashboard } from "./routes/dashboard.js";
 import { handleDispatchInstruction } from "./routes/dispatch.js";
 import { handleEngineSelfcheck, handleEngineTick } from "./routes/engine.js";
 import { handleGraphGet, handleGraphSet } from "./routes/graph.js";
@@ -50,17 +51,17 @@ export interface EngineApiDeps {
     youtubeApiKey: string;
   };
   G: WorldModel;
-  /** 获取当前 tick 数（引擎查询端点使用）。 */
+  /** Получить текущий номер тика (используется конечной точкой запроса движка). */
   getTick?: () => number;
-  /** Skill 注册表（capability 验证用）。undefined = Phase 1 宽松模式。 */
+  /** Реестр скиллов (для проверки capability). undefined = мягкий режим Phase 1. */
   registry?: Registry;
-  /** true = strict（无 header / 未知 skill → 403），false/undefined = lenient。 */
+  /** true = строгий (нет заголовка / неизвестный скилл → 403), false/undefined = мягкий. */
   strictCapabilities?: boolean;
   /** Optional target allowlist for LLM-facing target resolution. */
   targetWhitelist?: ReadonlySet<string> | null;
   /** Neutral IM transport adapters keyed by platform. */
   transportAdapters?: Record<string, TransportAdapter>;
-  /** Telegram 消息转发回调（irc forward: 跨聊天转发 + 可选评论）。 */
+  /** Колбэк пересылки сообщений Telegram (irc forward: пересылка между чатами + опциональный комментарий). */
   telegramForward?: (params: {
     fromChatId: number;
     msgId: number;
@@ -74,15 +75,15 @@ export interface EngineApiDeps {
     caption?: string;
     replyTo?: number;
   }) => Promise<{ msgId: number | null; sendMode: string; assetId: string }>;
-  /** Telegram 文本发送回调（irc say/reply）。 */
+  /** Колбэк отправки текста Telegram (irc say/reply). */
   telegramSend?: (params: {
     chatId: number;
     text: string;
     replyTo?: number;
   }) => Promise<{ msgId: number | null }>;
-  /** Telegram 已读回调（irc read）。 */
+  /** Колбэк отметки прочитанного Telegram (irc read). */
   telegramMarkRead?: (chatId: number) => Promise<{ ok: true }>;
-  /** Telegram reaction 回调（irc react）。 */
+  /** Колбэк реакции Telegram (irc react). */
   telegramReact?: (params: {
     chatId: number;
     msgId: number;
@@ -126,16 +127,16 @@ export interface EngineApiDeps {
   query?: (name: string, args: Record<string, unknown>) => Promise<unknown> | unknown;
   /** Dispatcher command kind resolver for /cmd routing. */
   resolveCommandKind?: (name: string) => "query" | "instruction" | undefined;
-  /** Mod 定义列表（供 /meta/commands 端点生成命令目录）。 */
+  /** Список определений модов (для генерации каталога команд на /meta/commands). */
   getMods?: () => readonly import("../core/types.js").ModDefinition[];
-  /** TCP 端口号。0 = OS 自动分配。 */
+  /** Номер TCP-порта. 0 = автоматическое назначение ОС. */
   port?: number;
 }
 
 /**
- * 简易路由分发。
+ * Простой маршрутизатор запросов.
  *
- * 路径不含版本前缀——进程内 TCP IPC，不是公共 REST API。
+ * Пути без префикса версии — внутрипроцессный TCP IPC, не публичный REST API.
  * - GET  /config/:key
  * - GET  /chat/:chatId/tail
  * - GET  /engine/tick
@@ -172,7 +173,7 @@ export function routeRequest(
       ? mergeRegistryWithBuiltIns(deps.registry)
       : mergeRegistryWithBuiltIns({});
 
-  // capability 检查
+  // Проверка capability
   const capMode = deps.strictCapabilities ? "strict" : "lenient";
   const capCheck = checkCapability(req, registry, capMode);
   if (!capCheck.allowed) {
@@ -199,6 +200,12 @@ export function routeRequest(
   }
 
   const resource = segments[0];
+
+  // --- dashboard (read-only stats UI) ---
+  if (resource === "dashboard" && method === "GET") {
+    handleDashboard(segments[1], req, res, deps);
+    return;
+  }
 
   // --- config ---
   if (resource === "config" && method === "GET" && segments.length === 2) {
@@ -354,9 +361,9 @@ export function routeRequest(
 }
 
 /**
- * 启动 Engine API 服务器（TCP）。
+ * Запустить Engine API сервер (TCP).
  *
- * @returns { cleanup, port } — cleanup 关闭服务器；port 为实际监听端口
+ * @returns { cleanup, port } — cleanup закрывает сервер; port — фактический порт прослушивания
  */
 export async function startEngineApi(
   deps: EngineApiDeps,
