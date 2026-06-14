@@ -17,6 +17,9 @@ import type { ContributionItem } from "../core/types.js";
 import { section } from "../core/types.js";
 import { getDb } from "../db/connection.js";
 import { type CPointer, surface } from "../engine/consciousness.js";
+import { createLogger } from "../utils/logger.js";
+
+const log = createLogger("metacognition");
 
 /** Порог значимости события для рефлексии (salience 0..1). */
 export const SALIENCE_THRESHOLD = 0.7;
@@ -112,6 +115,8 @@ export const metacognitionMod = createMod<MetacognitionState>("metacognition", {
         ),
     );
     ctx.state.pending = { summary, shown: 0 };
+    // Видимость в консоли: «ага, сейчас осмысляет вот это» (поведение не меняет).
+    log.info("metacognition: осмысляет событие", { summary, salience: chosen.salience });
     ctx.state.lastReflectMs = now;
     ctx.state.reflectedIds.push(chosen.id);
     if (ctx.state.reflectedIds.length > REFLECTED_CAP) {
