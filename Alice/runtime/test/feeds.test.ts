@@ -176,7 +176,7 @@ describe("feed sources", () => {
       const items = await fetchTodayInHistory(3);
 
       expect(items).toHaveLength(1);
-      expect(items[0].title).toBe("1900年 某事件");
+      expect(items[0].title).toBe("1900 г. — 某事件");
     });
   });
 });

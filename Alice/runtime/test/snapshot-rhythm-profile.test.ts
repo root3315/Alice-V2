@@ -29,7 +29,7 @@ describe("snapshot rhythm profile projection", () => {
     expect(snapshot.timingSignals).toHaveLength(1);
     expect(snapshot.timingSignals?.[0]).toContain("Mika");
     expect(rendered).toContain("## Timing");
-    expect(rendered).toContain("活跃窗口");
+    expect(rendered).toContain("активном окне");
     expect(rendered).not.toMatch(/phase|amplitude|a24|b24|sin|cos/i);
   });
 
@@ -120,7 +120,7 @@ describe("snapshot rhythm profile projection", () => {
 
     expect(rendered).toContain("## Timing");
     expect(rendered).toContain("Tech Feed");
-    expect(rendered).toContain("活跃窗口");
+    expect(rendered).toContain("активном окне");
   });
 });
 

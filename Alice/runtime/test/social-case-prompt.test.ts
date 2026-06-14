@@ -141,7 +141,7 @@ describe("ADR-262 social case prompt replay", () => {
     expect(rendered).toContain("Social case with A");
     expect(rendered).toContain("Case brief:");
     expect(rendered).toMatch(/Case handle: [a-z]+-[a-z]+/);
-    expect(rendered).toContain("发生了什么:");
+    expect(rendered).toContain("Что произошло:");
     expect(rendered).toContain("Action runbook:");
     expect(rendered).toContain("self social-case-note");
     expect(rendered).toMatch(/--case "[a-z]+-[a-z]+"/);

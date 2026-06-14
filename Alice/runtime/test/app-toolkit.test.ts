@@ -55,7 +55,7 @@ describe("use_calendar_app (pure function)", () => {
   it("默认返回今天的日历", () => {
     const data = getCalendarData("", 8);
     expect(data.gregorian).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(data.weekday).toMatch(/^星期/);
+    expect(data.weekday).toMatch(/^(воскресенье|понедельник|вторник|среда|четверг|пятница|суббота)$/);
     expect(data.lunar).toBeTruthy();
     expect(Array.isArray(data.holidays)).toBe(true);
   });
@@ -63,7 +63,7 @@ describe("use_calendar_app (pure function)", () => {
   it("可选 date 参数返回指定日期", () => {
     const data = getCalendarData("2026-01-01", 8);
     expect(data.gregorian).toBe("2026-01-01");
-    expect(data.weekday).toBe("星期四");
+    expect(data.weekday).toBe("четверг");
   });
 
   it("春节检测正确（2026-02-17 = 农历正月初一）", () => {
@@ -92,7 +92,7 @@ describe("use_calendar_app (pure function)", () => {
     const data = getCalendarData("2026-02-18", 8);
     expect(data.solarTerm).toBe("雨水");
     expect(data.solarTermPoem).not.toBeNull();
-    expect(data.solarTermPoem).toContain("杜甫");
+    expect(data.solarTermPoem).toContain("Ду Фу");
   });
 
   it("非节气日 solarTermPoem 为 null", () => {
@@ -103,7 +103,7 @@ describe("use_calendar_app (pure function)", () => {
   it("历史上的今天命中", () => {
     const data = getCalendarData("2026-02-19", 8);
     expect(data.todayInHistory).not.toBeNull();
-    expect(data.todayInHistory).toContain("哥白尼");
+    expect(data.todayInHistory).toContain("Коперник");
   });
 
   it("历史上的今天未命中", () => {
@@ -118,7 +118,7 @@ describe("use_calendar_app (pure function)", () => {
     expect(data).toHaveProperty("period");
     expect(typeof data.datetime).toBe("string");
     expect(typeof data.timezone).toBe("string");
-    expect(["凌晨", "上午", "下午", "晚上"]).toContain(data.period);
+    expect(["ночь", "утро", "день", "вечер"]).toContain(data.period);
   });
 
   it("精选数据集覆盖 ≥ 200 条目", () => {
@@ -154,7 +154,7 @@ describe("use_countdown_app (pure function)", () => {
     const data = getCountdownData("2026-02-19", 8);
     expect(data).not.toBeNull();
     // biome-ignore lint/style/noNonNullAssertion: guarded by test assertion
-    expect(data!.weekday).toBe("星期四");
+    expect(data!.weekday).toBe("четверг");
   });
 
   it("无效日期返回 null", () => {

@@ -62,7 +62,7 @@ describe("buildShellGuide", () => {
 
     expect(guide).toContain(batchedTitle);
     expect(guide).toContain("irc tail --count 8");
-    expect(guide).toContain('irc reply --ref 3390931 --text "我也是这么觉得 前面那句太好笑了"');
+    expect(guide).toContain('irc reply --ref 3390931 --text "я тоже так считаю, та фраза выше — это слишком смешно"');
     expect(guide).toContain("irc read");
     expect(guide).toContain("batch the pure reads into one script first");
 

@@ -119,7 +119,7 @@ describe("manifest compiler", () => {
     expect(paramName).toBe("city");
     expect(paramDef.type).toBe("string");
     expect(paramDef.required).toBe(true);
-    expect(paramDef.description).toBe('City name (e.g. "Beijing", "东京")');
+    expect(paramDef.description).toBe('City name (e.g. "Beijing", "Токио")');
     // 无 inject — LLM 可见参数
     expect(paramDef.inject).toBeUndefined();
   });

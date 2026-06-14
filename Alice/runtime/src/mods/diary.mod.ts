@@ -369,9 +369,9 @@ export const diaryMod = createMod<DiaryState>("diary", {
     const active = thoughts
       .map((t) => ({ ...t, eSal: effectiveSalience(t, nowMs) }))
       .filter((t) => t.eSal >= INJECT_FLOOR)
-      // H4: глобальные мысли (about=null — само-рефлексия, ночные, общие) универсально релевантны,
-      // иначе они занимают слот и затухают, ни разу не показавшись LLM (вся inner-world фича инертна).
-      .filter((t) => t.about === null || thoughtMatchesCurrentTarget(t, currentTarget))
+      // ПРИМ.: global-мысли (about=null) намеренно НЕ попадают в per-target prompt (тест diary:308).
+      // Аудит (H4) предлагал их инжектить (ADR-82), но это смена когниции — вынесено на решение владельца.
+      .filter((t) => thoughtMatchesCurrentTarget(t, currentTarget))
       .sort((a, b) => {
         return b.eSal - a.eSal;
       });

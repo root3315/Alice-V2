@@ -133,9 +133,9 @@ describe("ADR-206: Channel Mod", () => {
     vi.restoreAllMocks();
 
     const text = result[0].lines.map((l) => String(l)).join("");
-    expect(text).toContain("你的频道");
+    expect(text).toContain("твой канал");
     expect(text).toContain("admin");
-    expect(text).toContain("发布冷却中");
+    expect(text).toContain("кулдаун публикации");
   });
 
   // T5: token budget
@@ -184,7 +184,7 @@ describe("ADR-206: Channel Mod", () => {
     vi.restoreAllMocks();
 
     const text = result[0].lines.map((l) => String(l)).join("");
-    expect(text).toContain("最近已分享");
+    expect(text).toContain("недавно уже делилась");
   });
 
   // T8: state 更新

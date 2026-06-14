@@ -88,7 +88,7 @@ describe("ADR-261 rhythm spectrum", () => {
 
     expect(profile.timezoneOffsetHours).toBe(9);
     expect(profile.peakWindows.some((w) => includesHour(w, 21))).toBe(true);
-    expect(line).toContain("本地");
+    expect(line).toContain("по местному");
   });
 
   it("均匀噪声不生成高置信 active/quiet 投影", () => {

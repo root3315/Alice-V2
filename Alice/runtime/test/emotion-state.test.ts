@@ -71,7 +71,7 @@ describe("ADR-268 emotion state", () => {
   it("does not expose internal ids or scalar fields in normal prompt projection", () => {
     const state = deriveEmotionState([episode({ id: "secret-id" })], NOW);
     const projection = renderEmotionProjection(state);
-    expect(projection).toContain("刺刺的");
+    expect(projection).toContain("колет где-то внутри");
     expect(projection).not.toContain("secret-id");
     expect(projection).not.toContain("valence");
     expect(projection).not.toContain("emotion_kind");
@@ -83,10 +83,10 @@ describe("ADR-268 emotion state", () => {
         deriveEmotionState([episode({ id: kind, kind, intensity: 0.8 })], NOW),
       );
 
-    expect(projectionFor("hurt")).toContain("想问问");
-    expect(projectionFor("touched")).toContain("好暖");
-    expect(projectionFor("uneasy")).toContain("不确定");
-    expect(projectionFor("annoyed")).toContain("刺到了");
+    expect(projectionFor("hurt")).toContain("Хочется спросить");
+    expect(projectionFor("touched")).toContain("тёплые");
+    expect(projectionFor("uneasy")).toContain("не уверена");
+    expect(projectionFor("annoyed")).toContain("задело");
 
     const combined = [
       projectionFor("hurt"),

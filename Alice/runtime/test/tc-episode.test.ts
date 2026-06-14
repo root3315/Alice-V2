@@ -345,7 +345,7 @@ describe("structured block episode continuation", () => {
     expect(result.episodeRounds).toBe(1);
     expect(result.tcMeta?.hostContinuationTrace).toEqual(["error_recovery"]);
     expect(promptRounds).toEqual([0, 1]);
-    expect(result.observations.join("\n")).toContain("不知道那是谁");
+    expect(result.observations.join("\n")).toContain("не знаю, кто это");
     expect(deps.callLLM).toHaveBeenCalledTimes(2);
   });
 
@@ -373,7 +373,7 @@ describe("structured block episode continuation", () => {
     expect(result.episodeRounds).toBe(0);
     expect(result.tcMeta?.hostContinuationTrace).toBeUndefined();
     expect(promptRounds).toEqual([0]);
-    expect(result.observations.join("\n")).toContain("这些已经做完了，不要再重复");
+    expect(result.observations.join("\n")).toContain("это уже сделано, не повторяй");
     expect(deps.callLLM).toHaveBeenCalledTimes(1);
   });
 

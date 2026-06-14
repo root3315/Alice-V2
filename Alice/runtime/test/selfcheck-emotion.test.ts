@@ -18,7 +18,7 @@ describe("ADR-268 selfcheck emotion projection", () => {
 
     const result = getSelfcheckData(G, NOW, 100, "mood");
     const lines = result.sections[0]?.lines ?? [];
-    expect(lines.join("\n")).toContain("好累");
+    expect(lines.join("\n")).toContain("Так устала");
     expect(lines.join("\n")).not.toContain("shorter replies");
     expect(lines.join("\n")).toContain("recent cause");
     expect(lines.join("\n")).not.toContain("emotion_kind");

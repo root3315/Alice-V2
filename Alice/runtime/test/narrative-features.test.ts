@@ -54,7 +54,7 @@ describe("threads.mod — thread_review (VI-2)", () => {
     expect(threadInstructions.thread_review).toBeDefined();
     expect(threadInstructions.thread_review.params.threadId).toBeDefined();
     expect(threadInstructions.thread_review.params.summary).toBeDefined();
-    expect(threadInstructions.thread_review.description).toContain("摘要");
+    expect(threadInstructions.thread_review.description).toContain("резюме");
   });
 
   it("空 summary 被 Zod schema 拒绝（z.string().trim().min(1)）", () => {

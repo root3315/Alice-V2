@@ -507,7 +507,7 @@ describe("relationships.mod — tier-based tone guidance", () => {
       (i) => "key" in i && (i as { key: string }).key === "contact-profile",
     );
     const content = JSON.stringify(profileItem);
-    expect(content).toContain("tone: 跟Amy说话随意亲密，像最亲的人");
+    expect(content).toContain("tone: С Amy говори совсем свободно и тепло, как с самым родным человеком");
   });
 
   it("tier 500 → 礼貌得体", () => {
@@ -519,7 +519,7 @@ describe("relationships.mod — tier-based tone guidance", () => {
       (i) => "key" in i && (i as { key: string }).key === "contact-profile",
     );
     const content = JSON.stringify(profileItem);
-    expect(content).toContain("tone: 跟Bob保持礼貌得体");
+    expect(content).toContain("tone: С Bob будь вежливой и корректной");
   });
 
   it("tier 50 → 轻松自然", () => {
@@ -531,7 +531,7 @@ describe("relationships.mod — tier-based tone guidance", () => {
       (i) => "key" in i && (i as { key: string }).key === "contact-profile",
     );
     const content = JSON.stringify(profileItem);
-    expect(content).toContain("tone: 跟Charlie说话轻松自然，像日常朋友");
+    expect(content).toContain("tone: С Charlie говори легко и естественно, как с обычным приятелем");
   });
 
   it("无 target 时不注入语气指导", () => {
