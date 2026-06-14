@@ -15,6 +15,7 @@ import { feedsMod } from "../mods/feeds.mod.js";
 import { healthWatchMod } from "../mods/health-watch.mod.js";
 import { learningMod } from "../mods/learning.mod.js";
 import { memoryMod } from "../mods/memory.mod.js";
+import { metacognitionMod } from "../mods/metacognition.mod.js";
 import { observerMod } from "../mods/observer.mod.js";
 import { pressureMod } from "../mods/pressure.mod.js";
 import { relationshipsMod } from "../mods/relationships.mod.js";
@@ -47,6 +48,7 @@ export function loadAllMods(): ModDefinition[] {
     consolidationMod,
     learningMod,
     consciousnessMod,
+    metacognitionMod, // Wave 4: рефлексия — на значимое событие внутренний шаг осмысления (после consciousness)
     strategyMod,
     schedulerMod,
     feedsMod,
