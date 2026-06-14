@@ -227,16 +227,19 @@ export function withRequestLog(
       const tag = skill ? ` [${skill}]` : "";
       log.info(`${req.method} ${req.url}${tag} → ${res.statusCode} (${duration}ms)`);
     });
-    // handler 可能返回 Promise（async），捕获未处理错误
-    const result = handler(req, res);
-    if (result instanceof Promise) {
-      result.catch((err) => {
-        log.error("unhandled error in request handler", err);
-        if (!res.headersSent) {
-          res.writeHead(500, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "internal server error" }));
-        }
-      });
+    // handler 可能返回 Promise（async）或同步 throw — оба случая роняли процесс (C1).
+    const fail = (err: unknown) => {
+      log.error("unhandled error in request handler", err);
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "internal server error" }));
+      }
+    };
+    try {
+      const result = handler(req, res);
+      if (result instanceof Promise) result.catch(fail);
+    } catch (err) {
+      fail(err);
     }
   };
 }

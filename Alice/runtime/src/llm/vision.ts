@@ -88,6 +88,7 @@ const wdTaggerResponseSchema = z.object({
 let _vlmModel: LanguageModel | null = null;
 let _vlmConfigKey = "";
 let _visionAuthDisabledKey = "";
+let _visionAuthDisabledUntil = 0; // H11: time-bounded latch — транзиентный 401/403 не глушит vision навсегда
 
 /**
  * 获取 VLM 语言模型实例。
@@ -290,8 +291,8 @@ export async function describeMedia(
   if (!config.visionModel) return undefined;
 
   const visionConfigKey = `${config.visionBaseUrl}|${config.visionApiKey}|${config.visionModel}`;
-  if (_visionAuthDisabledKey === visionConfigKey) {
-    log.debug("Vision skipped: provider auth disabled", { mediaType });
+  if (_visionAuthDisabledKey === visionConfigKey && Date.now() < _visionAuthDisabledUntil) {
+    log.debug("Vision skipped: provider auth disabled (cooling down)", { mediaType });
     return undefined;
   }
 
@@ -373,12 +374,14 @@ export async function describeMedia(
     }
 
     if (!description) return undefined;
+    _visionAuthDisabledUntil = 0; // успех → снять кулдаун немедленно (H11)
     setCachedDescription(fileUniqueId, mediaType, description);
     return description;
   } catch (e) {
     if (isAuthFailure(e)) {
       _visionAuthDisabledKey = visionConfigKey;
-      log.warn("Vision disabled after provider auth failure", {
+      _visionAuthDisabledUntil = Date.now() + 5 * 60_000; // повтор через 5 мин, не навсегда (H11)
+      log.warn("Vision disabled (5 min) after provider auth failure", {
         mediaType,
         error: e instanceof Error ? e.message : String(e),
       });

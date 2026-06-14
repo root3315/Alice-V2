@@ -19,6 +19,12 @@ let _errorStream: WriteStream | null = null;
 if (!process.env.VITEST && process.env.NODE_ENV !== "test") {
   ensureParentDir(ALICE_ERROR_LOG_PATH);
   _errorStream = createWriteStream(ALICE_ERROR_LOG_PATH, { flags: "a" });
+  // H18: без error-listener сбой записи (диск полон / права) рушит весь процесс через
+  // unhandled 'error' — ровно когда бот пишет ошибку. Гасим и отключаем файловый репортер.
+  _errorStream.on("error", (err) => {
+    _errorStream = null; // reporter уже null-safe (_errorStream?.write)
+    console.error("alice-errors.log write failed, file logging disabled:", err);
+  });
   root.addReporter({
     log(logObj) {
       // consola level: 0=fatal/error, 1=warn

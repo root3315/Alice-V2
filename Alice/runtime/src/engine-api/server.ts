@@ -278,16 +278,14 @@ export function routeRequest(
   // --- skills ---
   if (resource === "skills") {
     if (method === "GET" && segments[1] === "search") {
-      handleSkillSearch(req, res);
-      return;
+      return handleSkillSearch(req, res);
     }
     if (method === "GET" && segments[1] === "list") {
       handleSkillList(req, res);
       return;
     }
     if (method === "GET" && segments[1] === "info" && segments.length === 3) {
-      handleSkillInfo(segments[2], req, res);
-      return;
+      return handleSkillInfo(segments[2], req, res);
     }
     if (method === "POST" && segments[1] === "install") {
       return handleSkillInstall(req, res);
