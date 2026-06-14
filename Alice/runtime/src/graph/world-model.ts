@@ -70,6 +70,8 @@ export interface IncrementalSnapshot {
   dirtyNodeEntries: Map<string, NodeEntry>;
   /** dirty 节点中已删除的 ID（快照时图中不存在但 dirtySet 中记录的节点）。 */
   deletedNodeIds: Set<string>;
+  /** H8: полный набор id узлов НА МОМЕНТ снапшота — чтобы при откате удалять только реально новые. */
+  snapshotNodeIds?: Set<string>;
   /** 如果边需要重建，包含全量边数据。 */
   edges?: Array<{ src: string; dst: string; data: EdgeData }>;
   beliefsDict: BeliefDict;
@@ -502,6 +504,7 @@ export class WorldModel {
       tick: this._tick,
       dirtyNodeEntries: new Map(),
       deletedNodeIds: new Set(),
+      snapshotNodeIds: new Set(this.nodes.keys()), // H8: что существовало на момент снапшота
       beliefsDict: this.beliefs.toDict(),
     };
 
@@ -554,10 +557,13 @@ export class WorldModel {
     // 3. 删除执行期间新创建的节点（快照中既不在 entries 也不在 deleted 中）
     const toRemove: string[] = [];
     for (const nodeId of this.dirtyNodes) {
-      if (!snap.dirtyNodeEntries.has(nodeId) && !snap.deletedNodeIds.has(nodeId)) {
-        if (this.nodes.has(nodeId)) {
-          toRemove.push(nodeId);
-        }
+      // H8: удаляем только узлы, РЕАЛЬНО созданные после снапшота (которых не было в snapshotNodeIds).
+      // Узел, существовавший на снапшоте (даже чистый и изменённый позже), НЕ удаляем — иначе потеря данных.
+      const createdAfterSnapshot = snap.snapshotNodeIds
+        ? !snap.snapshotNodeIds.has(nodeId)
+        : !snap.dirtyNodeEntries.has(nodeId) && !snap.deletedNodeIds.has(nodeId);
+      if (createdAfterSnapshot && this.nodes.has(nodeId)) {
+        toRemove.push(nodeId);
       }
     }
     for (const nodeId of toRemove) {
