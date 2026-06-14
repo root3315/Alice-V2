@@ -2,14 +2,18 @@
  * Worki Mod — анализ и фикс кода Worki через ЧИСТЫЕ агенты, всё АСИНХРОННО.
  *
  * - code_ask: read-only разбор кода (прокси /v1/code-analyze, агент в read-only клоне).
- * - code_fix: правит баг + гоняет относящиеся тесты + ветка+коммит локально
- *   (прокси /v1/code-fix, агент в ПИСЧЕМ dev-клоне). БЕЗ push/PR.
+ * - code_fix: правит баг + узкий тест + ветка+коммит локально (прокси /v1/code-fix). Без push.
  * - code_pr:  пушит ветку фикса в worki-alice + открывает PR (Node: git push + GitHub API).
  *
- * Все три АСИНХРОННЫЕ: impl запускает в фоне и сразу возвращается (тик не виснет);
- * результат впрыскивается в её контекст через contribute() → она пересказывает своим
- * голосом. Гейты — человеческие в чате: доложила баг → «бери» → code_fix → «открыть
- * PR?» → code_pr. Мержит человек. Токен worki-alice — host-only (.env), в песочницу не идёт.
+ * ДОСТАВКА (после аудита async-delivery): результат привязан к спросившему каналу
+ * (`askGraphId`, захват TARGET_CHAT через deriveParams). На завершении `onTickEnd`
+ * ставит НАПРАВЛЕННОЕ давление (`pending_directed`) на этот канал → движок гарантированно
+ * приведёт тик туда (= «доделала текущее → сразу отдала»). Факт доставки ловим listener'ом
+ * SEND_MESSAGE. `contribute()` — чистый (без мутаций); жизненный цикл/TTL — в `onTickEnd`
+ * по wall-clock, удаляем только после доставки. Гейты — человеческие в чате.
+ *
+ * Phase B (TODO): персистентность очереди в ctx.state (переживать рестарт), топик форума
+ * в send_message, target-scoped contribution (полностью убрать окно межчат-утечки).
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -18,6 +22,8 @@ import { createMod } from "../core/mod-builder.js";
 import { PromptBuilder } from "../core/prompt-style.js";
 import { header } from "../core/types.js";
 import type { ContributionItem } from "../core/types.js";
+import { telegramChannelId } from "../graph/constants.js";
+import type { WorldModel } from "../graph/world-model.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("worki");
@@ -28,7 +34,13 @@ const CODE_ANALYZE_URL = process.env.PROXY_CODE_ANALYZE_URL ?? `${PROXY}/v1/code
 const CODE_FIX_URL = process.env.PROXY_CODE_FIX_URL ?? `${PROXY}/v1/code-fix`;
 const DEFAULT_TIMEOUT_MIN = 5;
 const MAX_TIMEOUT_MIN = 20;
-const SHOW_TICKS = 12; // сколько тиков держать готовый результат (с запасом: она отвлекается на др. чаты и не успевает переслать за 3 тика)
+// Готовый-но-недоставленный результат держим по WALL-CLOCK (а не по счётчику тиков —
+// прошлый костыль SHOW_TICKS ронял ответ, пока она отвлекалась на другие чаты).
+const RESULT_TTL_MS = 5 * 60_000;
+// Сторож зависших running (AbortSignal в postJson обычно снимает раньше — это belt-and-suspenders).
+const RUNNING_TTL_MS = (MAX_TIMEOUT_MIN + 5) * 60_000;
+const GIT_TIMEOUT_MS = 120_000;
+const GIT_ENV = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
 
 // worki-alice (репо-песочница) + токен (host-only, из .env — в Docker-песочницу не идёт).
 const WORKI_ALICE_REPO = process.env.WORKI_ALICE_REPO ?? "root3315/worki-alice";
@@ -36,8 +48,7 @@ const WORKI_ALICE_TOKEN = process.env.WORKI_ALICE_TOKEN ?? "";
 const DEV_CLONE = process.env.WORKI_DEV_CLONE ?? "C:\\Users\\sozda\\alice-worki-dev";
 const BASE_BRANCH = process.env.WORKI_BASE_BRANCH ?? "main";
 
-// Краткая «душа» — чтобы ответ был в голосе Алисы. Только это из её личности идёт агенту:
-// НЕ переписка, НЕ дневник, НЕ полный мануал. (Выжимка тех-голоса из SOUL.md.)
+// Краткая «душа» — чтобы ответ был в голосе Алисы. Только это из личности идёт агенту.
 const SOUL_BRIEF =
   "Ты — Алиса: живая девушка, не бот и не поисковая строка. Про технику и код говоришь " +
   "по-человечески и по делу — можешь иметь мнение, поворчать на кривой дизайн, честно " +
@@ -51,6 +62,11 @@ function normalizeModel(raw: string | undefined): "sonnet" | "opus" | "haiku" {
   return "sonnet";
 }
 
+function clampTimeoutMin(raw: unknown): number {
+  const n = Number(raw);
+  return Math.max(1, Math.min(Number.isFinite(n) && n > 0 ? n : DEFAULT_TIMEOUT_MIN, MAX_TIMEOUT_MIN));
+}
+
 type Kind = "ask" | "fix" | "pr";
 interface Pending {
   kind: Kind;
@@ -58,10 +74,42 @@ interface Pending {
   status: "running" | "done" | "error";
   result: string;
   branch?: string;
-  shownTick?: number;
+  /** Канал, КУДА вернуть ответ ("channel:telegram:<id>"); захвачен на старте. */
+  askGraphId?: string;
+  createdMs: number;
+  completedMs?: number;
+  /** Направленное давление на канал уже выставлено (ставим один раз). */
+  directed?: boolean;
+  /** Подтверждена отправка сообщения в askGraphId (listener SEND_MESSAGE). */
+  delivered?: boolean;
 }
 const pending = new Map<string, Pending>();
 let _seq = 0;
+
+/** Канал-источник из авто-параметра _reply_chat (deriveParams ← TARGET_CHAT, числовой ID). */
+function askGraphFromArgs(args: Record<string, unknown>): string | undefined {
+  const n = Number(args._reply_chat);
+  return Number.isFinite(n) ? (telegramChannelId(n) as string) : undefined;
+}
+
+/** Один раз ставим направленное давление на спросивший канал → движок приведёт тик туда. */
+function bumpDirected(graph: WorldModel, e: Pending): void {
+  if (e.directed || !e.askGraphId) return;
+  try {
+    if (graph.has(e.askGraphId)) {
+      const cur = Number((graph.getChannel(e.askGraphId) as { pending_directed?: number }).pending_directed ?? 0);
+      graph.updateChannel(e.askGraphId, { pending_directed: cur + 1, last_directed_ms: Date.now() });
+    }
+    e.directed = true; // даже если канала нет в графе — не долбим повторно
+  } catch (err) {
+    log.warn("directed bump failed", { ch: e.askGraphId, err: (err as Error).message });
+  }
+}
+
+function isBusy(kind: Kind): boolean {
+  for (const p of pending.values()) if (p.kind === kind && p.status === "running") return true;
+  return false;
+}
 
 async function postJson(url: string, body: unknown, timeoutSec: number): Promise<Record<string, unknown>> {
   const res = await fetch(url, {
@@ -89,8 +137,9 @@ async function runAnalysis(id: string, task: string, model: string, timeoutSec: 
   } catch (err) {
     e.status = "error";
     e.result = `анализатор недоступен: ${(err as Error).message}`;
-    log.warn("code-ask failed", err);
+    log.warn("code-ask failed", { id, task, err: (err as Error).message });
   }
+  e.completedMs = Date.now();
 }
 
 async function runFix(id: string, task: string, model: string, timeoutSec: number): Promise<void> {
@@ -101,20 +150,23 @@ async function runFix(id: string, task: string, model: string, timeoutSec: numbe
     const r = String(data.report ?? "").trim();
     e.result = r || "fix-агент вернул пустой отчёт";
     e.status = r ? "done" : "error";
-    // Узнать ветку, на которой остался dev-клон (alice/<slug>) — для последующего code_pr.
     try {
-      const { stdout } = await execFileP("git", ["-C", DEV_CLONE, "branch", "--show-current"]);
+      const { stdout } = await execFileP("git", ["-C", DEV_CLONE, "branch", "--show-current"], {
+        timeout: GIT_TIMEOUT_MS,
+        env: GIT_ENV,
+      });
       const br = stdout.trim();
       if (br && br !== BASE_BRANCH) e.branch = br;
     } catch {
-      /* ветку не определили — не критично, она есть в отчёте */
+      /* ветку не определили — она есть в отчёте */
     }
-    log.info("code-fix done", { id, branch: e.branch, len: e.result.length });
+    log.info("code-fix done", { id, branch: e.branch });
   } catch (err) {
     e.status = "error";
     e.result = `fix-агент недоступен: ${(err as Error).message}`;
-    log.warn("code-fix failed", err);
+    log.warn("code-fix failed", { id, err: (err as Error).message });
   }
+  e.completedMs = Date.now();
 }
 
 async function runPr(id: string, branch: string, title: string): Promise<void> {
@@ -123,11 +175,15 @@ async function runPr(id: string, branch: string, title: string): Promise<void> {
   if (!WORKI_ALICE_TOKEN) {
     e.status = "error";
     e.result = "не задан WORKI_ALICE_TOKEN в .env — пуш невозможен";
+    e.completedMs = Date.now();
     return;
   }
   try {
     const pushUrl = `https://x-access-token:${WORKI_ALICE_TOKEN}@github.com/${WORKI_ALICE_REPO}.git`;
-    await execFileP("git", ["-C", DEV_CLONE, "push", pushUrl, `${branch}:${branch}`]);
+    await execFileP("git", ["-C", DEV_CLONE, "push", pushUrl, `${branch}:${branch}`], {
+      timeout: GIT_TIMEOUT_MS,
+      env: GIT_ENV,
+    });
     const res = await fetch(`https://api.github.com/repos/${WORKI_ALICE_REPO}/pulls`, {
       method: "POST",
       headers: {
@@ -148,25 +204,24 @@ async function runPr(id: string, branch: string, title: string): Promise<void> {
       const t = await res.text().catch(() => "");
       e.status = "error";
       e.result = `PR не открылся (HTTP ${res.status}): ${t.slice(0, 160)}`;
-      return;
+    } else {
+      const pr = (await res.json()) as { html_url?: string };
+      e.status = "done";
+      e.result = `PR открыт: ${pr.html_url ?? "(ссылка не пришла)"}`;
+      log.info("code-pr done", { id, branch, url: pr.html_url });
     }
-    const pr = (await res.json()) as { html_url?: string };
-    e.status = "done";
-    e.result = `PR открыт: ${pr.html_url ?? "(ссылка не пришла)"}`;
-    log.info("code-pr done", { id, branch, url: pr.html_url });
   } catch (err) {
     e.status = "error";
     e.result = `push/PR не вышло: ${(err as Error).message}`;
-    log.warn("code-pr failed", err);
+    log.warn("code-pr failed", { id, err: (err as Error).message });
   }
+  e.completedMs = Date.now();
 }
 
 const TIMEOUT_DESC = "Таймаут в минутах (по умолч. 5). Подними, если просят дольше — напр. 10 или 15.";
 const MODEL_DESC = "Модель: sonnet (по умолч., быстро) / opus (глубже, дольше) / haiku. Ставь opus, если просят «на опусе».";
-
-function clampTimeoutMin(raw: unknown): number {
-  return Math.max(1, Math.min(Number(raw) || DEFAULT_TIMEOUT_MIN, MAX_TIMEOUT_MIN));
-}
+const REPLY_CHAT_DESC = "служебный — НЕ заполняй, проставляется автоматически (чат, куда вернуть ответ).";
+const deriveReplyChat = { _reply_chat: (cv: Record<string, unknown>) => cv.TARGET_CHAT };
 
 export const workiMod = createMod<Record<string, never>>("worki", {
   category: "mechanic",
@@ -179,36 +234,38 @@ export const workiMod = createMod<Record<string, never>>("worki", {
       task: z.coerce.string().trim().min(1).describe('Вопрос/задача по коду Worki своими словами (напр. "какие парсеры и что делает tg-парсер")'),
       model: z.coerce.string().optional().describe(MODEL_DESC),
       timeout_min: z.coerce.number().optional().describe(TIMEOUT_DESC),
+      _reply_chat: z.coerce.number().optional().describe(REPLY_CHAT_DESC),
     }),
-    description: "Спросить про код Worki — чистый агент прочитает реальный код и пришлёт разбор АСИНХРОННО (в твой контекст)",
+    deriveParams: deriveReplyChat,
+    description: "Спросить про код Worki — чистый агент прочитает реальный код и пришлёт разбор АСИНХРОННО в этот чат",
     affordance: {
       priority: "capability",
       category: "memory",
-      whenToUse: "Любой вопрос/анализ по коду Worki. Запускает фоновый разбор и СРАЗУ возвращается — НЕ грепай файлы сама. Результат придёт в контекст.",
+      whenToUse: "Любой вопрос/анализ по коду Worki. Запускает фоновый разбор и СРАЗУ возвращается — НЕ грепай файлы сама. Ответ сам придёт в этот чат.",
       whenNotToUse: "Не про код Worki",
     },
     impl(ctx, args): unknown {
       const task = String(args.task);
-      // Анти-дубль: один разбор за раз. Иначе в нетерпении плодит параллельные → грузит прокси.
-      const busy = [...pending.values()].some((p) => p.kind === "ask" && p.status === "running");
-      if (busy) {
-        return { success: true, message: "Уже разбираю код — погоди, результат вот-вот придёт в контекст. Повторно не запускай." };
+      if (isBusy("ask")) {
+        return { success: true, message: "Уже разбираю код — погоди, результат вот-вот придёт в этот чат. Повторно не запускай." };
       }
       const model = normalizeModel(args.model as string | undefined);
       const tmin = clampTimeoutMin(args.timeout_min);
       const id = `ask${ctx.tick}_${++_seq}`;
-      pending.set(id, { kind: "ask", task, status: "running", result: "" });
+      pending.set(id, { kind: "ask", task, status: "running", result: "", askGraphId: askGraphFromArgs(args), createdMs: ctx.nowMs });
       void runAnalysis(id, task, model, tmin * 60);
       log.info("code-ask started", { id, model, tmin });
-      return { success: true, message: `Разбор запущен в фоне (${model}, до ${tmin} мин) — придёт в контекст. Скажи, что смотришь код, и продолжай.` };
+      return { success: true, message: `Разбор запущен (${model}, до ${tmin} мин) — приду с ответом в этот чат. Скажи, что смотришь код, и живи дальше.` };
     },
   })
   .instruction("code_fix", {
     params: z.object({
-      task: z.coerce.string().trim().min(1).describe('Что починить, своими словами (опиши баг и желаемую правку). Только ПОСЛЕ одобрения человека.'),
+      task: z.coerce.string().trim().min(1).describe("Что починить, своими словами (опиши баг и желаемую правку). Только ПОСЛЕ одобрения человека."),
       model: z.coerce.string().optional().describe(MODEL_DESC),
       timeout_min: z.coerce.number().optional().describe(TIMEOUT_DESC),
+      _reply_chat: z.coerce.number().optional().describe(REPLY_CHAT_DESC),
     }),
+    deriveParams: deriveReplyChat,
     description: "Починить баг в коде Worki: агент правит + гоняет тесты + создаёт ветку и коммитит (БЕЗ push). Async. Только после одобрения.",
     affordance: {
       priority: "capability",
@@ -218,20 +275,25 @@ export const workiMod = createMod<Record<string, never>>("worki", {
     },
     impl(ctx, args): unknown {
       const task = String(args.task);
+      if (isBusy("fix")) {
+        return { success: true, message: "Один фикс уже в работе — дождись его, потом запускай следующий (общий dev-клон)." };
+      }
       const model = normalizeModel(args.model as string | undefined);
       const tmin = clampTimeoutMin(args.timeout_min);
       const id = `fix${ctx.tick}_${++_seq}`;
-      pending.set(id, { kind: "fix", task, status: "running", result: "" });
+      pending.set(id, { kind: "fix", task, status: "running", result: "", askGraphId: askGraphFromArgs(args), createdMs: ctx.nowMs });
       void runFix(id, task, model, tmin * 60);
       log.info("code-fix started", { id, model, tmin });
-      return { success: true, message: `Фикс запущен в фоне (${model}, до ${tmin} мин): правлю + гоняю тесты + ветка. Результат придёт в контекст; не пушу — спросишь «открыть PR?».` };
+      return { success: true, message: `Фикс запущен (${model}, до ${tmin} мин): правлю + тесты + ветка. Результат придёт в этот чат; не пушу — спросишь «открыть PR?».` };
     },
   })
   .instruction("code_pr", {
     params: z.object({
       branch: z.coerce.string().trim().min(1).describe("Ветка фикса (alice/<slug>) из отчёта code_fix."),
       title: z.coerce.string().optional().describe("Заголовок PR (необязательно)."),
+      _reply_chat: z.coerce.number().optional().describe(REPLY_CHAT_DESC),
     }),
+    deriveParams: deriveReplyChat,
     description: "Запушить ветку фикса в worki-alice и открыть PR. Async. Только после «открыть PR?» → одобрения.",
     affordance: {
       priority: "capability",
@@ -241,38 +303,45 @@ export const workiMod = createMod<Record<string, never>>("worki", {
     },
     impl(ctx, args): unknown {
       const branch = String(args.branch);
+      if (isBusy("pr")) {
+        return { success: true, message: "Уже открываю PR — погоди ссылку." };
+      }
       const title = args.title != null ? String(args.title) : "";
       const id = `pr${ctx.tick}_${++_seq}`;
-      pending.set(id, { kind: "pr", task: branch, status: "running", result: "" });
+      pending.set(id, { kind: "pr", task: branch, status: "running", result: "", askGraphId: askGraphFromArgs(args), createdMs: ctx.nowMs });
       void runPr(id, branch, title);
       log.info("code-pr started", { id, branch });
-      return { success: true, message: `Пушу ветку ${branch} и открываю PR — ссылка придёт в контекст.` };
+      return { success: true, message: `Пушу ветку ${branch} и открываю PR — ссылка придёт в этот чат.` };
     },
   })
-  .contribute((ctx): ContributionItem[] => {
+  // Честная детекция доставки: она отправила сообщение в спросивший чат → результат доставлен.
+  .listen("SEND_MESSAGE", (_ctx, args) => {
+    const chatId = args.chatId ? String(args.chatId) : null;
+    if (!chatId) return;
+    for (const p of pending.values()) {
+      if (p.askGraphId === chatId && (p.status === "done" || p.status === "error") && !p.delivered) {
+        p.delivered = true;
+      }
+    }
+  })
+  // contribute() — ЧИСТЫЙ: только читает и отдаёт готовые недоставленные результаты.
+  .contribute((): ContributionItem[] => {
     const ready: string[] = [];
-    for (const [id, p] of pending) {
-      if (p.status === "running") continue;
-      if (p.shownTick === undefined) p.shownTick = ctx.tick;
-      if (ctx.tick - p.shownTick > SHOW_TICKS) {
-        pending.delete(id);
-        continue;
-      }
+    for (const p of pending.values()) {
+      if (p.status === "running" || p.delivered) continue;
       if (p.status === "error") {
-        ready.push(`«${p.task}» — не вышло: ${p.result}. Скажи честно, что не получилось.`);
-        continue;
-      }
-      if (p.kind === "ask") {
-        ready.push(`Готов разбор кода, который ты обещала человеку (вопрос: «${p.task}»). ОТВЕТЬ им этим сейчас в том чате, где спросили про код — они ждут. Перескажи своими словами, по делу:\n${p.result}`);
+        ready.push(`«${p.task}» — не вышло: ${p.result}. Скажи честно в чат, где спросили, что не получилось.`);
+      } else if (p.kind === "ask") {
+        ready.push(`Готов разбор кода («${p.task}»). Ответь им этим сейчас в чат, где спросили про код — ждут. Своими словами, по делу:\n${p.result}`);
       } else if (p.kind === "fix") {
-        const prHint = p.branch ? `\nЕсли всё ок и человек одобрит — открой PR: self code-pr --branch ${p.branch}` : "";
-        ready.push(`Готов фикс по «${p.task}» (перескажи + спроси «открыть PR?»):\n${p.result}${prHint}`);
+        const prHint = p.branch ? `\nЕсли ок и человек одобрит — открой PR: self code-pr --branch ${p.branch}` : "";
+        ready.push(`Готов фикс по «${p.task}» (перескажи в чат, где просили, + спроси «открыть PR?»):\n${p.result}${prHint}`);
       } else {
         ready.push(p.result); // pr: "PR открыт: <url>"
       }
     }
     if (ready.length === 0) return [];
-    const raw = ["## Готово по коду Worki (code-ask/fix/pr)", "", ready.join("\n\n")].join("\n");
+    const raw = ["## Готово по коду Worki", "", ready.join("\n\n")].join("\n");
     const lines = PromptBuilder.fromRaw(
       raw
         .split("\n")
@@ -280,5 +349,27 @@ export const workiMod = createMod<Record<string, never>>("worki", {
         .join("\n"),
     );
     return [header(lines, 88)];
+  })
+  // Жизненный цикл (мутации) — здесь, не в contribute(): направленное давление + TTL + сторож.
+  .onTickEnd((ctx) => {
+    const now = ctx.nowMs;
+    for (const [id, p] of pending) {
+      if (p.delivered) {
+        pending.delete(id);
+        continue;
+      }
+      if (p.status === "running") {
+        if (now - p.createdMs > RUNNING_TTL_MS) {
+          p.status = "error";
+          p.result = "разбор завис и снят по таймауту";
+          p.completedMs = now;
+        }
+        continue;
+      }
+      // done/error: один раз толкаем спросивший чат, чтобы движок привёл тик туда.
+      if (!p.directed) bumpDirected(ctx.graph, p);
+      // Недоставленный результат живёт по wall-clock, потом сдаёмся.
+      if (p.completedMs && now - p.completedMs > RESULT_TTL_MS) pending.delete(id);
+    }
   })
   .build();
