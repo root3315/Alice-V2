@@ -1,9 +1,9 @@
 /**
- * ADR-136: Eval Report — 终端报告输出 + JSON 导出。
+ * ADR-136: Eval Report — вывод отчёта в терминал + экспорт в JSON.
  *
- * 报告由可组合的渲染函数构成，CLI 可按需组装：
- * - renderScenarioLine — 单场景一行（流式输出时逐行调用）
- * - renderReport — 完整报告（批量输出时一次调用）
+ * Отчёт строится из компонуемых функций рендеринга; CLI собирает их по потребности:
+ * - renderScenarioLine — одна строка на сценарий (вызывается построчно при потоковом выводе)
+ * - renderReport — полный отчёт (вызывается один раз при пакетном выводе)
  *
  * @see docs/adr/136-model-eval-suite.md
  */
@@ -11,9 +11,9 @@ import { writeFileSync } from "node:fs";
 
 import type { AggregatedStat, EvalReport, ScenarioAggregateResult } from "./types.js";
 
-// ── 列宽常量 ──────────────────────────────────────────────────────────────
+// ── Константы ширины столбцов ──────────────────────────────────────────────────────────────
 
-/** 场景表列宽。命名常量消除魔法数字。 */
+/** Ширина столбцов таблицы сценариев. Именованные константы устраняют магические числа. */
 const COL = {
   id: 40,
   rate: 12,
@@ -21,7 +21,7 @@ const COL = {
   duration: 10,
 } as const;
 
-/** 统计表列宽。 */
+/** Ширина столбцов таблицы статистики. */
 const STAT_COL = {
   label: 28,
   tagLabel: 20,
@@ -30,27 +30,27 @@ const STAT_COL = {
 
 const RULE_WIDTH = 63;
 
-// ── 基础格式化 ────────────────────────────────────────────────────────────
+// ── Базовое форматирование ────────────────────────────────────────────────────────────
 
-/** 右填充字符串到指定宽度。 */
+/** Дополняет строку пробелами справа до заданной ширины. */
 function pad(str: string, width: number): string {
   return str.length >= width ? str : str + " ".repeat(width - str.length);
 }
 
-/** 格式化通过率为百分比字符串。 */
+/** Форматирует долю прохождения как строку процентов. */
 function pct(rate: number): string {
   return `${(rate * 100).toFixed(0)}%`;
 }
 
-/** 根据通过状态返回终端标记。 */
+/** Возвращает метку для терминала в зависимости от статуса прохождения. */
 function mark(pass: boolean, cached?: boolean): string {
   if (cached) return "SKIP";
   return pass ? "PASS" : "FAIL";
 }
 
-// ── 可组合渲染函数 ─────────────────────────────────────────────────────────
+// ── Компонуемые функции рендеринга ─────────────────────────────────────────────────────────
 
-/** 渲染场景表头 + 分隔线。 */
+/** Рендерит заголовок таблицы сценариев + разделительную линию. */
 export function renderScenarioTableHeader(): string {
   return [
     "── Scenarios ──────────────────────────────────────────────────",
@@ -63,9 +63,9 @@ export function renderScenarioTableHeader(): string {
 }
 
 /**
- * 渲染单个场景行 + 失败详情（如有）。
+ * Рендерит строку одного сценария + детали отказа (если есть).
  *
- * 可在 onScenarioComplete 回调中单独调用，实现流式输出。
+ * Может вызываться по отдельности в обратном вызове onScenarioComplete для потокового вывода.
  */
 export function renderScenarioLine(s: ScenarioAggregateResult): string {
   const lines: string[] = [];
@@ -80,13 +80,13 @@ export function renderScenarioLine(s: ScenarioAggregateResult): string {
       pad(s.cached ? "—" : `${avgDuration}ms`, COL.duration),
   );
 
-  // 失败详情
+  // Детали отказа
   if (!s.passAtK) {
     for (const run of s.runs) {
       if (!run.structural.pass) {
         for (const c of run.structural.checks) {
           if (!c.pass) {
-            // process tier 只是诊断信息，标为 [diag] 而非失败
+            // process tier — только диагностическая информация, помечается как [diag], а не как сбой
             const prefix = c.tier === "process" ? "[diag]" : "FAIL";
             lines.push(`    └─ ${prefix} ${c.name}: expected=${c.expected}, actual=${c.actual}`);
           }
@@ -98,7 +98,7 @@ export function renderScenarioLine(s: ScenarioAggregateResult): string {
   return lines.join("\n");
 }
 
-/** 渲染 AggregatedStat 表格（Branch Stats / Tag Stats）。 */
+/** Рендерит таблицу AggregatedStat (Branch Stats / Tag Stats). */
 function renderStatTable(
   title: string,
   stats: Record<string, AggregatedStat>,
@@ -125,7 +125,7 @@ function renderStatTable(
   return lines.join("\n");
 }
 
-/** 渲染 Summary 段。 */
+/** Рендерит секцию Summary. */
 function renderSummary(report: EvalReport): string {
   const testedScenarios = report.scenarios.filter((s) => !s.cached);
   const skippedScenarios = report.scenarios.filter((s) => s.cached);
@@ -150,12 +150,12 @@ function renderSummary(report: EvalReport): string {
   return lines.join("\n");
 }
 
-// ── 完整报告 ──────────────────────────────────────────────────────────────
+// ── Полный отчёт ──────────────────────────────────────────────────────────────
 
 /**
- * 渲染完整终端报告。
+ * Рендерит полный отчёт для терминала.
  *
- * 由可组合函数拼接而成——如需流式输出，可拆开单独调用子函数。
+ * Составляется из компонуемых функций — для потокового вывода можно вызывать подфункции по отдельности.
  */
 export function renderReport(report: EvalReport): string {
   const sections: string[] = [];
@@ -191,12 +191,12 @@ export function renderReport(report: EvalReport): string {
   return sections.join("\n\n");
 }
 
-// ── JSON 导出 ──────────────────────────────────────────────────────────────
+// ── Экспорт в JSON ──────────────────────────────────────────────────────────────
 
 /**
- * 将 EvalReport 导出为 JSON 文件。
+ * Экспортирует EvalReport в JSON-файл.
  *
- * 路径格式：runtime/eval-report-{timestamp}.json
+ * Формат пути: runtime/eval-report-{timestamp}.json
  */
 export function exportReportJson(report: EvalReport, path?: string): string {
   const filePath = path ?? `eval-report-${report.timestamp.replace(/[:.]/g, "-")}.json`;

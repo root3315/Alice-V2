@@ -1,7 +1,8 @@
 /**
- * ADR-248 W1: Decision Trace 基础框架。
+ * ADR-248 W1: Базовый фреймворк Decision Trace.
  *
- * 这是审计事实写入面，不是控制状态。任何 gate/pressure/act 逻辑都不应读取它来改变行为。
+ * Это поверхность записи аудит-фактов, а не управляющее состояние.
+ * Никакая логика gate/pressure/act не должна читать его для изменения поведения.
  * @see docs/adr/248-dcp-reference-implementation-plan/README.md
  */
 import { and, desc, eq } from "drizzle-orm";

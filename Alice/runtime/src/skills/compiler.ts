@@ -1,14 +1,14 @@
 /**
- * Skill 编译器 — manifest → TelegramActionDef[]。
+ * Компилятор скиллов — manifest → TelegramActionDef[].
  *
- * 编译产物必须和手写 defineAction 完全等价：
+ * Результат компиляции должен быть полностью эквивалентен ручному defineAction:
  * - params → [name, ActionParamDef][] tuple
- * - impl → 根据 backend 生成（shell: 子进程, mcp: 预留）
- * - contract → 自动生成 resultContract（resultAttrKey = `last_{name}_result`）
- * - affordance → 从 manifest 的 whenToUse/whenNotToUse 生成
+ * - impl → генерируется по типу backend (shell: дочерний процесс, mcp: зарезервировано)
+ * - contract → автогенерация resultContract (resultAttrKey = `last_{name}_result`)
+ * - affordance → генерируется из whenToUse/whenNotToUse манифеста
  *
  * @see docs/adr/200-skill-package-format.md
- * @see src/telegram/action-builder.ts — 手写 defineAction 的等价物
+ * @see src/telegram/action-builder.ts — ручной эквивалент defineAction
  */
 
 import { z } from "zod";
@@ -27,10 +27,10 @@ import { executeAliceSandboxCommand } from "./container-runner.js";
 import type { ManifestAction, ManifestParam, SkillManifest, SkillRuntime } from "./manifest.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Param 编译
+// Компиляция параметров
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** manifest param type → Zod schema（与 action-builder 的 wrapCoercion 等价）。 */
+/** manifest param type → Zod schema (эквивалент wrapCoercion из action-builder). */
 function paramToZodSchema(param: ManifestParam): z.ZodTypeAny {
   switch (param.type) {
     case "number":
@@ -58,7 +58,7 @@ function paramToZodSchema(param: ManifestParam): z.ZodTypeAny {
   }
 }
 
-/** manifest params → [name, ActionParamDef][] tuple（与 shapeToParams 等价输出）。 */
+/** manifest params → [name, ActionParamDef][] tuple (эквивалент вывода shapeToParams). */
 function compileParams(params: ManifestParam[]): [string, ActionParamDef][] {
   return params.map((p) => [
     p.name,
@@ -72,10 +72,10 @@ function compileParams(params: ManifestParam[]): [string, ActionParamDef][] {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 格式化：JSON dump（LLM 可读）
+// Форматирование: JSON dump (читаемо для LLM)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 默认格式化：直接 dump JSON。 */
+/** Форматирование по умолчанию: прямой dump JSON. */
 function formatResultAsJson(data: unknown): string[] | null {
   if (data == null) return null;
   const m = new PromptBuilder();
@@ -86,29 +86,30 @@ function formatResultAsJson(data: unknown): string[] | null {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// impl 生成（根据 backend 类型）
+// Генерация impl (по типу backend)
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 网络策略推导（per-Skill 安全策略）
+// Определение сетевой политики (политика безопасности per-Skill)
 // @see docs/adr/201-os-for-llm.md
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 推导 Skill 的网络策略。
+ * Определяет сетевую политику скилла.
  *
- * 在 Alice OS 模型中，所有标准 capabilities（telegram.*, llm.*, chat.*,
- * graph.*, config.* 等）都通过 Engine API TCP 访问——Skill 容器
- * 本身不需要外网。
+ * В модели Alice OS все стандартные capabilities (telegram.*, llm.*, chat.*,
+ * graph.*, config.* и т.д.) доступны через Engine API TCP — контейнеру Skill
+ * внешняя сеть не нужна.
  *
- * 默认 network=false。只有 manifest.runtime.network 显式声明 true 时
- * 才启用外网（用于 Skill 自身需要直连外部 API 的场景，如天气查询）。
+ * По умолчанию network=false. Внешняя сеть включается только при явном
+ * manifest.runtime.network = true (для скиллов, которым нужен прямой доступ
+ * к внешним API, например запрос погоды).
  */
 export function inferNetworkPolicy(manifest: Pick<SkillManifest, "runtime">): boolean {
   return manifest.runtime?.network ?? false;
 }
 
-/** 编译 Shell 后端 impl。 */
+/** Компилирует impl для Shell-бэкенда. */
 function compileShellImpl(
   action: ManifestAction,
   runtime: SkillRuntime,
@@ -142,8 +143,8 @@ function compileShellImpl(
         isolation: runtime.isolation,
       });
 
-      // stdout → JSON 优先解析，失败则存纯文本
-      // L2 脚本约定输出 JSON 到 stdout，format 模板可按字段访问
+      // stdout → приоритет парсинга JSON, при неудаче сохраняем как plain text
+      // Скрипты L2 по соглашению выводят JSON в stdout, шаблоны format могут обращаться к полям
       let data: unknown;
       try {
         data = JSON.parse(stdout);
@@ -168,20 +169,20 @@ function compileShellImpl(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 编译器公开 API
+// Публичный API компилятора
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface CompileOptions {
-  /** @deprecated 容器模式下不再使用宿主 cwd。保留字段以避免破坏现有调用者。 */
+  /** @deprecated В контейнерном режиме хостовый cwd больше не используется. Поле сохранено для обратной совместимости. */
   installDir?: string;
-  /** Engine API TCP 端口（注入 ALICE_ENGINE_URL 环境变量）。 */
+  /** Порт Engine API TCP (инжектируется в переменную окружения ALICE_ENGINE_URL). */
   enginePort?: number;
 }
 
 /**
- * 编译单个 manifest action → TelegramActionDef。
+ * Компилирует один action манифеста → TelegramActionDef.
  *
- * 产物与 defineAction() 手写版完全等价。
+ * Результат полностью эквивалентен ручной версии defineAction().
  */
 export function compileAction(
   action: ManifestAction,
@@ -192,7 +193,7 @@ export function compileAction(
     manifest.runtime ?? {
       backend: "shell" as const,
       timeout: 30,
-      network: false, // ADR-201: 默认禁用网络，显式声明才启用
+      network: false, // ADR-201: сеть отключена по умолчанию, включается явным объявлением
       isolation: "container" as const,
       memory: "512m",
     };
@@ -201,7 +202,7 @@ export function compileAction(
   // params
   const params = compileParams(action.params);
 
-  // affordance（cast category 为 ToolCategory — 运行时 registerToolCategory 保证有效性）
+  // affordance (cast category в ToolCategory — корректность гарантирует registerToolCategory в рантайме)
   const affordance = {
     whenToUse: action.whenToUse,
     whenNotToUse: action.whenNotToUse ?? "",
@@ -209,7 +210,7 @@ export function compileAction(
     category: action.category as ToolCategory,
   };
 
-  // impl（根据 backend 类型）
+  // impl (по типу backend)
   let impl: TelegramActionDef["impl"];
   switch (runtime.backend) {
     case "shell":
@@ -221,7 +222,7 @@ export function compileAction(
       throw new Error(`Action ${action.name}: unknown backend "${runtime.backend}"`);
   }
 
-  // contract（自动生成 CQRS 结果契约）
+  // contract (автогенерация CQRS-контракта результата)
   const contract = resultContract(z.any(), "self", attrKey, formatResultAsJson);
 
   return {
@@ -232,7 +233,7 @@ export function compileAction(
     affordance,
     params,
     impl,
-    // CQRS 字段（展开 contract）
+    // CQRS-поля (разворачиваем contract)
     ...contract,
     returnDoc:
       action.returns ?? `Results available in the next round as observation (\`self.${attrKey}\`).`,
@@ -240,11 +241,11 @@ export function compileAction(
 }
 
 /**
- * 编译整个 manifest → TelegramActionDef[]。
+ * Компилирует весь манифест → TelegramActionDef[].
  *
- * @param manifest 解析后的 SkillManifest
- * @param opts 编译选项
- * @returns 编译后的动作定义数组
+ * @param manifest разобранный SkillManifest
+ * @param opts опции компиляции
+ * @returns массив скомпилированных определений действий
  */
 export function compileManifest(
   manifest: SkillManifest,
@@ -252,7 +253,7 @@ export function compileManifest(
 ): TelegramActionDef[] {
   const defs = manifest.actions.map((action) => compileAction(action, manifest, opts));
 
-  // attrKey 碰撞检测
+  // Проверка коллизий attrKey
   const attrKeys = new Set<string>();
   for (const def of defs) {
     const key = def.resultAttrKey;

@@ -1,12 +1,12 @@
 /**
- * FTS5 全文检索查询 + 启动时索引补全。
+ * FTS5 полнотекстовые запросы + восстановление индекса при запуске.
  *
- * **写入同步由 SQLite 触发器自动完成**（migration 0017_fts5_triggers.sql）——
- * 源表 INSERT/UPDATE/DELETE 自动同步 FTS 索引，应用层无需手动调用任何写入函数。
+ * **Синхронизация записей выполняется автоматически триггерами SQLite** (migration 0017_fts5_triggers.sql) —
+ * INSERT/UPDATE/DELETE в исходных таблицах синхронизируют FTS-индекс без ручных вызовов из приложения.
  *
- * 本模块只负责：
- * 1. 查询：searchMessagesFts / searchDiaryFts / searchThreadsFts
- * 2. 启动补全：ftsEnsurePopulated（处理触发器部署前的历史数据）
+ * Этот модуль отвечает только за:
+ * 1. Запросы: searchMessagesFts / searchDiaryFts / searchThreadsFts
+ * 2. Восстановление при запуске: ftsEnsurePopulated (обрабатывает исторические данные до деплоя триггеров)
  *
  * @see docs/adr/145-local-fulltext-search.md
  * @see runtime/drizzle/0017_fts5_triggers.sql
@@ -14,9 +14,9 @@
 import { getSqlite } from "./connection.js";
 import type { DbMessageRecord } from "./queries.js";
 
-// ── FTS5 查询 ──────────────────────────────────────────────────────────────
+// ── FTS5 запросы ──────────────────────────────────────────────────────────
 
-/** FTS5 搜索的 raw row 形状（与 better-sqlite3 的 .all() 返回对齐）。 */
+/** Форма raw row для FTS5-поиска (соответствует возврату .all() в better-sqlite3). */
 interface FtsSearchRow {
   id: number;
   platform: string;
@@ -32,16 +32,16 @@ interface FtsSearchRow {
   media_type: string | null;
   is_outgoing: number;
   reply_to_msg_id: number | null;
-  /** Drizzle mode:"timestamp" 存储为秒级 Unix 时间戳。 */
+  /** Drizzle mode:"timestamp" хранится как Unix-timestamp в секундах. */
   created_at: number;
-  /** FTS5 snippet() 辅助函数返回的上下文片段（仅查询时存在）。 */
+  /** Контекстный фрагмент, возвращаемый вспомогательной функцией FTS5 snippet() (присутствует только при запросе). */
   snippet: string | null;
 }
 
-/** FTS 搜索返回类型——在 DbMessageRecord 基础上增加 snippet。 */
+/** Тип возврата FTS-поиска — DbMessageRecord с добавленным полем snippet. */
 export type FtsMessageResult = DbMessageRecord & { chatId: string; snippet: string | null };
 
-/** raw row → FtsMessageResult 映射。 */
+/** Маппинг raw row → FtsMessageResult. */
 function mapRow(r: FtsSearchRow): FtsMessageResult {
   return {
     platform: r.platform,
@@ -57,46 +57,47 @@ function mapRow(r: FtsSearchRow): FtsMessageResult {
     mediaType: r.media_type,
     isOutgoing: !!r.is_outgoing,
     replyToMsgId: r.reply_to_msg_id,
-    // created_at 是秒级时间戳，Date 构造器需要毫秒
+    // created_at — timestamp в секундах, конструктор Date ожидает миллисекунды
     createdAt: new Date(r.created_at * 1000),
     snippet: r.snippet,
   };
 }
 
-/** SELECT 列投影——所有查询共用。 */
+/** Проекция столбцов SELECT — используется во всех запросах. */
 const COLUMNS = `m.id, m.platform, m.msg_id, m.native_chat_id, m.native_msg_id, m.stable_message_id,
   m.tick, m.chat_id, m.sender_id, m.sender_name,
   m.text, m.media_type, m.is_outgoing, m.reply_to_msg_id, m.created_at`;
 
-/** 搜索选项。 */
+/** Параметры поиска. */
 export interface FtsSearchOptions {
-  /** 限定聊天 ID（省略则跨所有聊天搜索）。 */
+  /** Ограничить по ID чата (если не указан — поиск по всем чатам). */
   chatId?: string;
-  /** 限定发送者 ID（精确匹配 sender_id 列）。 */
+  /** Ограничить по ID отправителя (точное совпадение с колонкой sender_id). */
   senderId?: string;
-  /** 只返回此日期之后的消息（秒级 Unix 时间戳）。 */
+  /** Возвращать только сообщения после этой даты (Unix-timestamp в секундах). */
   afterTs?: number;
-  /** 只返回此日期之前的消息（秒级 Unix 时间戳）。 */
+  /** Возвращать только сообщения до этой даты (Unix-timestamp в секундах). */
   beforeTs?: number;
-  /** 最大返回条数（默认 20，上限 20）。 */
+  /** Максимальное число результатов (по умолчанию 20, предел 20). */
   limit?: number;
 }
 
 /**
- * FTS5 全文搜索 messageLog（BM25 排序）。
+ * FTS5 полнотекстовый поиск по messageLog (сортировка BM25).
  *
- * trigram tokenizer 天然支持 CJK——无需分词器，任何 3+ 字符的子串均可命中。
- * expression 直接传给 FTS5 MATCH——支持完整的 FTS5 查询语法：
- *   - 隐式 AND：`天气 旅行`（空格分隔 = 两个都要匹配）
- *   - OR：`天气 OR 下雨`
- *   - NOT：`天气 NOT 下雨`
- *   - 短语：`"hello world"`
- *   - 前缀：`hel*`
+ * trigram-токенизатор нативно поддерживает CJK — сегментация не нужна,
+ * любая подстрока из 3+ символов попадает в индекс.
+ * expression передаётся напрямую в FTS5 MATCH — поддерживается полный синтаксис FTS5:
+ *   - неявный AND: `погода путешествие` (пробел = оба должны совпасть)
+ *   - OR: `погода OR дождь`
+ *   - NOT: `погода NOT дождь`
+ *   - фраза: `"hello world"`
+ *   - префикс: `hel*`
  *
- * 查询 SQL 动态拼接（条件数有限，better-sqlite3 内部 prepare 缓存复用 statement）。
+ * SQL-запрос строится динамически (условий немного; better-sqlite3 кэширует prepare внутри).
  *
- * @param expression FTS5 MATCH 表达式
- * @param opts 可选过滤条件
+ * @param expression Выражение FTS5 MATCH
+ * @param opts Необязательные условия фильтрации
  */
 export function searchMessagesFts(expression: string, opts?: FtsSearchOptions): FtsMessageResult[] {
   const matchExpr = expression.trim();
@@ -126,7 +127,7 @@ export function searchMessagesFts(expression: string, opts?: FtsSearchOptions): 
   params.push(limit);
 
   // snippet(table, column_index, open, close, ellipsis, max_tokens)
-  // column 0 = text（message_log_fts 只有一列）
+  // column 0 = text (message_log_fts содержит только один столбец)
   const sql = `SELECT ${COLUMNS},
   snippet(message_log_fts, 0, '»', '«', '…', 64) as snippet
 FROM message_log_fts fts
@@ -140,7 +141,7 @@ ORDER BY bm25(message_log_fts) LIMIT ?`;
   return rows.map(mapRow);
 }
 
-// ── Diary FTS5 查询 ────────────────────────────────────────────────────────
+// ── Diary FTS5 запросы ────────────────────────────────────────────────────
 
 export interface FtsDiaryRecord {
   id: number;
@@ -151,10 +152,10 @@ export interface FtsDiaryRecord {
 }
 
 /**
- * FTS5 全文搜索 diary_entries（BM25 排序）。
+ * FTS5 полнотекстовый поиск по diary_entries (сортировка BM25).
  *
- * @param expression FTS5 MATCH 表达式
- * @param opts 可选过滤条件（about 实体、时间范围）
+ * @param expression Выражение FTS5 MATCH
+ * @param opts Необязательные условия фильтрации (сущность about, временной диапазон)
  */
 export function searchDiaryFts(
   expression: string,
@@ -207,7 +208,7 @@ ORDER BY bm25(diary_fts) LIMIT ?`;
   }));
 }
 
-// ── Threads FTS5 查询 ──────────────────────────────────────────────────────
+// ── Threads FTS5 запросы ──────────────────────────────────────────────────
 
 export interface FtsThreadRecord {
   id: number;
@@ -222,10 +223,10 @@ export interface FtsThreadRecord {
 }
 
 /**
- * FTS5 全文搜索 narrative_threads（BM25 排序）。
+ * FTS5 полнотекстовый поиск по narrative_threads (сортировка BM25).
  *
- * @param expression FTS5 MATCH 表达式
- * @param opts 可选过滤条件（status 筛选）
+ * @param expression Выражение FTS5 MATCH
+ * @param opts Необязательные условия фильтрации (фильтр по status)
  */
 export function searchThreadsFts(
   expression: string,
@@ -279,37 +280,37 @@ ORDER BY bm25(threads_fts) LIMIT ?`;
   }));
 }
 
-// ── 启动时索引补全 ─────────────────────────────────────────────────────────
+// ── Восстановление индекса при запуске ────────────────────────────────────
 
 /**
- * 启动时条件 rebuild：FTS 索引为空但源表有数据时全量重建。
+ * Условный rebuild при запуске: полный rebuild, если FTS-индекс пуст, а исходная таблица — нет.
  *
- * 场景：
- * 1. migration 0017 部署后首次启动——历史数据先于触发器存在。
- * 2. FTS 索引意外损坏——rebuild 从源表恢复。
+ * Сценарии:
+ * 1. Первый запуск после деплоя migration 0017 — исторические данные существовали до триггеров.
+ * 2. FTS-индекс случайно повреждён — rebuild восстанавливает его из исходной таблицы.
  *
- * 触发器部署后，后续 INSERT/UPDATE/DELETE 自动同步。
- * 此函数只处理"触发器还不存在时写入的"历史数据。
+ * После деплоя триггеров последующие INSERT/UPDATE/DELETE синхронизируются автоматически.
+ * Эта функция обрабатывает только данные, записанные до того, как триггеры существовали.
  *
- * **重要实现细节**：content= 外部内容 FTS 表的 `SELECT count(*) FROM fts`
- * 会代理到源表（返回源表行数），不反映 FTS 索引真实状态。
- * 必须查询 `_docsize` 影子表获取实际索引行数。
+ * **Важный нюанс реализации**: `SELECT count(*) FROM fts` для FTS-таблицы с content=
+ * проксируется к исходной таблице (возвращает её строки), а не отражает реальное состояние индекса.
+ * Для получения фактического числа проиндексированных документов необходимо обращаться к теневой таблице `_docsize`.
  * @see https://www.sqlite.org/fts5.html#the_docsize_table
  */
 export function ftsEnsurePopulated(): void {
   const sqlite = getSqlite();
 
   const check = (ftsTable: string, sourceTable: string) => {
-    // _docsize 影子表的行数 = FTS 索引中的实际文档数
-    // 不能用 count(*) on fts 表本身——content= 模式下它代理到源表
+    // Число строк в теневой таблице _docsize = фактическое количество документов в FTS-индексе
+    // count(*) на самой fts-таблице нельзя использовать — в режиме content= оно проксируется к исходной таблице
     const indexedCount = (
       sqlite.prepare(`SELECT count(*) as n FROM ${ftsTable}_docsize`).get() as { n: number }
     ).n;
-    if (indexedCount > 0) return; // 已有索引数据，跳过
+    if (indexedCount > 0) return; // индекс уже содержит данные, пропускаем
     const srcCount = (
       sqlite.prepare(`SELECT count(*) as n FROM ${sourceTable}`).get() as { n: number }
     ).n;
-    if (srcCount === 0) return; // 源表也为空，无需 rebuild
+    if (srcCount === 0) return; // исходная таблица тоже пуста, rebuild не нужен
     sqlite.exec(`INSERT INTO ${ftsTable}(${ftsTable}) VALUES('rebuild')`);
   };
 

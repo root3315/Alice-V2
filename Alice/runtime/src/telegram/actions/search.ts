@@ -1,5 +1,5 @@
 /**
- * search 类别动作：search, read_notes。
+ * Действия категории search: search, read_notes.
  *
  * @see docs/adr/145-local-fulltext-search.md
  * @see docs/adr/149-define-action-builder.md
@@ -26,7 +26,7 @@ import type { TelegramActionDef } from "../action-types.js";
 import { readSavedMessages } from "../actions.js";
 
 export const searchActions: TelegramActionDef[] = [
-  // ADR-145 W3: 统一搜索（messages + diary + threads，替代旧 search_fts5）
+  // ADR-145 W3: унифицированный поиск (messages + diary + threads, замена старого search_fts5)
   defineAction({
     name: "search",
     category: "search",
@@ -128,7 +128,7 @@ export const searchActions: TelegramActionDef[] = [
         return false;
       }
 
-      // 图记忆融合：从消息结果中提取 sender → spreading activation → 关联事实
+      // Слияние с графовой памятью: извлекаем sender из результатов сообщений → spreading activation → связанные факты
       let relatedFacts: RelatedFactItem[] | undefined;
       if (msgRows?.length) {
         const uniqueSenderIds = [
@@ -152,7 +152,7 @@ export const searchActions: TelegramActionDef[] = [
                   if (!content) return [];
                   return [{ entity: h.entityId, fact: content, activation: h.activation }];
                 } catch {
-                  // 节点不存在或类型不匹配——跳过该条，不中断其他结果
+                  // Узел не существует или тип не совпадает — пропускаем запись, не прерываем остальные результаты
                   return [];
                 }
               });

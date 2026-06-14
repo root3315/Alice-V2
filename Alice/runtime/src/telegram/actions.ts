@@ -1,8 +1,9 @@
 /**
- * Telegram 行动执行层：sendText, readHistory 封装 + 全局限流。
+ * Слой выполнения действий Telegram: обёртки sendText, readHistory + глобальный rate-limiter.
  *
- * mtcute 内置了 FloodWait 自动退避（flood-waiter middleware），
- * 这里的限流器是应用层保护——控制请求速率，避免触发 FloodWait。
+ * mtcute встроил автоматический откат FloodWait (middleware flood-waiter);
+ * здесь rate-limiter — защита на уровне приложения: контролирует частоту запросов,
+ * чтобы не провоцировать FloodWait.
  */
 
 import { md } from "@mtcute/markdown-parser";
@@ -18,12 +19,12 @@ import {
 const log = createLogger("actions");
 
 /**
- * 滑动窗口限流器。
- * 限制在 windowMs 内最多 maxRequests 次调用。
+ * Ограничитель со скользящим окном.
+ * Допускает не более maxRequests вызовов за windowMs.
  */
 class SlidingWindowLimiter {
   private timestamps: number[] = [];
-  /** Promise 链互斥，防止并发 acquire 竞争。 */
+  /** Взаимное исключение через цепочку Promise: предотвращает гонку при конкурентном acquire. */
   private _queue: Promise<void> = Promise.resolve();
 
   constructor(
@@ -32,18 +33,18 @@ class SlidingWindowLimiter {
   ) {}
 
   async acquire(): Promise<void> {
-    // 串行化：所有 acquire 排队执行，消除并发竞争
+    // Сериализация: все acquire выстраиваются в очередь, исключая конкурентную гонку
     this._queue = this._queue.then(() => this._doAcquire());
     return this._queue;
   }
 
   private async _doAcquire(): Promise<void> {
     const now = Date.now();
-    // 清除窗口外的旧时间戳
+    // Удаляем старые метки времени за пределами окна
     this.timestamps = this.timestamps.filter((t) => t > now - this.windowMs);
 
     if (this.timestamps.length >= this.maxRequests) {
-      // 等到最早的时间戳滑出窗口
+      // Ждём, пока самая ранняя метка не выйдет за пределы окна
       const waitMs = this.timestamps[0] + this.windowMs - now;
       log.debug("Rate limit hit, waiting", { waitMs });
       await new Promise((resolve) => setTimeout(resolve, waitMs));
@@ -54,14 +55,14 @@ class SlidingWindowLimiter {
   }
 }
 
-// 全局限流：30 次/分钟（Telegram userbot 的保守安全线）
+// Глобальный rate-limiter: 30 запросов/минуту (консервативный безопасный предел для Telegram userbot)
 const globalLimiter = new SlidingWindowLimiter(30, 60_000);
 
 /**
- * Markdown 预处理：覆盖 mtcute md() 不支持但 LLM 会输出的模式。
- * - # Heading → **Heading**（标题转粗体）
- * - - item / * item → • item（列表转符号）
- * - 1. item → • item（有序列表转符号）
+ * Предобработка Markdown: покрывает шаблоны, не поддерживаемые mtcute md(), но генерируемые LLM.
+ * - # Heading → **Heading** (заголовок → жирный)
+ * - - item / * item → • item (список → символ)
+ * - 1. item → • item (нумерованный список → символ)
  */
 function preprocessMarkdown(text: string): string {
   return text
@@ -71,8 +72,8 @@ function preprocessMarkdown(text: string): string {
 }
 
 /**
- * 尝试将文本作为 markdown 解析为 TextWithEntities。
- * 有 entities 则返回解析结果，否则返回 null（fallback 到纯文本）。
+ * Пытается разобрать текст как markdown в TextWithEntities.
+ * Если entities присутствуют — возвращает результат разбора, иначе null (fallback на plain text).
  */
 function tryParseMarkdown(text: string): { text: string; entities: tl.TypeMessageEntity[] } | null {
   try {
@@ -82,14 +83,16 @@ function tryParseMarkdown(text: string): { text: string; entities: tl.TypeMessag
       return parsed as { text: string; entities: tl.TypeMessageEntity[] };
     }
   } catch {
-    // 解析失败 → 纯文本 fallback
+    // Ошибка разбора → fallback на plain text
   }
   return null;
 }
 
 /**
- * 发送文字消息。支持可选的 mention entity（真正的 @ 提及，而非纯文本 @username）。
- * 自动检测 markdown 格式（**bold**、`code`、[link](url) 等），有 entities 则渲染。
+ * Отправляет текстовое сообщение. Поддерживает опциональный mention entity
+ * (настоящее @ упоминание, а не просто текст @username).
+ * Автоматически определяет форматирование markdown (**bold**, `code`, [link](url) и т.д.),
+ * если entities найдены — рендерит их.
  */
 export async function sendText(
   client: TelegramClient,
@@ -111,8 +114,8 @@ export async function sendText(
     if (options.mentions?.length) {
       const entities: tl.TypeMessageEntity[] = mdParsed ? [...mdParsed.entities] : [];
       for (const m of options.mentions) {
-        // 使用 messageEntityMentionName（userId: number），mtcute _normalizeInputText
-        // 会在 sendText 内部自动转换为 inputMessageEntityMentionName + resolvePeer。
+        // Используем messageEntityMentionName (userId: number); mtcute _normalizeInputText
+        // автоматически конвертирует в inputMessageEntityMentionName + resolvePeer внутри sendText.
         // @see docs/reference/mtcute/ packages/core/src/highlevel/methods/misc/normalize-text.ts
         entities.push({
           _: "messageEntityMentionName",
@@ -138,23 +141,23 @@ export async function sendText(
 }
 
 /**
- * 标记频道为已读（消息 + mention + reaction）。
+ * Помечает канал как прочитанный (сообщения + mention + reaction).
  */
 export async function markRead(client: TelegramClient, chatId: string | number): Promise<void> {
   await globalLimiter.acquire();
-  // ADR-114 D3: 同时清除 mention 未读计数，避免 mention badge 累积
+  // ADR-114 D3: одновременно сбрасываем счётчик непрочитанных mention, чтобы не накапливался badge
   await client.readHistory(chatId, { clearMentions: true });
-  // 清除 reaction 未读角标——与 mention 同理，"看了就已读"
-  // 复用同一次 limiter acquire——readHistory 和 readReactions 是同一用户意图（"标记已读"）
+  // Сбрасываем бейдж непрочитанных reaction — по той же логике: «увидел = прочитал»
+  // Повторно используем тот же limiter acquire — readHistory и readReactions имеют одно намерение («пометить прочитанным»)
   try {
     await client.readReactions(chatId);
   } catch {
-    // readReactions 失败不阻断主流程
+    // Ошибка readReactions не блокирует основной поток
   }
 }
 
 /**
- * 获取频道历史消息。
+ * Получает историю сообщений канала.
  */
 export async function getHistory(
   client: TelegramClient,
@@ -166,7 +169,7 @@ export async function getHistory(
 }
 
 /**
- * 对消息添加 emoji 表情回应。
+ * Добавляет emoji-реакцию на сообщение.
  */
 export async function sendReaction(
   client: TelegramClient,
@@ -186,10 +189,10 @@ export async function sendReaction(
   }
 }
 
-// ── M2: 行动空间扩展 ─────────────────────────────────────────────────────
+// ── M2: Расширение пространства действий ─────────────────────────────────────────────────────
 
 /**
- * 编辑已发送的消息。
+ * Редактирует отправленное сообщение.
  */
 export async function editMessage(
   client: TelegramClient,
@@ -217,7 +220,7 @@ export async function editMessage(
 }
 
 /**
- * 转发消息到另一个聊天。
+ * Пересылает сообщение в другой чат.
  */
 export async function forwardMessage(
   client: TelegramClient,
@@ -309,7 +312,7 @@ export async function uploadMessageMediaCopy(
 }
 
 /**
- * 发送贴纸（通过 file ID）。
+ * Отправляет стикер (по file ID).
  */
 export async function sendSticker(
   client: TelegramClient,
@@ -330,7 +333,7 @@ export async function sendSticker(
 }
 
 /**
- * 固定消息。
+ * Закрепляет сообщение.
  */
 export async function pinMessage(
   client: TelegramClient,
@@ -342,8 +345,8 @@ export async function pinMessage(
 }
 
 /**
- * 发送/取消打字指示器。
- * 不经过 globalLimiter（不产生消息，不受速率限制）。
+ * Отправляет/отменяет индикатор набора текста.
+ * Не проходит через globalLimiter (не создаёт сообщений, не ограничен по частоте).
  */
 export async function setTyping(
   client: TelegramClient,
@@ -356,12 +359,12 @@ export async function setTyping(
   });
 }
 
-// ── M5: 行动空间全量扩展 ─────────────────────────────────────────────────
+// ── M5: Полное расширение пространства действий ─────────────────────────────────────────────────
 
-// ── 搜索 ──
+// ── Поиск ──
 
 /**
- * 聊天内搜索消息。
+ * Поиск сообщений внутри чата.
  */
 export async function searchMessages(
   client: TelegramClient,
@@ -375,7 +378,7 @@ export async function searchMessages(
 }
 
 /**
- * 全局搜索消息（跨所有聊天）。
+ * Глобальный поиск сообщений (по всем чатам).
  */
 export async function searchGlobal(
   client: TelegramClient,
@@ -391,7 +394,7 @@ export async function searchGlobal(
 // ── Bot / Inline ──
 
 /**
- * 获取已安装的贴纸集列表（仅元信息，不含贴纸本身）。
+ * Получает список установленных наборов стикеров (только метаданные, без самих стикеров).
  */
 export async function getInstalledStickers(client: TelegramClient): Promise<StickerSet[]> {
   await globalLimiter.acquire();
@@ -399,8 +402,8 @@ export async function getInstalledStickers(client: TelegramClient): Promise<Stic
 }
 
 /**
- * 获取贴纸集详情（含贴纸列表）。
- * @param setId 贴纸集短名或 ID
+ * Получает детали набора стикеров (включая список стикеров).
+ * @param setId короткое имя или ID набора стикеров
  */
 export async function getStickerSet(client: TelegramClient, setId: string): Promise<StickerSet> {
   await globalLimiter.acquire();
@@ -408,7 +411,7 @@ export async function getStickerSet(client: TelegramClient, setId: string): Prom
 }
 
 /**
- * 点击 bot inline keyboard 按钮（获取回调应答）。
+ * Нажимает кнопку inline keyboard бота (получает callback-ответ).
  */
 export async function getCallbackAnswer(
   client: TelegramClient,
@@ -426,8 +429,8 @@ export async function getCallbackAnswer(
 }
 
 /**
- * 查询 inline bot 结果。
- * 使用 Raw TL 调用 messages.getInlineBotResults。
+ * Запрашивает результаты inline-бота.
+ * Использует Raw TL вызов messages.getInlineBotResults.
  */
 export async function getInlineBotResults(
   client: TelegramClient,
@@ -466,8 +469,8 @@ export async function getInlineBotResults(
 }
 
 /**
- * 发送 inline bot 查询结果。
- * 使用 Raw TL 调用 messages.sendInlineBotResult。
+ * Отправляет результат запроса inline-бота.
+ * Использует Raw TL вызов messages.sendInlineBotResult.
  */
 export async function sendInlineBotResult(
   client: TelegramClient,
@@ -489,10 +492,10 @@ export async function sendInlineBotResult(
   });
 }
 
-// ── 媒体 / 消息管理 ──
+// ── Медиа / управление сообщениями ──
 
 /**
- * 发送媒体文件（通过 file ID，可附带 caption）。
+ * Отправляет медиафайл (по file ID, с опциональным caption).
  */
 export async function sendMedia(
   client: TelegramClient,
@@ -508,7 +511,7 @@ export async function sendMedia(
 }
 
 /**
- * 发送投票。仅群组/频道可用（userbot 私聊发 poll 会 MEDIA_INVALID）。
+ * Отправляет опрос. Доступно только в группах/каналах (userbot в личке получит MEDIA_INVALID).
  */
 export async function sendPoll(
   client: TelegramClient,
@@ -521,7 +524,7 @@ export async function sendPoll(
 }
 
 /**
- * 删除消息（双向撤回）。
+ * Удаляет сообщения (двусторонний отзыв).
  */
 export async function deleteMessages(
   client: TelegramClient,
@@ -533,7 +536,7 @@ export async function deleteMessages(
 }
 
 /**
- * 按 ID 获取特定消息。
+ * Получает конкретные сообщения по ID.
  */
 export async function getMessages(
   client: TelegramClient,
@@ -544,11 +547,11 @@ export async function getMessages(
   return client.getMessages(chatId, ids);
 }
 
-// ── 群组发现 ──
+// ── Обнаружение групп ──
 
 /**
- * 加入频道/群组。支持 invite link、@username、数字 ID。
- * 若需管理员审批，返回 { pending: true }。
+ * Вступает в канал/группу. Поддерживает invite link, @username, числовой ID.
+ * Если требуется одобрение администратора, возвращает { pending: true }.
  */
 export async function joinChat(
   client: TelegramClient,
@@ -560,7 +563,7 @@ export async function joinChat(
 }
 
 /**
- * 离开频道/群组。
+ * Покидает канал/группу.
  */
 export async function leaveChat(client: TelegramClient, chatId: string | number): Promise<void> {
   await globalLimiter.acquire();
@@ -568,8 +571,8 @@ export async function leaveChat(client: TelegramClient, chatId: string | number)
 }
 
 /**
- * 搜索公开聊天（群组/频道/用户）。
- * 使用 Raw TL 调用 contacts.search。
+ * Ищет публичные чаты (группы/каналы/пользователи).
+ * Использует Raw TL вызов contacts.search.
  */
 export async function searchPublicChats(
   client: TelegramClient,
@@ -601,7 +604,7 @@ export async function searchPublicChats(
 }
 
 /**
- * 预览私有群组信息（通过 invite link）。
+ * Предпросмотр информации о приватной группе (по invite link).
  */
 export async function getChatPreview(
   client: TelegramClient,
@@ -612,7 +615,7 @@ export async function getChatPreview(
 }
 
 /**
- * 获取相似频道推荐。
+ * Получает рекомендации похожих каналов.
  */
 export async function getSimilarChannels(
   client: TelegramClient,
@@ -623,11 +626,11 @@ export async function getSimilarChannels(
   return [...result];
 }
 
-// ── Bot 命令发现 ──
+// ── Обнаружение команд бота ──
 
 /**
- * 获取指定 bot 的命令列表。
- * 通过 users.getFullUser 取 botInfo.commands（适用于任意 bot，不限于自有 bot）。
+ * Получает список команд указанного бота.
+ * Использует users.getFullUser для получения botInfo.commands (работает для любого бота, не только собственного).
  */
 export async function getBotCommands(
   client: TelegramClient,
@@ -650,11 +653,11 @@ export async function getBotCommands(
   }));
 }
 
-// ── 账户管理 ──
+// ── Управление аккаунтом ──
 
 /**
- * 修改 Alice 的个人资料（名字、姓氏、签名/简介）。
- * 传 undefined 的字段不修改，传空字符串则清空。
+ * Изменяет профиль Алисы (имя, фамилия, подпись/биография).
+ * Поля с undefined не изменяются, пустая строка — очищает поле.
  */
 export async function updateProfile(
   client: TelegramClient,
@@ -670,7 +673,7 @@ export async function updateProfile(
 }
 
 /**
- * 读取收藏夹（Saved Messages）的最近消息。
+ * Читает последние сообщения из избранного (Saved Messages).
  */
 export async function readSavedMessages(client: TelegramClient, limit = 10): Promise<Message[]> {
   await globalLimiter.acquire();
@@ -678,7 +681,7 @@ export async function readSavedMessages(client: TelegramClient, limit = 10): Pro
 }
 
 /**
- * 创建群组/频道的邀请链接。
+ * Создаёт пригласительную ссылку для группы/канала.
  */
 export async function createInviteLink(
   client: TelegramClient,
@@ -689,11 +692,11 @@ export async function createInviteLink(
   return { link: invite.link };
 }
 
-// ── 语音消息 ──
+// ── Голосовые сообщения ──
 
 /**
- * ADR-88: 发送语音消息（OGG/Opus Buffer）。
- * @param audioBuffer OGG/Opus 格式的音频 Buffer
+ * ADR-88: Отправляет голосовое сообщение (OGG/Opus Buffer).
+ * @param audioBuffer аудио Buffer в формате OGG/Opus
  */
 export async function sendVoice(
   client: TelegramClient,
@@ -708,7 +711,7 @@ export async function sendVoice(
       chatId,
       InputMedia.voice(audioBuffer, {
         duration: options.duration,
-        // Telegram 要求 OGG/Opus 才显示波形条（voice message 样式）
+        // Telegram требует OGG/Opus для отображения формы волны (стиль voice message)
         fileMime: "audio/ogg",
         fileName: "voice.ogg",
       }),
@@ -720,11 +723,11 @@ export async function sendVoice(
   return sent?.id;
 }
 
-// ── 社交工具 ──
+// ── Социальные инструменты ──
 
 /**
- * 翻译消息文本。
- * @param toLang 目标语言（两位 ISO 639-1 语言代码，如 "en", "zh"）
+ * Переводит текст сообщения.
+ * @param toLang целевой язык (двухбуквенный код ISO 639-1, например "en", "ru")
  */
 export async function translateMessage(
   client: TelegramClient,
@@ -738,7 +741,7 @@ export async function translateMessage(
 }
 
 /**
- * 获取与指定用户的共同群组。
+ * Получает общие группы с указанным пользователем.
  */
 export async function getCommonChats(
   client: TelegramClient,
@@ -749,7 +752,7 @@ export async function getCommonChats(
 }
 
 /**
- * 取消固定消息。
+ * Открепляет сообщение.
  */
 export async function unpinMessage(
   client: TelegramClient,
@@ -763,7 +766,7 @@ export async function unpinMessage(
 // ── ADR-117 D7: Exa Browse ────────────────────────────────────────────────
 
 /**
- * ADR-117 D7: Exa 搜索 API 封装。
+ * ADR-117 D7: Обёртка над Exa Search API.
  * @see https://docs.exa.ai/reference/search
  */
 export async function exaFetch(
@@ -804,8 +807,8 @@ export async function exaFetch(
 }
 
 /**
- * Exa URL 内容提取 API 封装。
- * 给定 URL 列表，返回页面标题 + 正文原文。
+ * Обёртка над Exa Contents API для извлечения содержимого URL.
+ * По списку URL возвращает заголовки страниц + исходный текст.
  * @see https://docs.exa.ai/reference/contents
  */
 export async function exaExtract(
@@ -845,13 +848,13 @@ export async function exaExtract(
 }
 
 /**
- * Sub-ReAct：LLM 定向摘要子调用。
- * 将 URL 原文压缩为聚焦摘要，防止上下文爆炸。
+ * Sub-ReAct: подзапрос LLM для направленного реферирования.
+ * Сжимает исходный текст URL в сфокусированное резюме, предотвращая переполнение контекста.
  *
- * @param content  Exa 提取的原文
- * @param url      来源 URL
- * @param focus    可选的定向关注点（Alice 为什么要读这个页面）
- * @returns 压缩后的摘要文本（~500 字以内）
+ * @param content  исходный текст, извлечённый Exa
+ * @param url      исходный URL
+ * @param focus    опциональная точка фокуса (зачем Алисе читать эту страницу)
+ * @returns сжатый текст резюме (~500 символов)
  */
 export async function summarizeWebContent(
   content: string,
@@ -883,12 +886,12 @@ export async function summarizeWebContent(
 }
 
 /**
- * Sub-ReAct：根据搜索结果回答问题。
- * google 动作的合成步——将多条搜索片段压缩为一个直接回答。
+ * Sub-ReAct: ответ на вопрос по результатам поиска.
+ * Шаг синтеза действия google — сжимает несколько поисковых фрагментов в один прямой ответ.
  *
- * @param question  用户问题
- * @param sources   搜索结果（title + url + text）
- * @returns 合成答案文本（~500 字以内）
+ * @param question  вопрос пользователя
+ * @param sources   результаты поиска (title + url + text)
+ * @returns текст синтезированного ответа (~500 символов)
  */
 export async function synthesizeAnswer(
   question: string,
@@ -914,7 +917,7 @@ export async function synthesizeAnswer(
   });
 }
 
-/** 内部：通用 LLM 摘要调用。 */
+/** Внутренний: универсальный LLM-вызов для реферирования. */
 async function llmSummarize(opts: {
   systemPrompt: string;
   userPrompt: string;
@@ -948,13 +951,13 @@ async function llmSummarize(opts: {
   }
 }
 
-// ── ADR-114 D2: Mention 扩散 ─────────────────────────────────────────────
+// ── ADR-114 D2: Распространение Mention ─────────────────────────────────────────────
 
 /**
- * 获取未读 @mention 消息的 ID 列表。
- * 使用 Raw TL messages.getUnreadMentions。必须在 markRead({ clearMentions }) 之前调用。
+ * Получает список ID непрочитанных @mention сообщений.
+ * Использует Raw TL messages.getUnreadMentions. Должен вызываться до markRead({ clearMentions }).
  *
- * 返回 message ID 数组（调用方用 getMessages 或 getMessageCluster 获取完整消息）。
+ * Возвращает массив message ID (вызывающий использует getMessages или getMessageCluster для получения полных сообщений).
  * @see docs/adr/114-context-assembly-rehabilitation.md — D2
  */
 export async function getUnreadMentionIds(
@@ -974,10 +977,10 @@ export async function getUnreadMentionIds(
       maxId: 0,
       minId: 0,
     });
-    // tl.messages.TypeMessages 的 messagesNotModified 变体没有 messages 字段
+    // Вариант messagesNotModified в tl.messages.TypeMessages не содержит поле messages
     if (res._ === "messages.messagesNotModified") return [];
-    // 所有其他变体（messages/messagesSlice/channelMessages）都有 messages: TypeMessage[]
-    // TypeMessage 的所有变体（message/messageEmpty/messageService）都有 id: number
+    // Все остальные варианты (messages/messagesSlice/channelMessages) содержат messages: TypeMessage[]
+    // Все варианты TypeMessage (message/messageEmpty/messageService) содержат id: number
     return res.messages.map((m) => m.id).filter((id) => id > 0);
   } catch (e) {
     log.warn("Failed to get unread mentions", e);

@@ -31,34 +31,34 @@ const ERROR_DETAIL_PREFIX = "__ALICE_ERROR_DETAIL__:";
 const OBSERVATION_PREFIX = "__ALICE_OBSERVATION__:";
 
 /**
- * 中心化清洗：剥离 CLI 输出中 LLM 不应看到的噪音。
+ * Централизованная очистка: удаление шума из вывода CLI, который LLM не должен видеть.
  *
- * 在数据入口点（shell-executor stdout/stderr 解析处）一处清洗，
- * 全链路受益——output-presenter、observations、prompt 渲染都看到干净文本。
+ * Очистка в одной точке входа данных (парсинг stdout/stderr в shell-executor)
+ * даёт выигрыш по всей цепочке — output-presenter, observations и рендеринг prompt получают чистый текст.
  */
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI 转义码
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape-коды
 const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
-// biome-ignore lint/suspicious/noControlCharactersInRegex: OSC 序列（终端标题等）
+// biome-ignore lint/suspicious/noControlCharactersInRegex: OSC-последовательности (заголовок терминала и т.п.)
 const OSC_RE = /\x1b\][^\x07]*\x07/g;
-// 某些链路会丢掉 ESC，只留下 `[4m` / `[22m` 这类半截 ANSI 残片。
-// 这里直接匹配常见 ANSI/CSI 终止字母，宁可多杀一点终端噪音，也不把乱码送给 LLM。
+// В некоторых цепочках ESC теряется, оставляя обрывки вида `[4m` / `[22m`.
+// Здесь напрямую матчим завершающие буквы ANSI/CSI — лучше срезать лишний шум, чем передавать мусор LLM.
 const ORPHAN_ANSI_FRAGMENT_RE = /\[[0-9;]{1,6}(?:m|[ABCDHJKSTfhlmnsu])/g;
-// 零宽字符/BOM 对 LLM 无信息价值，且容易表现成“乱码”。
+// Символы нулевой ширины / BOM не несут смысла для LLM и проявляются как «мусор».
 const INVISIBLE_NOISE_RE = /[\u200b-\u200f\u2060\ufeff]/g;
-// biome-ignore lint/suspicious/noControlCharactersInRegex: 残留控制字符（\b backspace, \x7f DEL 等，保留 \t \n \r）
+// biome-ignore lint/suspicious/noControlCharactersInRegex: остаточные управляющие символы (\b backspace, \x7f DEL и т.д.; \t \n \r оставляем)
 const CONTROL_CHAR_RE = /[\x00-\x08\x0b\x0c\x0e-\x1a\x7f]/g;
 
 function sanitizeForLLM(text: string): string {
   return text
-    .replace(ANSI_ESCAPE_RE, "") // [36m, [1m, [0m 等颜色/粗体/重置
-    .replace(OSC_RE, "") // 终端标题设置等 OSC 序列
-    .replace(ORPHAN_ANSI_FRAGMENT_RE, "") // [4m / [1m / [22m 这类失去 ESC 的残片
-    .replace(INVISIBLE_NOISE_RE, "") // 零宽空格、BOM 等不可见噪音
-    .replace(CONTROL_CHAR_RE, ""); // 残留控制字符
+    .replace(ANSI_ESCAPE_RE, "") // [36m, [1m, [0m и прочие цвета/жирный/сброс
+    .replace(OSC_RE, "") // OSC-последовательности (установка заголовка терминала и т.п.)
+    .replace(ORPHAN_ANSI_FRAGMENT_RE, "") // обрывки [4m / [1m / [22m, лишившиеся ESC
+    .replace(INVISIBLE_NOISE_RE, "") // невидимый шум: пробел нулевой ширины, BOM и др.
+    .replace(CONTROL_CHAR_RE, ""); // остаточные управляющие символы
 }
 
-// Engine API 端口（由 index.ts 启动后注入）
+// Порт Engine API (вводится после старта index.ts)
 let _enginePort = 0;
 export function setEnginePort(port: number) {
   _enginePort = port;
@@ -67,7 +67,7 @@ export function getEnginePort(): number {
   return _enginePort;
 }
 
-/** 返回 { ALICE_ENGINE_URL } 环境变量（宿主侧 localhost）。端口未设置时返回空对象。 */
+/** Возвращает переменную окружения { ALICE_ENGINE_URL } (localhost на стороне хоста). При незаданном порте возвращает пустой объект. */
 export function engineUrlEnv(): Record<string, string> {
   return _enginePort ? { ALICE_ENGINE_URL: `http://127.0.0.1:${_enginePort}` } : {};
 }
@@ -75,10 +75,10 @@ export function engineUrlEnv(): Record<string, string> {
 export { ALICE_HOME };
 
 /**
- * Alice 已知系统命令名（用于单行脚本归一化）。
+ * Известные системные команды Alice (используются при нормализации однострочных скриптов).
  * @see src/skills/registry.ts — BUILTIN_SYSTEM_REGISTRY
  */
-// 预留：命令检测正则（preprocessScript 重构时使用）
+// Зарезервировано: regex для определения команд (используется при рефакторинге preprocessScript)
 // const ALICE_COMMANDS = /\b(irc|album|self|engine|alice-pkg)\b/;
 
 function preprocessScript(script: string): string {
@@ -92,16 +92,16 @@ function preprocessScript(script: string): string {
   // first script line. The executor already invokes /bin/sh; strip the label.
   s = s.replace(/^(?:sh|bash|shell)\s*\n/i, "").trim();
 
-  // ── 单行归一化 ──
-  // LLM 有时输出单行脚本：`# 思考1# 思考2irc say "hello" self feel ...`
-  // 在 shell 中 `#` 注释吃掉整行，导致所有命令失效。
-  // 修复：在 # 注释边界和已知命令边界前插入换行。
+  // ── Нормализация однострочных скриптов ──
+  // LLM иногда выдаёт однострочный скрипт: `# мысль1# мысль2irc say "hello" self feel ...`
+  // В shell комментарий `#` поглощает всю строку, обнуляя все команды.
+  // Исправление: вставляем перенос строки перед границей # и перед именами известных команд.
   if (!s.includes("\n")) {
-    // 1. 在 mid-line `# ` 前插入换行（拆分内心独白）
+    // 1. Вставляем перенос строки перед mid-line `# ` (разбиваем внутренний монолог)
     s = s.replace(/(?<=\S)\s*(?=# )/g, "\n");
-    // 2. 在已知命令名前插入换行（拆分命令）
-    //    (?<=['"。！？.!?\s]) 要求前面是引号、标点或空白——避免拆碎单词
-    //    \b 要求是完整命令名——`self-conscious` 中的 self 后面跟 `-` 不匹配
+    // 2. Вставляем перенос строки перед именами известных команд (разбиваем команды)
+    //    (?<=['"。！？.!?\s]) требует кавычки, знак препинания или пробел перед — не ломаем слова
+    //    \b требует полного имени команды — self в `self-conscious` (за ним `-`) не совпадает
     s = s.replace(
       /(?<=['"\u3002\uff01\uff1f.!?\s])((?:irc|album|self|engine|alice-pkg)\b)/g,
       "\n$1",
@@ -112,20 +112,20 @@ function preprocessScript(script: string): string {
 }
 
 /**
- * 从脚本源码中提取 `# ...` 注释作为 LLM 的内心独白（thinks）。
+ * Извлекает комментарии `# ...` из исходного скрипта как внутренний монолог LLM (thinks).
  *
- * Shell 合约："Use `# ...` comments as your inner monologue"。
- * 这些注释是 LLM 的认知轨迹（ReAct Thought），需要被捕获到
- * thinks[] → feedback-arc reasoning → action_log.reasoning 管线。
+ * Shell-контракт: "Use `# ...` comments as your inner monologue".
+ * Эти комментарии — когнитивный след LLM (ReAct Thought), который должен попасть в
+ * пайплайн thinks[] → feedback-arc reasoning → action_log.reasoning.
  *
  * @see docs/adr/70-react-loop-mapping.md — think() → ReAct Thought
- * @see docs/adr/163-expand-instruction-bt-native-disclosure.md — think 是唯一的 Cognitive 原语
+ * @see docs/adr/163-expand-instruction-bt-native-disclosure.md — think — единственный Cognitive-примитив
  */
 function extractThinks(script: string): string[] {
   const thinks: string[] = [];
   for (const line of script.split("\n")) {
     const trimmed = line.trim();
-    // 跳过 shebang、空注释、纯 section 分隔符
+    // Пропускаем shebang, пустые комментарии и разделители секций
     if (trimmed.startsWith("#!")) continue;
     if (trimmed === "#") continue;
     if (/^#+$/.test(trimmed)) continue;
@@ -147,8 +147,8 @@ function buildContextEnv(contextVars?: Record<string, unknown>): Record<string, 
   const env: Record<string, string> = {};
   if (!contextVars) return env;
 
-  // 所有 contextVars 以 ALICE_CTX_ 前缀注入（如 ALICE_CTX_TARGET_CHAT）。
-  // CLI 命令在 --to 省略时自动从 ALICE_CTX_TARGET_CHAT fallback。
+  // Все contextVars вводятся с префиксом ALICE_CTX_ (напр. ALICE_CTX_TARGET_CHAT).
+  // CLI-команды при отсутствии --to автоматически используют ALICE_CTX_TARGET_CHAT как fallback.
 
   const chatName = toEnvValue(contextVars.CHAT_NAME);
   if (chatName) env.ALICE_CHAT_NAME = chatName;
@@ -207,8 +207,8 @@ export async function executeShellScript(
     silenceReason: null,
   };
 
-  // 从脚本源码提取 # 注释作为认知轨迹（thinks）。
-  // 在执行前提取——即使脚本后续失败，思考过程仍被记录。
+  // Извлекаем # комментарии из исходника скрипта как когнитивный след (thinks).
+  // Извлечение до выполнения — мысли фиксируются даже при последующей ошибке скрипта.
   result.thinks = extractThinks(processed);
 
   if (!processed) {
@@ -229,14 +229,14 @@ export async function executeShellScript(
 
   const env = buildInstalledSkillEnv({
     skillName: "alice-system",
-    // ALICE_ENGINE_URL 由 docker.ts buildDockerExecConfig 统一注入
-    // （通过 host.docker.internal:PORT）。
+    // ALICE_ENGINE_URL вводится централизованно через buildDockerExecConfig в docker.ts
+    // (через host.docker.internal:PORT).
     extraEnv: buildContextEnv(opts.contextVars),
   });
 
   const execResult = await executeInContainer(`set -e\n${processed}`, env);
 
-  // 中心化清洗：在数据入口点一处清洗，全链路受益
+  // Централизованная очистка: одна точка входа — выигрыш по всей цепочке
   const cleanStdout = sanitizeForLLM(execResult.stdout);
   const cleanStderr = sanitizeForLLM(execResult.stderr);
 
@@ -254,7 +254,7 @@ export async function executeShellScript(
       if (action.kind === "malformed") {
         result.instructionErrors.push(`invalid __ALICE_ACTION__: ${action.reason}`);
       }
-      return false; // 过滤掉，不进入 visible logs
+      return false; // фильтруем — не попадает в visible logs
     }
     if (line.startsWith(OBSERVATION_PREFIX)) {
       const observation = parseObservationControlLine(line);
@@ -322,10 +322,10 @@ interface ExecResult {
 /**
  * Container-isolated execution via Docker.
  *
- * 挂载宿主的 Alice 命令空间到容器内对应路径，使 LLM 脚本在容器中
- * 也能访问所有系统命令和已安装 Skill。
+ * Монтирует пространство команд Alice с хоста в соответствующие пути внутри контейнера,
+ * чтобы LLM-скрипты имели доступ ко всем системным командам и установленным Skill.
  *
- * TCP 通信不依赖 socket 挂载 → 所有容器统一使用 gVisor (sandboxed)。
+ * TCP-связь не зависит от монтирования сокета → все контейнеры единообразно используют gVisor (sandboxed).
  */
 function executeInContainer(script: string, env: Record<string, string>): Promise<ExecResult> {
   return executeAliceSandboxProcess({

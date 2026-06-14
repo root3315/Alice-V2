@@ -1,21 +1,21 @@
 /**
- * ADR-88: 图片/GIF/贴纸/视频感知模块。
+ * ADR-88: Модуль восприятия изображений/GIF/стикеров/видео.
  *
- * 架构：
- *   getVlmModel()      — 按需创建 Vercel AI SDK VLM provider（lazy singleton）
- *   MEDIA_HANDLERS      — 每种媒体类型的 prompt 定义（注册表）
- *   describeMedia()     — 公共 API，按 mediaType 路由；sticker 走 generateObject
- *   getStickerAnalysis() — 贴纸结构化分析（describeMedia("sticker") 的副产物）
+ * Архитектура:
+ *   getVlmModel()       — создаёт VLM-провайдер Vercel AI SDK по запросу (lazy singleton)
+ *   MEDIA_HANDLERS       — реестр prompt-определений для каждого типа медиа
+ *   describeMedia()      — публичный API, маршрутизирует по mediaType; sticker идёт через generateObject
+ *   getStickerAnalysis() — структурированный анализ стикера (побочный продукт describeMedia("sticker"))
  *
- * 设计原则：
- *   - photo/gif/video: generateText() → markdown strip → description
- *   - sticker: generateObject() + Zod schema → description + StickerAnalysis（读同时写）
- *   - 内容安全过滤 → WD Tagger fallback → 占位符
- *   - Zod 校验所有外部数据
+ * Принципы проектирования:
+ *   - photo/gif/video: generateText() → strip markdown → description
+ *   - sticker: generateObject() + Zod schema → description + StickerAnalysis (чтение и запись одновременно)
+ *   - Фильтр безопасности содержимого → fallback WD Tagger → заглушка
+ *   - Zod валидирует все внешние данные
  *
  * @see docs/adr/88-multimodal-proactive-behavior.md §2.2
- * @see https://github.com/LlmKira/wd14-tagger-server — WD Tagger 服务
- * @see https://github.com/TelechaBot/anime-identify — 动漫图像分类
+ * @see https://github.com/LlmKira/wd14-tagger-server — WD Tagger сервис
+ * @see https://github.com/TelechaBot/anime-identify — классификация аниме-изображений
  */
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { generateObject, generateText, type LanguageModel } from "ai";
@@ -27,14 +27,14 @@ import { getCachedDescription, setCachedDescription } from "./media-cache.js";
 const log = createLogger("vision");
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Zod schemas — 外部数据的单一真相来源
+// Zod schemas — единственный источник истины для внешних данных
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Phase 2: 贴纸 VLM 结构化响应。
- * 字段名短（d/emo/act/int）以节约 VLM output tokens。
- * .describe() 注入 JSON Schema descriptions → API 强制 structured output。
- * anime/text 判断由专用模型完成（ONNX anime-identify + OCR），VLM 只负责语义维度。
+ * Phase 2: Структурированный ответ VLM для стикеров.
+ * Короткие имена полей (d/emo/act/int) экономят токены вывода VLM.
+ * .describe() инжектирует описания JSON Schema → API принудительно применяет structured output.
+ * Определение anime/text выполняется специализированной моделью (ONNX anime-identify + OCR), VLM отвечает только за семантику.
  */
 const stickerVlmSchema = z.object({
   d: z.string().min(1).describe("What the sticker conveys, one sentence, plain text"),
@@ -59,7 +59,7 @@ const stickerVlmSchema = z.object({
   int: z.enum(["gentle", "moderate", "intense"]).describe("Expression intensity"),
 });
 
-/** Phase 2: 贴纸语义分析结果（公共类型，从 VLM schema 推导）。 */
+/** Phase 2: Результат семантического анализа стикера (публичный тип, выводится из VLM schema). */
 export const stickerAnalysisSchema = z.object({
   description: z.string(),
   emotion: stickerVlmSchema.shape.emo,
@@ -69,7 +69,7 @@ export const stickerAnalysisSchema = z.object({
 
 export type StickerAnalysis = z.infer<typeof stickerAnalysisSchema>;
 
-/** WD Tagger API 响应。 */
+/** Ответ WD Tagger API. */
 const wdTaggerResponseSchema = z.object({
   sorted_general_strings: z.string(),
   rating: z.object({
@@ -91,8 +91,8 @@ let _visionAuthDisabledKey = "";
 let _visionAuthDisabledUntil = 0; // H11: time-bounded latch — транзиентный 401/403 не глушит vision навсегда
 
 /**
- * 获取 VLM 语言模型实例。
- * 基于 visionBaseUrl + visionApiKey + visionModel 创建，配置不变时复用。
+ * Получает экземпляр языковой модели VLM.
+ * Создаётся на основе visionBaseUrl + visionApiKey + visionModel, переиспользуется при неизменной конфигурации.
  */
 function getVlmModel(config: Config): LanguageModel {
   const key = `${config.visionBaseUrl}|${config.visionApiKey}|${config.visionModel}`;
@@ -102,7 +102,7 @@ function getVlmModel(config: Config): LanguageModel {
     name: "vision",
     baseURL: config.visionBaseUrl,
     apiKey: config.visionApiKey,
-    // 启用 json_schema 模式 → generateObject 发送完整 schema，API 强制 structured output
+    // Включаем режим json_schema → generateObject отправляет полную schema, API принудительно применяет structured output
     // @see https://github.com/vercel/ai/issues/5197
     supportsStructuredOutputs: true,
   });
@@ -113,17 +113,17 @@ function getVlmModel(config: Config): LanguageModel {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 输入守卫
+// Входные ограждения
 // ═══════════════════════════════════════════════════════════════════════════
 
 type GuardResult = { ok: true } | { ok: false; reason: string; placeholder?: string };
 
-/** base64 大小 + SVG/XML 检测。 */
+/** Проверка размера base64 + обнаружение SVG/XML. */
 function guardBase64(imageBase64: string): GuardResult {
   if (imageBase64.length < 2000) {
     return { ok: false, reason: "too small", placeholder: "(media too small)" };
   }
-  // mtcute photoPathSize (type j) 膨胀为 <?xml><svg> outline
+  // mtcute photoPathSize (type j) раздувается до <?xml><svg> outline
   const head = Buffer.from(imageBase64.slice(0, 8), "base64");
   if (head.length >= 2 && head[0] === 0x3c && (head[1] === 0x3f || head[1] === 0x73)) {
     return { ok: false, reason: "SVG/XML", placeholder: "(non-raster media)" };
@@ -132,7 +132,7 @@ function guardBase64(imageBase64: string): GuardResult {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 媒体类型定义 — prompt 注册表
+// Определения типов медиа — реестр prompt'ов
 // ═══════════════════════════════════════════════════════════════════════════
 
 const MEDIA_PROMPTS = {
@@ -164,7 +164,7 @@ export type MediaType = keyof typeof MEDIA_PROMPTS;
 // WD14 Tagger Fallback
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** VLM 被安全过滤时的 fallback — 通过 tag 感知图片内容。 */
+/** Fallback при срабатывании фильтра безопасности VLM — восприятие содержимого изображения через теги. */
 async function describeWithTagger(
   imageBase64: string,
   taggerUrl: string,
@@ -210,10 +210,10 @@ async function describeWithTagger(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 后处理
+// Постобработка
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** strip markdown + 单行化（VLM 自由文本输出注入 IRC 格式）。 */
+/** Удаление markdown + приведение к одной строке (свободный текстовый вывод VLM инжектируется в IRC-формат). */
 function stripMarkdown(raw: string): string {
   return raw
     .replace(/\*{1,2}([^*]+)\*{1,2}/g, "$1")
@@ -224,7 +224,7 @@ function stripMarkdown(raw: string): string {
     .trim();
 }
 
-/** 内容安全过滤检测 — 覆盖 Gemini / OpenAI 等 provider 的各种拒绝形式。 */
+/** Обнаружение срабатывания фильтра безопасности содержимого — охватывает различные формы отказов провайдеров Gemini / OpenAI и др. */
 function isContentFilterError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e);
   return /safety|blocked|filter|content_policy|prompt_blocked|RECITATION/i.test(msg);
@@ -242,16 +242,16 @@ function isAuthFailure(e: unknown): boolean {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 贴纸结构化分析缓存 — describeMedia("sticker") 的副产物
+// Кеш структурированного анализа стикеров — побочный продукт describeMedia("sticker")
 // ═══════════════════════════════════════════════════════════════════════════
 
 const _stickerAnalysisCache = new Map<string, StickerAnalysis>();
 
 /**
- * 读取贴纸的结构化语义分析。
+ * Читает структурированный семантический анализ стикера.
  *
- * 在 describeMedia(base64, uid, "sticker", config) 调用后可用。
- * 生命周期：进程内存（不持久化，重启后重新分析）。
+ * Доступно после вызова describeMedia(base64, uid, "sticker", config).
+ * Жизненный цикл: память процесса (не персистируется, после перезапуска анализируется заново).
  */
 export function getStickerAnalysis(fileUniqueId: string): StickerAnalysis | undefined {
   const analysis = _stickerAnalysisCache.get(fileUniqueId);
@@ -260,27 +260,27 @@ export function getStickerAnalysis(fileUniqueId: string): StickerAnalysis | unde
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 公共 API
+// Публичный API
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 统一媒体描述入口 — 按 mediaType 路由。
+ * Единая точка входа для описания медиа — маршрутизирует по mediaType.
  *
- * | 类型    | SDK 函数          | 后处理              |
- * |---------|-------------------|---------------------|
- * | photo   | generateText()    | stripMarkdown       |
- * | gif     | generateText()    | stripMarkdown       |
- * | video   | generateText()    | stripMarkdown       |
- * | sticker | generateObject()  | Zod 结构化 + 缓存   |
+ * | Тип     | SDK-функция       | Постобработка           |
+ * |---------|-------------------|-------------------------|
+ * | photo   | generateText()    | stripMarkdown           |
+ * | gif     | generateText()    | stripMarkdown           |
+ * | video   | generateText()    | stripMarkdown           |
+ * | sticker | generateObject()  | Zod структурирование + кеш |
  *
- * **sticker "读同时写"**：
- * - generateObject() + stickerVlmSchema → API 强制 structured output
- * - description 返回给调用者（感知用）
- * - StickerAnalysis 缓存到内存 → getStickerAnalysis() 读取（调色板入库用）
+ * **sticker "чтение и запись одновременно"**:
+ * - generateObject() + stickerVlmSchema → API принудительно применяет structured output
+ * - description возвращается вызывающей стороне (для восприятия)
+ * - StickerAnalysis кешируется в памяти → читается через getStickerAnalysis() (для записи в палитру)
  *
- * Fallback: 内容安全过滤 → WD Tagger → 占位符。
+ * Fallback: фильтр безопасности содержимого → WD Tagger → заглушка.
  *
- * @returns 自然语言描述，或 undefined（禁用/失败）
+ * @returns Описание на естественном языке или undefined (отключено/ошибка)
  */
 export async function describeMedia(
   imageBase64: string,
@@ -296,14 +296,14 @@ export async function describeMedia(
     return undefined;
   }
 
-  // 缓存命中
+  // Попадание в кеш
   const cached = getCachedDescription(fileUniqueId);
   if (cached) {
     log.debug("Vision cache hit", { fileUniqueId, mediaType });
     return cached;
   }
 
-  // 输入守卫
+  // Входное ограждение
   const guard = guardBase64(imageBase64);
   if (!guard.ok) {
     log.warn(`Vision skipped: ${guard.reason}`, { fileUniqueId, mediaType });
@@ -319,7 +319,7 @@ export async function describeMedia(
     let description: string;
 
     if (mediaType === "sticker") {
-      // ── Structured path: generateObject → Zod 校验 → description + analysis ──
+      // ── Структурированный путь: generateObject → Zod проверка → description + analysis ──
       const { object } = await generateObject({
         model,
         schema: stickerVlmSchema,
@@ -352,7 +352,7 @@ export async function describeMedia(
         description: description.slice(0, 60),
       });
     } else {
-      // ── Free text path: generateText → stripMarkdown ──
+      // ── Путь свободного текста: generateText → stripMarkdown ──
       const { text } = await generateText({
         model,
         messages: [
@@ -388,7 +388,7 @@ export async function describeMedia(
       return undefined;
     }
 
-    // 内容安全过滤 → WD Tagger fallback
+    // Фильтр безопасности содержимого → fallback WD Tagger
     if (isContentFilterError(e)) {
       log.info("Vision content filtered, trying WD Tagger fallback", { fileUniqueId, mediaType });
       const taggerResult = config.wdTaggerUrl
@@ -411,23 +411,23 @@ export async function describeMedia(
   }
 }
 
-/** 获取缓存的图片描述（向后兼容导出）。 */
+/** Получает кешированное описание изображения (экспорт для обратной совместимости). */
 export function getCachedCaption(fileUniqueId: string): string | undefined {
   return getCachedDescription(fileUniqueId);
 }
 
-/** 检查 Vision 是否已启用。 */
+/** Проверяет, включён ли Vision. */
 export function isVisionEnabled(config: Config): boolean {
   return !!config.visionModel;
 }
 
 /**
- * 调用 AnimeIDF 微服务判断图片是否为动漫/插画风格。
- * 服务不可用时降级为 true（全部通过，不阻塞入库）。
+ * Вызывает микросервис AnimeIDF для определения, является ли изображение аниме/иллюстрацией.
+ * При недоступности сервиса деградирует до true (все проходят, запись в БД не блокируется).
  * @see docs/adr/153-sticker-palette-phase3-group-learning.md §D2
  */
 export async function isAnimeSticker(buffer: Buffer, config: Config): Promise<boolean> {
-  if (!config.animeClassifyUrl) return true; // 未配置 → 降级：全部通过
+  if (!config.animeClassifyUrl) return true; // Не настроено → деградация: все проходят
   try {
     const boundary = `----AnimeIDF${Date.now()}`;
     const header = Buffer.from(
@@ -440,10 +440,10 @@ export async function isAnimeSticker(buffer: Buffer, config: Config): Promise<bo
       body: Buffer.concat([header, buffer, footer]),
       signal: AbortSignal.timeout(5_000),
     });
-    if (!resp.ok) return true; // 服务异常 → 降级
+    if (!resp.ok) return true; // Ошибка сервиса → деградация
     const result = z.object({ anime: z.boolean() }).safeParse(await resp.json());
     return result.success ? result.data.anime : true;
   } catch {
-    return true; // 超时/网络错误 → 降级
+    return true; // Таймаут/сетевая ошибка → деградация
   }
 }

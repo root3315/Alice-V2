@@ -1,10 +1,10 @@
 /**
- * 内容寻址存储 — Nix 风格 SHA256 + 目录结构。
+ * Контентно-адресуемое хранилище — SHA256 в стиле Nix + структура каталогов.
  *
- * store/{hash}/ 下存放 manifest.yaml + 源码。
- * 同 manifest + 同版本 = 同 hash → 幂等安装，不重复。
+ * В store/{hash}/ хранятся manifest.yaml + исходный код.
+ * Одинаковый manifest + одинаковая версия = одинаковый hash → идемпотентная установка, без дублей.
  *
- * 安装时使用 Go 编译为静态二进制可执行文件。
+ * При установке компилируется в статический исполняемый бинарник через Go.
  *
  * @see docs/adr/201-os-for-llm.md
  */
@@ -23,23 +23,23 @@ import {
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
-/** 存储根目录。 */
+/** Корневой каталог хранилища. */
 const DEFAULT_STORE_ROOT = process.env.ALICE_STORE_ROOT
   ? resolve(process.env.ALICE_STORE_ROOT)
   : resolve(import.meta.dirname ?? ".", "../../skills/store");
 
-/** 获取存储根目录。 */
+/** Получить корневой каталог хранилища. */
 export function getAliceStoreRoot(): string {
   return DEFAULT_STORE_ROOT;
 }
 
 /**
- * 编译 skill 为静态 Go 二进制可执行文件。
+ * Скомпилировать skill в статический бинарник Go.
  *
- * 优先使用 dist/bin/ 下已编译的二进制（make 产物），
- * 否则使用 `go build` 从 cmd/skills/{name}/ 编译。
+ * Приоритет — уже скомпилированный бинарник в dist/bin/ (артефакт make),
+ * иначе используется `go build` из cmd/skills/{name}/.
  *
- * 与 Makefile 保持一致：CGO_ENABLED=0 go build -ldflags="-s -w"
+ * В соответствии с Makefile: CGO_ENABLED=0 go build -ldflags="-s -w"
  */
 export function compileSkillExecutable(
   _storePath: string,
@@ -49,10 +49,10 @@ export function compileSkillExecutable(
   const outputFile = join(binDir, skillName);
   const runtimeDir = resolve(import.meta.dirname ?? ".", "../..");
 
-  // 确保目标目录存在
+  // Убедиться, что целевой каталог существует
   mkdirSync(binDir, { recursive: true });
 
-  // 1) 优先：dist/bin/ 下已有编译好的二进制（make 产物）
+  // 1) Приоритет: готовый бинарник в dist/bin/ (артефакт make)
   const prebuilt = join(runtimeDir, "dist", "bin", skillName);
   if (existsSync(prebuilt)) {
     cpSync(prebuilt, outputFile);
@@ -60,7 +60,7 @@ export function compileSkillExecutable(
     return outputFile;
   }
 
-  // 2) 从 cmd/skills/{name}/ 用 Go 编译
+  // 2) Компилировать через Go из cmd/skills/{name}/
   const goSource = join(runtimeDir, "cmd", "skills", skillName);
   if (!existsSync(goSource)) {
     throw new Error(
@@ -68,7 +68,7 @@ export function compileSkillExecutable(
     );
   }
 
-  // 移除旧文件（如果存在）
+  // Удалить старый файл (если существует)
   rmSync(outputFile, { force: true });
 
   const result = spawnSync(
@@ -116,21 +116,21 @@ export function wrapSkillExecutable(
 }
 
 /**
- * 计算 manifest 内容的 SHA256 哈希。
- * 内容寻址 = 同内容同 hash。
+ * Вычислить SHA256-хеш содержимого manifest.
+ * Контентная адресация = одинаковое содержимое → одинаковый hash.
  */
 export function computeHash(content: string): string {
   return createHash("sha256").update(content).digest("hex").slice(0, 16);
 }
 
 /**
- * 同步 _lib 目录到 store 根目录。
+ * Синхронизировать каталог _lib в корень store.
  *
- * Skills 可能引用 `../../_lib/engine-client.ts`，
- * 需要在 store 层级保持相同的相对路径结构。
+ * Skill могут ссылаться на `../../_lib/engine-client.ts`,
+ * поэтому на уровне store нужно поддерживать ту же структуру относительных путей.
  */
 export function ensureStoreLib(storeRoot: string = DEFAULT_STORE_ROOT): void {
-  // _lib 位于 skills/ 目录下（store 的父目录）
+  // _lib находится в каталоге skills/ (родительский каталог store)
   const libSource = resolve(storeRoot, "../_lib");
   const libTarget = join(storeRoot, "_lib");
 
@@ -140,11 +140,11 @@ export function ensureStoreLib(storeRoot: string = DEFAULT_STORE_ROOT): void {
 }
 
 /**
- * 安装 manifest 到内容寻址存储。
+ * Установить manifest в контентно-адресуемое хранилище.
  *
- * @param manifestContent manifest.yaml 原始内容
- * @param sourceDir Skill 包源码目录（可选）。提供时会将整个包复制到 store。
- * @param storeRoot 存储根目录
+ * @param manifestContent Исходное содержимое manifest.yaml
+ * @param sourceDir Каталог с исходным кодом пакета Skill (необязательно). При указании весь пакет копируется в store.
+ * @param storeRoot Корневой каталог хранилища
  * @returns { hash, storePath }
  */
 export function installToStore(
@@ -162,7 +162,7 @@ export function installToStore(
       // even after the source workspace changes.
       cpSync(sourceDir, storePath, { recursive: true });
 
-      // 同步 _lib 目录到 store 根目录（支持 ../../_lib 引用）
+      // Синхронизировать каталог _lib в корень store (поддержка ссылок ../../_lib)
       ensureStoreLib(storeRoot);
     } else {
       mkdirSync(storePath, { recursive: true });
@@ -174,7 +174,7 @@ export function installToStore(
 }
 
 /**
- * 从存储中读取 manifest 内容。
+ * Прочитать содержимое manifest из хранилища.
  */
 export function readFromStore(hash: string, storeRoot: string = DEFAULT_STORE_ROOT): string | null {
   const filePath = join(storeRoot, hash, "manifest.yaml");
@@ -183,7 +183,7 @@ export function readFromStore(hash: string, storeRoot: string = DEFAULT_STORE_RO
 }
 
 /**
- * 从存储中移除。
+ * Удалить из хранилища.
  */
 export function removeFromStore(hash: string, storeRoot: string = DEFAULT_STORE_ROOT): void {
   const storePath = join(storeRoot, hash);
@@ -193,7 +193,7 @@ export function removeFromStore(hash: string, storeRoot: string = DEFAULT_STORE_
 }
 
 /**
- * 检查 hash 是否已存在于存储中。
+ * Проверить, существует ли hash в хранилище.
  */
 export function existsInStore(hash: string, storeRoot: string = DEFAULT_STORE_ROOT): boolean {
   return existsSync(join(storeRoot, hash, "manifest.yaml"));

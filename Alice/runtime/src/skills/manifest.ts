@@ -1,8 +1,8 @@
 /**
- * Skill 包 manifest.yaml Zod Schema — 声明式 Skill 包的单一真相来源。
+ * Zod Schema для manifest.yaml пакета Skill — единственный источник истины для декларативного пакета Skill.
  *
- * 心智模型：Skill ≈ CLI 命令，LLM ≈ IRC 终端用户。
- * manifest 声明了"命令名 + 参数 + 执行方式 + stdout 格式"。
+ * Ментальная модель: Skill ≈ CLI-команда, LLM ≈ IRC-пользователь терминала.
+ * manifest объявляет «имя команды + параметры + способ выполнения + формат stdout».
  *
  * @see docs/adr/200-skill-package-format.md
  * @see docs/adr/201-os-for-llm.md
@@ -25,24 +25,24 @@ export const ManifestParamSchema = z.object({
 export type ManifestParam = z.infer<typeof ManifestParamSchema>;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Env Schema（Skill 需要的环境变量声明）
+// Env Schema (объявление переменных окружения, требуемых Skill)
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const EnvDeclSchema = z.object({
   name: z.string(),
-  /** 映射到 ActionImplContext 的字段名。 */
+  /** Имя поля в ActionImplContext, на которое маппится переменная. */
   contextKey: z.string().optional(),
   description: z.string().optional(),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Shell Backend — L2: stdin/stdout 子进程（LLM = 终端用户）
+// Shell Backend — L2: дочерний процесс stdin/stdout (LLM = пользователь терминала)
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const ShellBackendSchema = z.object({
-  /** 要执行的命令模板（支持 {{param}} 变量替换）。 */
+  /** Шаблон команды для выполнения (поддерживает подстановку переменных {{param}}). */
   command: z.string(),
-  /** 工作目录（相对于 Skill 安装目录）。 */
+  /** Рабочая директория (относительно директории установки Skill). */
   cwd: z.string().optional(),
 });
 
@@ -54,9 +54,9 @@ export const RuntimeSchema = z.object({
   backend: z.enum(["shell", "mcp"]).default("shell"),
   timeout: z.number().default(30),
   network: z.boolean().default(true),
-  /** 隔离档位：`container` 为历史别名，解析到默认 container profile。 */
+  /** Уровень изоляции: `container` — исторический псевдоним, разрешается в container profile по умолчанию. */
   isolation: z.enum(DockerIsolationSchema).default("container"),
-  /** 容器内存限制。 */
+  /** Ограничение памяти контейнера. */
   memory: z.string().default("512m"),
   env: z.array(EnvDeclSchema).optional(),
   shell: ShellBackendSchema.optional(),
@@ -65,7 +65,7 @@ export const RuntimeSchema = z.object({
 export type SkillRuntime = z.infer<typeof RuntimeSchema>;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Family Schema（对应 CAPABILITY_FAMILIES 条目）
+// Family Schema (соответствует записям CAPABILITY_FAMILIES)
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const FamilySchema = z.object({
@@ -75,7 +75,7 @@ export const FamilySchema = z.object({
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Capability Schema（Skill 可申请的 Engine API 能力）
+// Capability Schema (возможности Engine API, которые Skill может запросить)
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const CapabilitySchema = z.enum([
@@ -102,7 +102,7 @@ export const CapabilitySchema = z.enum([
 export type SkillCapability = z.infer<typeof CapabilitySchema>;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Action Schema（一个包可导出多个动作）
+// Action Schema (один пакет может экспортировать несколько действий)
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const ActionSchema = z.object({
@@ -115,14 +115,14 @@ export const ActionSchema = z.object({
   params: z.array(ManifestParamSchema).default([]),
   returns: z.string().optional(),
   examples: z.array(z.string()).optional(),
-  /** 覆盖包级 runtime（罕见，大多数包只有一个 backend）。 */
+  /** Переопределяет runtime уровня пакета (редкость — большинство пакетов имеют один backend). */
   runtime: RuntimeSchema.optional(),
 });
 
 export type ManifestAction = z.infer<typeof ActionSchema>;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Manifest Schema（顶层）
+// Manifest Schema (верхний уровень)
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const ManifestSchema = z.object({
@@ -134,11 +134,11 @@ export const ManifestSchema = z.object({
   actions: z.array(ActionSchema).min(1),
   runtime: RuntimeSchema.optional(),
   family: FamilySchema.optional(),
-  /** 注册 CAPABILITY_FAMILIES 时使用的 category key（默认 = manifest.name）。
-   *  多个 Skill 可共享同一 familyCategory（如 hitokoto/luck/fabing/kfc 共享 "fun"）。 */
+  /** Ключ category, используемый при регистрации в CAPABILITY_FAMILIES (по умолчанию = manifest.name).
+   *  Несколько Skill могут разделять один familyCategory (например, hitokoto/luck/fabing/kfc разделяют "fun"). */
   familyCategory: z.string().optional(),
   capabilities: z.array(CapabilitySchema).default([]),
-  /** 完整帮助文本（纯文本）。提供时优先使用，否则从 manifest 自动生成。 */
+  /** Полный текст справки (plain text). Если задан — используется приоритетно, иначе генерируется из manifest. */
   manPage: z.string().optional(),
 });
 

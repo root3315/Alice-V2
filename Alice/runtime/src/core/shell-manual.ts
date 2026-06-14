@@ -1,8 +1,8 @@
 /**
  * Shell-native manual generator.
  *
- * ADR-217: 统一 self 命名空间 + irc 子命令签名。
- * 唯一事实来源：Mod definitions (指令/查询) + irc citty definitions (子命令)。
+ * ADR-217: единое пространство имён self + сигнатуры подкоманд irc.
+ * Единственный источник истины: определения модов (инструкции/запросы) + определения citty для irc (подкоманды).
  */
 
 import type { z } from "zod";
@@ -40,13 +40,13 @@ function renderIrcSection(): string[] {
   return lines;
 }
 
-// ─── self 指令/查询渲染 ──────────────────────────────────────────────
-// POSIX synopsis 风格：一行一个命令，<required> [optional] a|b|c=枚举。
+// ─── Рендер инструкций/запросов self ─────────────────────────────────
+// POSIX synopsis стиль: одна команда на строку, <required> [optional] a|b|c=перечисление.
 
 /**
- * 从 zod schema 提取枚举值列表。
- * 支持 z.enum / z.default(z.enum) / z.optional(z.enum)。
- * 返回 null 表示非枚举。
+ * Извлечь список перечислимых значений из zod-схемы.
+ * Поддерживает z.enum / z.default(z.enum) / z.optional(z.enum).
+ * Возвращает null, если схема не является перечислением.
  */
 function extractEnumValues(schema: z.ZodTypeAny): string[] | null {
   const typeName = (schema._def as { typeName?: string }).typeName;
@@ -63,7 +63,7 @@ function extractEnumValues(schema: z.ZodTypeAny): string[] | null {
   return null;
 }
 
-/** 生成参数的值占位符：枚举用 <a|b|c>，其余用 <name>。 */
+/** Сгенерировать заполнитель значения параметра: для перечислений <a|b|c>, для остальных <name>. */
 function paramPlaceholder(paramName: string, schema: z.ZodTypeAny): string {
   const enumValues = extractEnumValues(schema);
   if (enumValues && enumValues.length <= 10) {
@@ -122,7 +122,7 @@ function renderSelfCommands(mods: readonly ModDefinition[]): string[] {
   return lines;
 }
 
-// ─── Command Catalog（系统命令 + Skill 命令发现）──────────────────────
+// ─── Command Catalog (системные команды + обнаружение команд Skill) ──
 
 function renderAlicePkgSection(): string[] {
   registerKnownSubcommands("alice-pkg", Object.keys(alicePkgSubCommands));
@@ -152,7 +152,7 @@ function renderAlbumSection(): string[] {
   return lines;
 }
 
-// ─── Skill 命令（外部二进制，参数各异，用 --help 查看）──────────────
+// ─── Skill-команды (внешние бинарники, параметры различаются, см. --help) ──
 
 async function renderSkillCatalog(): Promise<string[]> {
   const catalog = await probeCommandCatalog();
@@ -173,7 +173,7 @@ async function renderSkillCatalog(): Promise<string[]> {
   return lines;
 }
 
-// ─── 入口 ────────────────────────────────────────────────────────────
+// ─── Точка входа ─────────────────────────────────────────────────────
 
 // ─── Код Worki (read-only, для ops-триажа) ──────────────────────────
 // Появляется в мануале только если задан WORKI_RO_CLONE (клон примонтирован).

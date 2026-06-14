@@ -18,8 +18,8 @@ export interface StartupModeDecision {
 }
 
 /**
- * 启动模态只由 runtime 离线传感器决定。
- * lastActionMs 只表示 Alice 多久没行动，不能冒充进程离线时长。
+ * Режим запуска определяется исключительно датчиком offline среды выполнения.
+ * lastActionMs отражает лишь то, как давно Alice не действовала, и не может подменять длительность офлайна процесса.
  */
 export function decideStartupMode(input: StartupModeInput): StartupModeDecision {
   const runtimeOfflineMs = Math.max(0, input.runtimeOfflineMs);

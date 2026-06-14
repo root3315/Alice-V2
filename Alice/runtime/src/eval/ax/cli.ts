@@ -1,7 +1,7 @@
 /**
- * ADR-263 Wave 1: Ax 离线优化入口。
+ * ADR-263 Wave 1: точка входа для офлайн-оптимизации Ax.
  *
- * 这个 CLI 只产出候选 artifact，不改生产 prompt，也不接入 runtime tick。
+ * Этот CLI только генерирует кандидатные artifact'ы — не изменяет production prompt и не подключается к runtime tick.
  *
  * @see docs/adr/263-ax-llm-program-optimization/README.md
  */

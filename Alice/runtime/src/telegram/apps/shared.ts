@@ -1,25 +1,25 @@
 /**
- * App Toolkit 共享工具。
+ * App Toolkit — общие утилиты.
  *
- * 纯函数，零框架依赖。App 业务逻辑在这里共享时区计算、日期解析等基础能力。
+ * Чистые функции, без зависимостей от фреймворков. Здесь бизнес-логика приложений использует общие возможности: расчёт часовых поясов, разбор дат и т.д.
  *
  * @see docs/adr/132-app-toolkit.md
  */
 
-/** 根据时区偏移获取当地时间（Date 对象，UTC 字段模拟本地时间）。 */
+/** Возвращает текущее местное время по смещению часового пояса (объект Date, UTC-поля имитируют локальное время). */
 export function localNow(timezoneOffset: number): Date {
   const offsetMs = timezoneOffset * 60 * 60 * 1000;
   return new Date(Date.now() + offsetMs);
 }
 
-/** 解析 YYYY-MM-DD 格式日期字符串。无效格式返回 null。 */
+/** Разбирает строку даты в формате YYYY-MM-DD. При некорректном формате возвращает null. */
 export function parseYMD(dateStr: string): { year: number; month: number; day: number } | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
   const [year, month, day] = dateStr.split("-").map(Number);
   return { year, month, day };
 }
 
-/** 格式化为 YYYY-MM-DD。 */
+/** Форматирует дату в строку YYYY-MM-DD. */
 export function formatYMD(year: number, month: number, day: number): string {
   return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
@@ -34,12 +34,12 @@ const WEEKDAY_ZH = [
   "суббота",
 ];
 
-/** UTC Day index → 星期N 中文。 */
+/** UTC Day index → название дня недели. */
 export function weekdayZH(utcDayIndex: number): string {
   return `${WEEKDAY_ZH[utcDayIndex]}`;
 }
 
-/** 小时 → 时段中文标签。 */
+/** Час → метка временного периода. */
 export function timePeriod(hour: number): string {
   if (hour < 6) return "ночь";
   if (hour < 12) return "утро";
@@ -47,7 +47,7 @@ export function timePeriod(hour: number): string {
   return "вечер";
 }
 
-/** 格式化时区为 UTC+N / UTC-N。 */
+/** Форматирует смещение часового пояса в строку UTC+N / UTC-N. */
 export function formatTimezone(offset: number): string {
   return `UTC${offset >= 0 ? "+" : ""}${offset}`;
 }

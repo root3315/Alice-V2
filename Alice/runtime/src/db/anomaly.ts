@@ -1,8 +1,9 @@
 /**
- * 运行时异常检测模块。
+ * Модуль обнаружения аномалий во время выполнения.
  *
- * 从 tick_log / action_log / personality_snapshots 检测异常模式，
- * 建议每 50 tick 调用一次。每项检测独立 try-catch，一项失败不影响其他项。
+ * Выявляет аномальные паттерны в tick_log / action_log / personality_snapshots.
+ * Рекомендуется вызывать каждые 50 tick. Каждая проверка обёрнута в отдельный try-catch,
+ * сбой одной не влияет на остальные.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -24,15 +25,15 @@ export interface AnomalyAlert {
 }
 
 /**
- * 运行异常检测。建议每 50 tick 调用一次。
+ * Запускает проверку аномалий. Рекомендуется вызывать каждые 50 tick.
  *
- * @param G - 可选 WorldModel，启用 graph-level 不变量检测（INV-1）。
+ * @param G - Необязательный WorldModel, включает проверку инвариантов на уровне графа (INV-1).
  * @see docs/adr/177-pressure-field-structural-audit.md §P0
  */
 export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAlert[] {
   const alerts: AnomalyAlert[] = [];
 
-  // api_stagnant: 最近 20 tick API 标准差 < 0.01
+  // api_stagnant: стандартное отклонение API за последние 20 tick < 0.01
   try {
     const db = getDb();
     const rows = db
@@ -80,7 +81,7 @@ export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAle
     log.warn("api_overflow: сбой проверки", e);
   }
 
-  // pressure_dead: 任意 Pi = 0.00 持续 100+ tick
+  // pressure_dead: любой Pi = 0.00 на протяжении 100+ tick
   try {
     const db = getDb();
     const rows = db
@@ -115,7 +116,7 @@ export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAle
     log.warn("pressure_dead: сбой проверки", e);
   }
 
-  // pressure_extreme: 任意 Pi > 200
+  // pressure_extreme: любой Pi > 200
   try {
     const db = getDb();
     const row = db
@@ -149,9 +150,10 @@ export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAle
     log.warn("pressure_extreme: сбой проверки", e);
   }
 
-  // action_failure_rate: 最近 20 次真实 Telegram 尝试失败 > 50%
-  // ADR-254: action_log.success 是整行 host 结果，会把“已发送但等待回复超时”
-  // 和后续 self 命令失败混进硬失败率。告警必须基于 tc_command_log 派生的行动事实。
+  // action_failure_rate: доля неудачных реальных Telegram-попыток среди последних 20 > 50%
+  // ADR-254: action_log.success — это результат всей строки host, который включает
+  // «отправлено, но таймаут ожидания ответа» и последующие сбои self-команд в жёсткую
+  // статистику отказов. Алерт должен основываться на фактах действий, выведенных из tc_command_log.
   try {
     const db = getDb();
     const rows = db
@@ -194,8 +196,9 @@ export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAle
     log.warn("action_failure_rate: сбой проверки", e);
   }
 
-  // voice_lost: 最近 10 条 action_log 中 LLM 产出失败超过 50%
-  // command_misuse / telegram_failed 是执行或工具面问题，不计入 LLM 失语。
+  // voice_lost: среди последних 10 записей action_log сбоев вывода LLM > 50%
+  // command_misuse / telegram_failed — это проблемы выполнения или инструментального уровня,
+  // они не учитываются как «потеря голоса» LLM.
   // @see docs/adr/129-llm-voice-loss-awareness.md
   try {
     const db = getDb();
@@ -226,7 +229,7 @@ export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAle
     log.warn("voice_lost: сбой проверки", e);
   }
 
-  // personality_drift: 相邻快照 π 向量欧氏距离 > 0.3
+  // personality_drift: евклидово расстояние между соседними снапшотами π-вектора > 0.3
   try {
     const db = getDb();
     const rows = db
@@ -258,9 +261,9 @@ export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAle
     log.warn("personality_drift: сбой проверки", e);
   }
 
-  // voice_starvation: 某声部 200+ tick 未被选为 loudness winner
-  // ADR-124 §D7: 使用 tick_log（声部选择记录）替代 action_log（仅成功行动）
-  // tick_log.action 列记录 loudness 胜出的声部名称
+  // voice_starvation: какой-либо голос 200+ tick не выбирался победителем по loudness
+  // ADR-124 §D7: используем tick_log (записи выбора голоса) вместо action_log (только успешные действия)
+  // столбец tick_log.action хранит имя голоса-победителя по loudness
   // @see docs/adr/126-obligation-field-decay.md §D7
   try {
     const db = getDb();
@@ -287,16 +290,17 @@ export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAle
     log.warn("voice_starvation: сбой проверки", e);
   }
 
-  // voice_action_starvation: 某声部 loudness 赢面 > 50 次但 action 转化率 < 5%
-  // ADR-131 D3: 让声部饥饿问题可观测。声部赢了竞争但被门控拦截的模式。
-  // Caution 的主要合法产物是 system1:skip，不是 System 2 行动；System 1 已处理的 tick
-  // 也不应进入“应转化为 action”的分母。
+  // voice_action_starvation: голос выиграл loudness-конкуренцию > 50 раз, но конверсия в action < 5%
+  // ADR-131 D3: делает проблему голодания голоса наблюдаемой. Паттерн — голос выиграл конкуренцию,
+  // но был заблокирован гейтом.
+  // Основной легитимный продукт Caution — system1:skip, а не действие System 2;
+  // tick'и, обработанные System 1, не должны попадать в знаменатель «должно конвертироваться в action».
   // @see docs/adr/131-feedback-loop-integrity.md §D3
   try {
     const db = getDb();
     const voices = ["diligence", "curiosity", "sociability"];
     for (const voice of voices) {
-      // 最近 500 tick 内需要 System 2 消化的 loudness 赢面数。
+      // Число loudness-побед, требующих обработки System 2 за последние 500 tick.
       const loudnessRow = db
         .select({ cnt: sql<number>`count(*)` })
         .from(tickLog)
@@ -310,9 +314,9 @@ export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAle
         `)
         .get();
       const loudnessWins = loudnessRow?.cnt ?? 0;
-      if (loudnessWins < 50) continue; // 样本不足
+      if (loudnessWins < 50) continue; // недостаточно данных
 
-      // 同期 action_log 行动数
+      // Число действий в action_log за тот же период
       const actionRow = db
         .select({ cnt: sql<number>`count(*)` })
         .from(actionLog)
@@ -334,7 +338,7 @@ export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAle
     log.warn("voice_action_starvation: сбой проверки", e);
   }
 
-  // ADR-147 D1: event_buffer_overflow — 最近 50 tick 内 EventBuffer 溢出次数 > 5
+  // ADR-147 D1: event_buffer_overflow — количество переполнений EventBuffer за последние 50 tick > 5
   // @see docs/adr/147-flood-backlog-recovery.md §D1
   try {
     const db = getDb();
@@ -359,7 +363,7 @@ export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAle
     log.warn("event_buffer_overflow: сбой проверки", e);
   }
 
-  // db_bloat: WAL 文件 > 50MB
+  // db_bloat: WAL-файл > 50MB
   try {
     const walPath = path.resolve(`${getDbPath()}-wal`);
     if (fs.existsSync(walPath)) {
@@ -378,8 +382,9 @@ export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAle
     log.warn("db_bloat: сбой проверки", e);
   }
 
-  // INV-1: rawUnread > 50 但 effectiveUnread ≈ 0 — ADR-176 的蟑螂检测器
-  // 如果有频道积累了大量未读但 effectiveUnread 近零，说明信号衰减层有设计盲区。
+  // INV-1: rawUnread > 50, но effectiveUnread ≈ 0 — детектор «тараканов» из ADR-176
+  // Если канал накопил много непрочитанных, а effectiveUnread близко к нулю — в слое
+  // затухания сигнала есть конструктивное слепое пятно.
   // @see docs/adr/177-pressure-field-structural-audit.md §P0 INV-1
   if (G) {
     try {
@@ -389,7 +394,7 @@ export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAle
         const rawUnread = G.getChannel(hid).unread ?? 0;
         if (rawUnread <= 50) continue;
         const eu = effectiveUnread(G, hid, nowMs);
-        // rawUnread > 50 但 effectiveUnread < 1.0 — 信号几乎不可见
+        // rawUnread > 50, но effectiveUnread < 1.0 — сигнал почти невидим
         if (eu < 1.0) {
           violations.push(`${hid}(raw=${rawUnread},eu=${eu.toFixed(2)})`);
         }
@@ -407,12 +412,12 @@ export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAle
     }
   }
 
-  // INV-3: V-max 目标覆盖率 — 有压力的频道是否在 200 ticks 内被选中过
+  // INV-3: покрытие целей V-max — выбирались ли каналы с давлением за последние 200 tick
   // @see docs/adr/177-pressure-field-structural-audit.md §P0 INV-3
   if (G) {
     try {
       const db = getDb();
-      // 收集最近 200 tick 内 V-max 选中过的 target
+      // Собираем target'ы, выбранные V-max за последние 200 tick
       const actionRows = db
         .select({ target: actionLog.chatId })
         .from(actionLog)
@@ -420,7 +425,7 @@ export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAle
         .all();
       const coveredTargets = new Set(actionRows.map((r) => r.target).filter(Boolean));
 
-      // 收集当前有未读 >0 的活跃频道
+      // Собираем активные каналы с непрочитанными > 0
       const activeChannels: string[] = [];
       for (const hid of G.getEntitiesByType("channel")) {
         if ((G.getChannel(hid).unread ?? 0) > 0) {
@@ -445,8 +450,8 @@ export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAle
     }
   }
 
-  // INV-4: tanh 饱和检测 — 某个 P_k 对 >50% 的 tick 饱和在 >0.99
-  // 自适应 κ 应该防止这种情况，但如果发生说明 κ 跟不上。
+  // INV-4: обнаружение насыщения tanh — некий P_k насыщается > 0.99 в >50% tick
+  // Адаптивное κ должно предотвращать это, но если происходит — κ не успевает.
   // @see docs/adr/177-pressure-field-structural-audit.md §P0 INV-4
   try {
     const db = getDb();
@@ -483,7 +488,7 @@ export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAle
     log.warn("pressure_saturated: сбой проверки", e);
   }
 
-  // 输出结果
+  // Вывод результатов
   for (const alert of alerts) {
     if (alert.level === "error") {
       log.error(`[${alert.type}] ${alert.message}`);

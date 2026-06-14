@@ -1,6 +1,6 @@
 /**
- * 图常量——从 Python graph.py 逐字搬运。
- * @see docs/adr/155-branded-graph-id.md — Branded ID + 前缀正式化
+ * Константы графа — перенесены дословно из Python graph.py.
+ * @see docs/adr/155-branded-graph-id.md — Branded ID + формализация префиксов
  */
 import type {
   ChannelNodeId,
@@ -11,56 +11,58 @@ import type {
   ThreadWeight,
 } from "./entities.js";
 
-// Dunbar 层级权重：圈层越小权重越高
+// Веса уровней Данбара: чем меньше круг, тем выше вес
 export const DUNBAR_TIER_WEIGHT: Record<DunbarTier, number> = {
-  5: 5.0, // 亲密圈
-  15: 3.0, // 好友圈
-  50: 1.5, // 朋友圈
-  150: 0.8, // 熟人圈
-  500: 0.3, // 认识圈
+  5: 5.0, // близкий круг
+  15: 3.0, // круг друзей
+  50: 1.5, // круг приятелей
+  150: 0.8, // круг знакомых
+  500: 0.3, // круг «знаю в лицо»
 };
 
-// ADR-113 §D3: Dunbar 层级的期望互动频率 theta_c（单位: 秒）
-// 为**线上即时通讯**场景标定（非面对面社交）。
-// 即时回复需求由 P5 覆盖，theta_c 衡量的是"多久没联系开始感到关系冷却"。
+// ADR-113 §D3: ожидаемая частота взаимодействий theta_c для уровней Данбара (в секундах).
+// Калибровано для **онлайн мессенджеров** (не офлайн-общение).
+// Потребность в мгновенном ответе покрывается P5; theta_c измеряет
+// «через сколько времени без контакта отношения начинают остывать».
 // @see docs/adr/113-online-social-recalibration/ §D3
 export const DUNBAR_TIER_THETA: Record<DunbarTier, number> = {
-  5: 7200, // 亲密圈: 2 小时
-  15: 14400, // 好友圈: 4 小时
-  50: 43200, // 朋友圈: 12 小时
-  150: 172800, // 熟人圈: 2 天
-  500: 604800, // 认识圈: 7 天
+  5: 7200, // близкий круг: 2 часа
+  15: 14400, // круг друзей: 4 часа
+  50: 43200, // круг приятелей: 12 часов
+  150: 172800, // круг знакомых: 2 дня
+  500: 604800, // круг «знаю в лицо»: 7 дней
 };
 
-// ADR-121: 社交余光时间窗口（秒）——Dunbar tier 越亲密，余光窗口越长。
+// ADR-121: окно периферийного социального видения (сек) — чем ближе уровень Данбара, тем больше окно.
 // @see docs/adr/121-social-peripheral-vision/README.md §3.2
 export const PERIPHERAL_TIER_WINDOW_S: Record<DunbarTier, number> = {
-  5: 86400, // 亲密圈: 24h
-  15: 43200, // 好友圈: 12h
-  50: 21600, // 朋友圈: 6h
-  150: 7200, // 熟人圈: 2h
-  500: 0, // 认识圈: 禁用
+  5: 86400, // близкий круг: 24h
+  15: 43200, // круг друзей: 12h
+  50: 21600, // круг приятелей: 6h
+  150: 7200, // круг знакомых: 2h
+  500: 0, // круг «знаю в лицо»: отключено
 };
 
-// ADR-111: P3 对数时间尺度参数 — Weber-Fechner 定律驱动。
+// ADR-111: параметры логарифмической временной шкалы P3 — основаны на законе Вебера–Фехнера.
 // @see docs/adr/111-log-time-sigmoid/README.md
 
 /**
- * Weber-Fechner 时间感知粒度（秒）。
- * 小于 τ₀ 的沉默被近似线性感知，大于 τ₀ 的沉默被对数压缩。
- * 600s = 10 分钟，对应人类对时间变化的最小可感知差异（JND）。
+ * Гранулярность временного восприятия по Веберу–Фехнеру (секунды).
+ * Тишина менее τ₀ воспринимается приблизительно линейно; тишина более τ₀
+ * логарифмически сжимается.
+ * 600 с = 10 минут — минимально воспринимаемое различие (JND) изменений времени у человека.
  */
 export const P3_TAU_0 = 600;
 
 /**
- * P3 对数域 sigmoid 陡度参数。
- * 推导：设过渡区覆盖 θ/α 到 α·θ（α=3），
- * β_r = 4.394 / median(W_log across tiers) ≈ 2.5。
- * 各 tier W_log 值域 [1.435, 2.074]，取中值对应 tier-50。
+ * Параметр крутизны сигмоиды P3 в логарифмическом домене.
+ * Вывод: переходная зона от θ/α до α·θ (α=3),
+ * β_r = 4.394 / median(W_log across tiers) ≈ 2.5.
+ * Диапазон W_log по уровням [1.435, 2.074]; медиана соответствует tier-50.
  */
 export const P3_BETA_R = 2.5;
 
-// 线程权重映射
+// Отображение весов потоков
 export const THREAD_WEIGHTS: Record<ThreadWeight, number> = {
   critical: 4.0,
   major: 2.0,
@@ -69,7 +71,7 @@ export const THREAD_WEIGHTS: Record<ThreadWeight, number> = {
   trivial: 0.25,
 };
 
-// 边标签 → 边类别映射
+// Отображение меток рёбер → категорий рёбер
 export const LABEL_CATEGORY: Record<string, EdgeCategory> = {
   monitors: "spatial",
   joined: "spatial",
@@ -90,7 +92,7 @@ export const LABEL_CATEGORY: Record<string, EdgeCategory> = {
   participates: "social", // ADR-26: contact → conversation
 };
 
-// Laplacian 传播边类别权重 (v4)
+// Веса категорий рёбер для лапласового распространения (v4)
 export const PROPAGATION_WEIGHT: Record<EdgeCategory, number> = {
   spatial: 0.5,
   social: 1.0,
@@ -99,15 +101,15 @@ export const PROPAGATION_WEIGHT: Record<EdgeCategory, number> = {
   ownership: 0.6,
 };
 
-/** 将边标签映射到类别，未知标签默认 ownership。 */
+/** Отображает метку ребра в категорию; неизвестные метки по умолчанию дают ownership. */
 export function labelToCategory(label: string): EdgeCategory {
   return LABEL_CATEGORY[label] ?? "ownership";
 }
 
-/** Dunbar tier 序列（升序）。 */
+/** Последовательность уровней Данбара (по возрастанию). */
 export const TIER_SEQUENCE: DunbarTier[] = [5, 15, 50, 150, 500];
 
-/** Dunbar tier → 自然语言标签。多处复用（self-observation、strategy hints、relationships contribute）。 */
+/** Уровень Данбара → текстовая метка. Используется в нескольких местах (self-observation, strategy hints, relationships contribute). */
 const TIER_LABELS: Record<number, string> = {
   5: "intimate",
   15: "close friend",
@@ -116,14 +118,15 @@ const TIER_LABELS: Record<number, string> = {
   500: "known",
 };
 
-/** 将 tier 数字转为自然语言标签，未知 tier 回退到 "acquaintance"。 */
+/** Преобразует номер уровня в текстовую метку; неизвестный уровень возвращает "acquaintance". */
 export function tierLabel(tier: number): string {
   return TIER_LABELS[tier] ?? "acquaintance";
 }
 
 /**
- * 从连续数值找最近的 DunbarTier。
- * 用于 tier bias correction 后将连续值映射回离散层级。
+ * Находит ближайший DunbarTier к непрерывному значению.
+ * Используется после tier bias correction для отображения непрерывного
+ * значения обратно в дискретный уровень.
  */
 export function nearestTier(value: number): DunbarTier {
   let best: DunbarTier = 150;
@@ -138,24 +141,24 @@ export function nearestTier(value: number): DunbarTier {
   return best;
 }
 
-/** Tier bias correction 基线值。 */
+/** Базовое значение для коррекции смещения уровня. */
 const TIER_BASELINE = 150;
 
 /**
- * Tier 高估偏差校正 — Social POMDP。
+ * Коррекция смещения завышения уровня — Social POMDP.
  *
- * 当 BeliefStore 中 tier 信念的 σ²（方差）较高时，
- * 说明我们对这个联系人的亲密度判断不确定。
- * 校正策略：将 tier 向基线 150（熟人圈）回归。
+ * Если дисперсия σ² убеждения по уровню в BeliefStore высока,
+ * это означает неопределённость в оценке близости контакта.
+ * Стратегия коррекции: регрессия уровня к базовому значению 150 (знакомые).
  *
  * effectiveTier = tier + (150 - tier) × min(σ², 0.8)
  *
- * σ² 低（<0.3）→ 不校正，信任当前 tier
- * σ² 高（>0.3）→ 向 150 回归，越不确定越保守
+ * σ² низкая (<0.3) → без коррекции, доверяем текущему уровню
+ * σ² высокая (>0.3) → регрессия к 150, чем больше неопределённость, тем консервативнее
  *
- * @param tier 原始 DunbarTier（5/15/50/150/500）
- * @param sigma2 信念方差，0-1 之间。undefined 表示无信念数据。
- * @returns 校正后的最近 DunbarTier
+ * @param tier исходный DunbarTier (5/15/50/150/500)
+ * @param sigma2 дисперсия убеждения, от 0 до 1. undefined — нет данных убеждения.
+ * @returns скорректированный ближайший DunbarTier
  *
  * @see paper/ §Social POMDP "Tier Overestimate Bias Correction"
  */
@@ -166,53 +169,53 @@ export function tierBiasCorrection(tier: DunbarTier, sigma2: number | undefined)
   return nearestTier(effectiveTier);
 }
 
-/** Alice 自身节点 ID 常量。m2: 消除硬编码 "self" 字符串。 */
+/** Константа ID узла самой Alice. m2: устраняет жёстко закодированную строку "self". */
 export const ALICE_SELF = "self";
 
-// -- 压力维度统一规格 ---------------------------------------------------------
+// -- Единая спецификация измерений давления ---------------------------------------------------------
 
 /**
- * 压力维度规格——统一双常量体系。
+ * Спецификация измерений давления — унифицированная система двух констант.
  *
- * - kappa: tanh 归一化曲率（API 聚合用，半饱和点）
- * - typicalScale: 典型量级上界（staleness 等权化用）
+ * - kappa: кривизна tanh-нормализации (для агрегации API, точка полунасыщения)
+ * - typicalScale: типичная верхняя граница величины (для взвешивания staleness)
  *
- * 消除旧的 aggregate.ts DEFAULT_KAPPA 和 act.ts PRESSURE_SCALES 双源。
+ * Устраняет дублирование DEFAULT_KAPPA из aggregate.ts и PRESSURE_SCALES из act.ts.
  * @see paper/ §3.3 "API Normalization"
  */
 export interface PressureDimensionSpec {
-  /** ADR-112 D4: 最低 κ（原硬编码 kappa，现为自适应 κ 的下界）。 */
+  /** ADR-112 D4: минимальное κ (исходно жёстко заданное kappa, теперь нижняя граница адаптивного κ). */
   kappaMin: number;
   typicalScale: number;
 }
 
 export const PRESSURE_SPECS: Record<string, PressureDimensionSpec> = {
-  // ADR-215: 上调 κ₁ 以匹配实际规模（968 contacts，原标定 ~15）
-  // 典型贡献：unread × w ≈ 5 × 20 = 100，κ=15 时 tanh(100/15)≈0.999 仍高
-  // 但配合 ln(1+unread) 在 effectiveUnread 中，P1 应保持在合理范围
+  // ADR-215: повышаем κ₁ под реальный масштаб (968 контактов, исходная калибровка ~15)
+  // Типичный вклад: unread × w ≈ 5 × 20 = 100; при κ=15 tanh(100/15)≈0.999 всё ещё высоко
+  // но совместно с ln(1+unread) в effectiveUnread P1 должен оставаться в разумных пределах
   P1: { kappaMin: 15.0, typicalScale: 200 },
 
-  // ADR-215: 上调 κ₂ 以匹配实际规模（192 facts）
-  // 典型贡献：192 × 0.5 × 0.5 ≈ 48（平均 importance=0.5，半遗忘）
+  // ADR-215: повышаем κ₂ под реальный масштаб (192 факта)
+  // Типичный вклад: 192 × 0.5 × 0.5 ≈ 48 (средний importance=0.5, наполовину забыто)
   P2: { kappaMin: 20.0, typicalScale: 50 },
 
-  // P3 有 Top-K 截断，与总规模解耦，κ 保持适中
+  // P3 имеет Top-K усечение, отвязанное от общего масштаба; κ сохраняется умеренным
   P3: { kappaMin: 10.0, typicalScale: 8 },
 
-  // P4 对数增长，与规模次线性，κ 保持保守
+  // P4 растёт логарифмически, субlinейно по масштабу; κ сохраняется консервативным
   P4: { kappaMin: 5.0, typicalScale: 10 },
 
-  // ADR-215: 大幅上调 κ₅ 以配合 directed 对数缩放
+  // ADR-215: значительно повышаем κ₅ для согласования с логарифмическим масштабированием directed
   // effectiveDirected = ln(1+min(raw, 5)) ≈ 1.8
-  // 典型贡献：72 channels × 1.8 × avg(w≈50) × chatW(1) ≈ 150
-  // κ=50 时 tanh(150/50)=0.76，保留动态范围
+  // Типичный вклад: 72 канала × 1.8 × avg(w≈50) × chatW(1) ≈ 150
+  // При κ=50 tanh(150/50)=0.76 — динамический диапазон сохраняется
   P5: { kappaMin: 50.0, typicalScale: 50 },
 
-  // P6 论文有界 [0, η]，κ 小但 η=0.6 确保有界
+  // P6 ограничен по статье [0, η]; κ мал, но η=0.6 гарантирует ограниченность
   P6: { kappaMin: 0.5, typicalScale: 0.6 },
 };
 
-/** 从 PRESSURE_SPECS 派生的 kappaMin 六元组（默认 kappa 下界）。 */
+/** Шестёрка kappaMin, производная от PRESSURE_SPECS (нижняя граница kappa по умолчанию). */
 export const DEFAULT_KAPPA: [number, number, number, number, number, number] = [
   PRESSURE_SPECS.P1.kappaMin,
   PRESSURE_SPECS.P2.kappaMin,
@@ -222,7 +225,7 @@ export const DEFAULT_KAPPA: [number, number, number, number, number, number] = [
   PRESSURE_SPECS.P6.kappaMin,
 ];
 
-/** 从 PRESSURE_SPECS 派生的 typicalScale 六元组（staleness 等权化用）。 */
+/** Шестёрка typicalScale, производная от PRESSURE_SPECS (для взвешивания staleness). */
 export const PRESSURE_TYPICAL_SCALES: [number, number, number, number, number, number] = [
   PRESSURE_SPECS.P1.typicalScale,
   PRESSURE_SPECS.P2.typicalScale,
@@ -232,10 +235,10 @@ export const PRESSURE_TYPICAL_SCALES: [number, number, number, number, number, n
   PRESSURE_SPECS.P6.typicalScale,
 ];
 
-// -- chat_type 统一权重 -------------------------------------------------------
+// -- Единые веса chat_type -------------------------------------------------------
 
 /**
- * 统一 chat_type 权重（消除 p1 和 p5 各自维护的常量）。
+ * Единые веса chat_type (устраняет разрозненные константы в p1 и p5).
  * @see paper/ §3.1 "Goffman's Dramaturgical Theory"
  */
 export const CHAT_TYPE_WEIGHTS: Record<string, { attention: number; response: number }> = {
@@ -245,33 +248,37 @@ export const CHAT_TYPE_WEIGHTS: Record<string, { attention: number; response: nu
   channel: { attention: 0.3, response: 0.3 },
 };
 
-// -- 连续稳定性频谱 (Continuous Stability Spectrum) ---------------------------
-// 取代二值 semantic/episodic 分类。所有事实统一使用 SM-2 遗忘曲线，
-// 区别仅在于初始稳定性 S₀：preference/skill 衰减慢（~1.5年半衰期），
-// observation 衰减极快（~27天半衰期），其余居中。
+// -- Непрерывный спектр стабильности (Continuous Stability Spectrum) ---------------------------
+// Заменяет бинарную классификацию semantic/episodic. Все факты используют
+// единую кривую забывания SM-2; разница только в начальной стабильности S₀:
+// preference/skill затухают медленно (~1.5 года полужизни),
+// observation — очень быстро (~27 дней), остальные — посередине.
 //
 // SM-2: R(t) = (1 + t/(9·S))^d, d=-0.5
-// 半衰期 t_half = 27·S 天
+// Период полужизни t_half = 27·S дней
 //
-// 在线社交校准：IM 环境信息更新频率远高于线下关系。一年未强化的偏好
-// 已经值得重新验证。S₀ 只控制「无强化时的自然衰减」——活跃 fact 通过
-// remember() 乘 STABILITY_REINFORCE_FACTOR 累积增长，不受此限。
-// 反面证据通过 update_fact/delete_fact 即时纠正，不依赖衰减。
+// Онлайн-социальная калибровка: в IM информация обновляется значительно
+// чаще, чем в офлайн-отношениях. Предпочтение, не закреплённое год, уже
+// заслуживает повторной проверки. S₀ контролирует только «естественное
+// затухание без закрепления» — активные факты накапливают рост через
+// remember() × STABILITY_REINFORCE_FACTOR и этим не ограничены.
+// Опровергающие свидетельства исправляются мгновенно через
+// update_fact/delete_fact, без ожидания затухания.
 //
 // @see docs/adr/151-algorithm-audit/research-online-calibration.md
-// 映射由代码从 fact_type 推导——遵循 ADR-50 "语义归 LLM，结构归代码"。
+// Отображение выводится кодом из fact_type — следует ADR-50 "семантика за LLM, структура за кодом".
 
 /**
- * fact_type → 初始稳定性 S₀ 映射（在线社交校准）。
+ * Отображение fact_type → начальная стабильность S₀ (онлайн-социальная калибровка).
  *
- * | fact_type   | S₀ | 半衰期    | 认知理据                                |
- * |-------------|-----|----------|----------------------------------------|
- * | preference  | 20  | ~1.5 年  | IM 中偏好 1.5 年未强化 → 值得重新验证     |
- * | skill       | 20  | ~1.5 年  | 聊天提到的技能，保鲜期合理                |
- * | general     | 14  | ~1 年    | 工作/城市/身份，人会换                    |
- * | interest    | 7   | ~6 月    | 在线兴趣流动性极高                       |
- * | growth      | 3   | ~2.7 月  | 进行中状态，数月可知完成/放弃             |
- * | observation | 1   | ~27 天   | 瞬时观察，衰减最快                       |
+ * | fact_type   | S₀ | период полужизни | когнитивное обоснование                          |
+ * |-------------|-----|-----------------|--------------------------------------------------|
+ * | preference  | 20  | ~1.5 года       | предпочтение без закрепления 1.5 года → пора перепроверить |
+ * | skill       | 20  | ~1.5 года       | навык, упомянутый в чате — срок хранения разумен |
+ * | general     | 14  | ~1 год          | работа/город/статус — люди меняются              |
+ * | interest    | 7   | ~6 месяцев      | онлайн-интересы очень подвижны                   |
+ * | growth      | 3   | ~2.7 месяца     | текущий статус — за несколько месяцев ясно, завершено или брошено |
+ * | observation | 1   | ~27 дней        | мимолётное наблюдение, затухает быстрее всего    |
  */
 export const FACT_TYPE_INITIAL_STABILITY: Record<string, number> = {
   preference: 20,
@@ -282,53 +289,53 @@ export const FACT_TYPE_INITIAL_STABILITY: Record<string, number> = {
   observation: 1,
 };
 
-/** 默认稳定性（未知 fact_type 按 observation 处理——安全侧，衰减快）。 */
+/** Стабильность по умолчанию (неизвестный fact_type обрабатывается как observation — консервативно, быстрое затухание). */
 const DEFAULT_STABILITY = 1;
 
-/** 从 fact_type 推导初始稳定性 S₀。LLM 不需要显式传入。 */
+/** Выводит начальную стабильность S₀ из fact_type. LLM не нужно передавать это явно. */
 export function factTypeInitialStability(factType: string | undefined): number {
   return FACT_TYPE_INITIAL_STABILITY[factType ?? "general"] ?? DEFAULT_STABILITY;
 }
 
-/** remember() 重复提及同一事实时的稳定性强化因子。S_new = S_old × REINFORCE_FACTOR。 */
+/** Коэффициент усиления стабильности при повторном упоминании факта в remember(). S_new = S_old × REINFORCE_FACTOR. */
 export const STABILITY_REINFORCE_FACTOR = 1.2;
 
-// -- 遗忘曲线共享常量 --------------------------------------------------------
+// -- Общие константы кривой забывания --------------------------------------------------------
 
 /**
- * ADR-110: 事实遗忘时间尺度（秒）。
- * 1 天 = 86400 秒。P2 和 factRetrievability 共享此常量。
+ * ADR-110: временной масштаб забывания фактов (секунды).
+ * 1 день = 86400 секунд. Константа разделяется P2 и factRetrievability.
  * @see paper/ §3.2 "Information Pressure"
  */
 export const FACT_TIME_SCALE = 86400;
 
-/** 遗忘曲线参数 d。 */
+/** Параметр кривой забывания d. */
 export const FACT_DECAY_D = -0.5;
 
-/** 遗忘阈值：R < 此值的事实不注入 context。 */
+/** Порог забывания: факты с R ниже этого значения не вставляются в контекст. */
 export const FACT_FORGET_THRESHOLD = 0.2;
 
-/** SM-2 巩固系数。 */
+/** Коэффициент консолидации SM-2. */
 export const FACT_CONSOLIDATION_FACTOR = 1.5;
 
-// -- 前缀常量 (ADR-155) ------------------------------------------------------
+// -- Константы префиксов (ADR-155) ------------------------------------------------------
 
-/** 频道图节点 ID 前缀。 */
+/** Префикс ID узла-канала в графе. */
 export const CHANNEL_PREFIX = "channel:";
-/** 联系人图节点 ID 前缀。 */
+/** Префикс ID узла-контакта в графе. */
 export const CONTACT_PREFIX = "contact:";
-/** 对话会话图节点 ID 前缀。 */
+/** Префикс ID узла-разговора в графе. */
 export const CONVERSATION_PREFIX = "conversation:";
 export const TELEGRAM_PLATFORM = "telegram";
 
 const PLATFORM_ENTITY_ID_RE = /^(channel|contact):([a-z][a-z0-9_-]*):(.+)$/u;
 const TELEGRAM_NUMBER_RE = /^-?\d+$/u;
 
-// -- ID 转换工具 -------------------------------------------------------------
+// -- Утилиты преобразования ID -------------------------------------------------------------
 
 /**
- * 将 chatId (channel:xxx) 推导为 contactId (contact:xxx)。
- * m6: 集中命名约定，替代各处硬编码前缀处理。
+ * Преобразует chatId (channel:xxx) в contactId (contact:xxx).
+ * m6: централизует соглашение об именовании, заменяя жёстко закодированную обработку префиксов в разных местах.
  * @see docs/adr/155-branded-graph-id.md
  */
 export function chatIdToContactId(chatId: string): ContactNodeId | null {
@@ -340,7 +347,7 @@ export function chatIdToContactId(chatId: string): ContactNodeId | null {
   return null;
 }
 
-// -- 通用 ID 转换 -----------------------------------------------------------
+// -- Универсальные преобразования ID -----------------------------------------------------------
 
 export function platformChannelId(platform: string, nativeId: string | number): ChannelNodeId {
   return `${CHANNEL_PREFIX}${platform}:${nativeId}` as ChannelNodeId;
@@ -370,7 +377,7 @@ function parsePlatformEntityId(
   };
 }
 
-/** 从 Telegram 实体 ID 或 Telegram 原生数字标记中提取数字 ID。 */
+/** Извлекает числовой ID из ID сущности Telegram или нативного числового маркера Telegram. */
 export function extractNumericId(id: string): TelegramId | null {
   let raw: string;
   const parsed = parsePlatformEntityId(id);
@@ -378,7 +385,7 @@ export function extractNumericId(id: string): TelegramId | null {
     if (parsed.platform !== TELEGRAM_PLATFORM) return null;
     raw = parsed.nativeId;
   }
-  // @senderId 前缀（prompt 标注惯例）+ ~senderId（LLM-facing shorthand）
+  // Префикс @senderId (соглашение об аннотации в промпте) + ~senderId (сокращение для LLM)
   else if (id.startsWith("@") || id.startsWith("~")) raw = id.slice(1);
   else raw = id;
   if (!TELEGRAM_NUMBER_RE.test(raw)) return null;
@@ -387,9 +394,9 @@ export function extractNumericId(id: string): TelegramId | null {
 }
 
 /**
- * 确保 ID 为 channel 格式。
- * 只接受显式平台限定的 channel/contact ID；Telegram 原生数字必须在调用点显式使用
- * telegramChannelId()。
+ * Гарантирует, что ID имеет формат channel.
+ * Принимает только явно квалифицированные channel/contact ID; нативные числа Telegram
+ * должны явно преобразовываться через telegramChannelId() в точке вызова.
  * @see docs/adr/155-branded-graph-id.md
  */
 export function ensureChannelId(id: string): ChannelNodeId | null {
@@ -399,26 +406,28 @@ export function ensureChannelId(id: string): ChannelNodeId | null {
   return null;
 }
 
-// -- Perceive Facts 常量 (ADR-160) ------------------------------------------
+// -- Константы Perceive Facts (ADR-160) ------------------------------------------
 // @see docs/adr/158-outbound-feedback-gap.md
 
-/** ADR-160 Fix A: perceive-sourced facts 独立容量池上限。不占 contact 的 20 限额。 */
+/** ADR-160 Fix A: верхний предел отдельного пула ёмкости для perceive-sourced facts. Не входит в квоту 20 для контакта. */
 export const PERCEIVE_FACTS_LIMIT = 30;
 
-/** ADR-160 Fix A: 同一 channel 的 perceive fact 去抖间隔（ms）。30 分钟。 */
+/** ADR-160 Fix A: интервал дебаунса perceive fact для одного канала (мс). 30 минут. */
 export const PERCEIVE_FACT_DEBOUNCE_MS = 30 * 60_000;
 
-/** ADR-160 Fix A: channel 累积消息阈值——自 Alice 上次行动以来 ≥ 此数才创建 perceive fact。 */
+/** ADR-160 Fix A: порог накопленных сообщений в канале — perceive fact создаётся только при ≥ этого числа сообщений с момента последнего действия Alice. */
 export const PERCEIVE_FACT_MSG_THRESHOLD = 3;
 
-// -- 群组存在感独立参数 (ADR-160) -------------------------------------------
+// -- Отдельные параметры присутствия в группе (ADR-160) -------------------------------------------
 // @see docs/adr/158-outbound-feedback-gap.md
 
 /**
- * ADR-160 Fix B: 群组专用 theta 映射（秒）。
+ * ADR-160 Fix B: отображение theta для групп (секунды).
  *
- * 群组社交动力学与双边关系不同：群里聊了一下午你一声不吭是不正常的，
- * 但几天没私聊朋友是正常的。群组 theta 比 DUNBAR_TIER_THETA 快 ~12x。
+ * Социальная динамика группы отличается от двусторонних отношений:
+ * молчать весь день в активном чате — ненормально,
+ * а несколько дней без личного сообщения другу — нормально.
+ * Групповое theta примерно в 12 раз быстрее DUNBAR_TIER_THETA.
  */
 export const GROUP_PRESENCE_THETA: Record<DunbarTier, number> = {
   5: 1800, // intimate group:    30 min
@@ -429,37 +438,38 @@ export const GROUP_PRESENCE_THETA: Record<DunbarTier, number> = {
 };
 
 /**
- * ADR-161 §3.4: 轨迹驱动 theta — 群组自然消息间隔的倍数 → P3 sigmoid 中点。
- * K=10 含义：群组发了 10 轮消息而 Alice 沉默——此时缺席压力达 50%。
+ * ADR-161 §3.4: theta, управляемый траекторией — кратное естественного интервала сообщений
+ * в группе → средняя точка сигмоиды P3.
+ * K=10 означает: группа отправила 10 раундов сообщений, пока Alice молчит — давление отсутствия достигает 50%.
  * @see docs/adr/161-action-space-audit-group-cadence.md §3.4
  */
 export const K_ABSENCE_ROUNDS = 10;
 
-/** ADR-161 §3.4: 轨迹驱动 theta 的合理范围夹紧下限（秒）。30 分钟。 */
+/** ADR-161 §3.4: нижняя граница зажима разумного диапазона theta, управляемого траекторией (сек). 30 минут. */
 export const TRAJECTORY_THETA_MIN_S = 1800;
 
-/** ADR-161 §3.4: 轨迹驱动 theta 的合理范围夹紧上限（秒）。7 天。 */
+/** ADR-161 §3.4: верхняя граница зажима разумного диапазона theta, управляемого траекторией (сек). 7 дней. */
 export const TRAJECTORY_THETA_MAX_S = 604800;
 
-// -- 情感反应度常量 (ADR-156) ------------------------------------------------
+// -- Константы эмоциональной реактивности (ADR-156) ------------------------------------------------
 // @see docs/adr/156-emotional-reactivity-damping.md
 
-/** ADR-156: 情感反应度半衰期（ms）。默认 2 小时。 */
+/** ADR-156: период полужизни эмоциональной реактивности (мс). По умолчанию 2 часа. */
 export const EMOTIONAL_HALF_LIFE = 7_200_000;
 
-/** ADR-156: 排放因子。Alice 回应后 E *= 此值（一次回应消解 70% 情感压力）。 */
+/** ADR-156: коэффициент разряда. После ответа Alice: E *= это значение (один ответ снимает 70% эмоционального давления). */
 export const EMOTIONAL_DISCHARGE_FACTOR = 0.3;
 
-/** ADR-156: 情感呈现阈值。E > 此值时使用 (vivid) 标签。 */
+/** ADR-156: порог отображения эмоции. При E > этого значения используется метка (vivid). */
 export const EMOTIONAL_VIVID_THRESHOLD = 0.5;
 
-/** ADR-156: 情感呈现阈值。E > 此值时使用 (noted) 标签，否则无标签。 */
+/** ADR-156: порог отображения эмоции. При E > этого значения используется метка (noted), иначе — без метки. */
 export const EMOTIONAL_NOTED_THRESHOLD = 0.2;
 
 /**
- * 确保 ID 为 contact 格式（contact:xxx）。
- * 只接受显式平台限定的 channel/contact ID；Telegram 原生数字必须在调用点显式使用
- * telegramContactId()。
+ * Гарантирует, что ID имеет формат contact (contact:xxx).
+ * Принимает только явно квалифицированные channel/contact ID; нативные числа Telegram
+ * должны явно преобразовываться через telegramContactId() в точке вызова.
  * @see docs/adr/155-branded-graph-id.md
  */
 export function ensureContactId(id: string): ContactNodeId | null {
@@ -470,8 +480,8 @@ export function ensureContactId(id: string): ContactNodeId | null {
 }
 
 /**
- * 从 target 推断图中的 contact + channel 节点。
- * has 回调验证节点存在（避免循环导入 WorldModel）。
+ * Определяет узлы contact + channel в графе по target.
+ * Коллбэк has верифицирует существование узла (избегает циклического импорта WorldModel).
  * @see docs/adr/155-branded-graph-id.md
  */
 export function resolveContactAndChannel(

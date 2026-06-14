@@ -1,12 +1,12 @@
 /**
- * instructor-js 客户端 — 验证驱动的结构化输出 + retry 闭环。
+ * instructor-js клиент — структурированный вывод с валидацией + замкнутый цикл retry.
  *
- * ADR-213: tick callLLM 的主力结构化输出通道。
- * 按 provider 自动选择 instructor mode：
- * - Gemini (generativelanguage.googleapis.com) → MD_JSON（tool schema 格式限制）
- * - 其他（OpenAI / Anthropic / OpenRouter 兼容）→ TOOLS（原生 tool calling）
+ * ADR-213: основной канал структурированного вывода для tick callLLM.
+ * Режим instructor выбирается автоматически по провайдеру:
+ * - Gemini (generativelanguage.googleapis.com) → MD_JSON (ограничения формата tool schema)
+ * - Остальные (OpenAI / Anthropic / OpenRouter совместимые) → TOOLS (нативный tool calling)
  *
- * 复用 config.providers endpoint 列表的 baseUrl/apiKey/model，不引入新配置。
+ * Переиспользует baseUrl/apiKey/model из списка endpoints config.providers, не вводит новых настроек.
  *
  * @see docs/adr/213-tool-calling-act-thread.md
  * @see https://js.useinstructor.com/
@@ -19,7 +19,7 @@ import { getBreakerState } from "./resilience.js";
 
 const log = createLogger("instructor");
 
-// -- 类型 -------------------------------------------------------------------
+// -- Типы -------------------------------------------------------------------
 
 interface InstructorEntry {
   name: string;
@@ -33,13 +33,13 @@ export interface AvailableInstructor {
   name: string;
 }
 
-// -- 状态 -------------------------------------------------------------------
+// -- Состояние -------------------------------------------------------------------
 
 let _entries: InstructorEntry[] = [];
 
-// -- Mode 自动选择 ----------------------------------------------------------
+// -- Автовыбор режима ----------------------------------------------------------
 
-/** Gemini 模型名特征——baseUrl 可能是代理地址，用 model 名判断更可靠。 */
+/** Признак модели Gemini — baseUrl может быть прокси, поэтому надёжнее определять по имени модели. */
 // claude/sonnet/haiku: идём через claude-proxy, который НЕ эмулирует нативный
 // tool-calling (TOOLS mode). MD_JSON кладёт схему в промпт и парсит JSON из текста —
 // это прокси поддерживает (claude отлично отдаёт JSON).
@@ -54,16 +54,16 @@ const MD_JSON_MODEL_PATTERNS = [
   "opus",
 ];
 
-/** 根据 model 名称选择 instructor mode。 */
+/** Выбрать режим instructor по имени модели. */
 function selectMode(model: string): "TOOLS" | "MD_JSON" {
   const lower = model.toLowerCase();
   if (MD_JSON_MODEL_PATTERNS.some((p) => lower.includes(p))) return "MD_JSON";
   return "TOOLS";
 }
 
-// -- 公共 API ---------------------------------------------------------------
+// -- Публичный API ---------------------------------------------------------------
 
-/** 从 Config.providers 初始化 instructor 客户端链。与 initProviders() 并行调用。 */
+/** Инициализировать цепочку instructor-клиентов из Config.providers. Вызывается параллельно с initProviders(). */
 export function initInstructorClients(config: Config): void {
   const route = config.llmRouting.firstPass
     .map((name) => config.providers.find((provider) => provider.name === name))
@@ -85,7 +85,7 @@ export function initInstructorClients(config: Config): void {
   });
 }
 
-/** 返回当前可用的 instructor 客户端（复用 resilience.ts 熔断器状态）。 */
+/** Вернуть текущий доступный instructor-клиент (переиспользует состояние circuit breaker из resilience.ts). */
 export function getAvailableInstructor(): AvailableInstructor {
   if (_entries.length === 0) {
     throw new Error("No instructor clients initialized — call initInstructorClients() first");
@@ -99,7 +99,7 @@ export function getAvailableInstructor(): AvailableInstructor {
   return { client: first.client, model: first.model, name: first.name };
 }
 
-/** 重置（测试用）。 */
+/** Сброс (для тестов). */
 export function resetInstructorClients(): void {
   _entries = [];
 }

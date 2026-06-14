@@ -1,26 +1,26 @@
 /**
- * 动作执行器 — 运行时配置类型 + 反馈缺口检测。
+ * Исполнитель действий — типы конфигурации среды выполнения + обнаружение разрывов обратной связи.
  *
- * ADR-214 Wave B: 删除 RecordedAction / ExecutableResult / executeRecordedActions 死管线。
- * shell-native 架构下 Telegram 动作通过容器内 Engine API HTTP 直接执行，
- * 执行结果以 completedActions 字符串追踪（格式: "sent:chatId=X:msgId=Y" 等）。
+ * ADR-214 Wave B: удалены мёртвые пайплайны RecordedAction / ExecutableResult / executeRecordedActions.
+ * В shell-native архитектуре действия Telegram выполняются напрямую через Engine API HTTP внутри контейнера,
+ * результаты выполнения отслеживаются строками completedActions (формат: "sent:chatId=X:msgId=Y" и т.п.).
  *
- * 保留:
- * - ActionRuntimeConfig（tick 管线依赖）
- * - FeedbackGap + checkFeedbackGap（基于 completedActions 重写）
+ * Сохранены:
+ * - ActionRuntimeConfig (нужна тик-пайплайну)
+ * - FeedbackGap + checkFeedbackGap (переписаны на основе completedActions)
  */
 
 import type { ScriptExecutionResult } from "./script-execution.js";
 import { hasCompletedSend } from "./script-execution.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ActionRuntimeConfig — tick 管线运行时配置
+// ActionRuntimeConfig — конфигурация среды выполнения тик-пайплайна
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * impl 函数运行时所需的配置子集。
- * 从完整 Config 中提取，避免 action-executor 依赖完整配置类型。
- * @see src/telegram/action-types.ts — ActionImplContext 的注入式配置字段
+ * Подмножество конфигурации, необходимое impl-функциям в среде выполнения.
+ * Извлечено из полного Config, чтобы action-executor не зависел от полного типа конфигурации.
+ * @see src/telegram/action-types.ts — инжектируемые поля конфигурации ActionImplContext
  */
 export interface ActionRuntimeConfig {
   ttsConfig: import("../telegram/action-types.js").TtsConfig;
@@ -31,11 +31,11 @@ export interface ActionRuntimeConfig {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// FeedbackGap — 反馈闭环缺口检测（基于 completedActions）
+// FeedbackGap — обнаружение разрыва петли обратной связи (на основе completedActions)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * ADR-43 P0: 检查脚本执行结果是否包含必要的反馈指令。
+ * ADR-43 P0: Проверяет, содержит ли результат выполнения скрипта необходимые директивы обратной связи.
  */
 export interface FeedbackGap {
   hasSendMessage: boolean;
@@ -45,20 +45,20 @@ export interface FeedbackGap {
 }
 
 /**
- * ADR-43 P0: 检测反馈闭环缺口。
+ * ADR-43 P0: Обнаруживает разрыв петли обратной связи.
  *
- * ADR-214 Wave B: 基于 completedActions 推导 hasSendMessage（"sent:" 前缀），
- * hasObserveMood/hasRateOutcome 从 completedActions 中解析 dispatch 动作。
+ * ADR-214 Wave B: hasSendMessage определяется из completedActions (префикс "sent:"),
+ * hasObserveMood/hasRateOutcome разбирается из dispatch-действий в completedActions.
  *
- * shell-native 架构下 feel/rate_outcome 通过 Engine API dispatch 执行，
- * 但不输出 __ALICE_ACTION__ 控制行——它们是内部状态更新，不是 Telegram 动作。
- * 因此 hasObserveMood/hasRateOutcome 在当前架构下始终为 false。
- * 反馈闭环由 processResult 的自动注入 self_feel 兜底（ADR-199 W1.1）。
+ * В shell-native архитектуре feel/rate_outcome выполняются через dispatch Engine API,
+ * но не выводят управляющие строки __ALICE_ACTION__ — они являются внутренними обновлениями состояния, а не действиями Telegram.
+ * Поэтому hasObserveMood/hasRateOutcome в текущей архитектуре всегда false.
+ * Петля обратной связи подстраховывается автоматическим инжектом self_feel в processResult (ADR-199 W1.1).
  */
 export function checkFeedbackGap(result: ScriptExecutionResult): FeedbackGap {
   const hasSendMessage = hasCompletedSend(result);
-  // shell-native: dispatch 动作不输出 __ALICE_ACTION__，无法从 completedActions 检测。
-  // 保守估计: 始终视为缺失，由 processResult 自动注入兜底。
+  // shell-native: dispatch-действия не выводят __ALICE_ACTION__, их нельзя обнаружить через completedActions.
+  // Консервативная оценка: всегда считаем отсутствующими, подстраховка — автоинжект в processResult.
   const hasObserveMood = false;
   const hasRateOutcome = false;
   const isMissing = hasSendMessage && !hasObserveMood;

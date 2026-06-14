@@ -100,15 +100,15 @@ function makeReplayGraph(): WorldModel {
   });
   G.addChannel(SOCIAL_CASE_REPLAY_IDS.techGroup, {
     chat_type: "supergroup",
-    display_name: "Техчат",
+    display_name: "技术群",
   });
   G.addChannel(SOCIAL_CASE_REPLAY_IDS.secondGroup, {
     chat_type: "supergroup",
-    display_name: "Другой чат",
+    display_name: "另一个群",
   });
   G.addChannel(SOCIAL_CASE_REPLAY_IDS.unrelatedGroup, {
     chat_type: "supergroup",
-    display_name: "Случайный чат",
+    display_name: "路人群",
   });
   G.addRelation(SOCIAL_CASE_REPLAY_IDS.techGroup, "joined", SOCIAL_CASE_REPLAY_IDS.actorA);
   G.addRelation(SOCIAL_CASE_REPLAY_IDS.techGroup, "joined", SOCIAL_CASE_REPLAY_IDS.actorB);

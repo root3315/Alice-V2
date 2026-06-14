@@ -1,39 +1,39 @@
 /**
- * Eval 结果缓存 — 顺序测试的 skip-on-pass 支持。
+ * Кэш результатов eval — поддержка skip-on-pass при последовательном тестировании.
  *
- * 缓存文件 `.eval-cache.json` 记录每个场景的最近结果。
- * 默认行为：已 pass 的场景跳过，只重跑 fail/未测试的。
- * `--full` 忽略缓存全量重跑。`--reset` 清除缓存。
+ * Файл кэша `.eval-cache.json` хранит последний результат для каждого сценария.
+ * Поведение по умолчанию: сценарии с pass пропускаются, перезапускаются только fail/непроверенные.
+ * `--full` игнорирует кэш и перезапускает всё. `--reset` очищает кэш.
  *
- * 缓存粒度为 scenario ID 级别。每个场景完成后立即写入，
- * 中断的运行不会丢失已完成场景的进度。
+ * Гранулярность кэша — уровень scenario ID. Запись происходит сразу после завершения каждого сценария,
+ * поэтому прерванный прогон не теряет прогресс по завершённым сценариям.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("eval:cache");
 
-/** 缓存文件默认路径（runtime 工作目录下）。 */
+/** Путь по умолчанию к файлу кэша (в рабочей директории runtime). */
 const DEFAULT_CACHE_PATH = ".eval-cache.json";
 
-/** 单个场景的缓存条目。 */
+/** Запись кэша для одного сценария. */
 export interface EvalCacheEntry {
-  /** 是否通过。 */
+  /** Пройден ли сценарий. */
   pass: boolean;
-  /** 记录时间 ISO 字符串。 */
+  /** Время записи в формате ISO-строки. */
   timestamp: string;
-  /** 运行时使用的模型。 */
+  /** Модель, использованная при запуске. */
   model?: string;
-  /** 通过率（多 run 时有意义）。 */
+  /** Процент прохождений (значимо при нескольких прогонах). */
   passRate?: number;
 }
 
-/** 缓存文件的完整结构。 */
+/** Полная структура файла кэша. */
 export interface EvalCache {
   [scenarioId: string]: EvalCacheEntry;
 }
 
-/** 加载缓存。文件不存在或格式错误返回空对象。 */
+/** Загружает кэш. Возвращает пустой объект, если файл не существует или повреждён. */
 export function loadCache(path = DEFAULT_CACHE_PATH): EvalCache {
   if (!existsSync(path)) return {};
   try {
@@ -47,12 +47,12 @@ export function loadCache(path = DEFAULT_CACHE_PATH): EvalCache {
   }
 }
 
-/** 保存缓存（原子写入：先写临时文件再 rename 不值得，eval 不是高频写入）。 */
+/** Сохраняет кэш (атомарная запись через временный файл и rename не нужна — eval не пишет часто). */
 export function saveCache(cache: EvalCache, path = DEFAULT_CACHE_PATH): void {
   writeFileSync(path, JSON.stringify(cache, null, 2), "utf-8");
 }
 
-/** 清除缓存文件。 */
+/** Очищает файл кэша. */
 export function resetCache(path = DEFAULT_CACHE_PATH): void {
   if (existsSync(path)) {
     writeFileSync(path, "{}", "utf-8");
@@ -60,13 +60,13 @@ export function resetCache(path = DEFAULT_CACHE_PATH): void {
   }
 }
 
-/** 查询场景是否已缓存为 pass。 */
+/** Проверяет, закэширован ли сценарий как pass. */
 export function isCachedPass(cache: EvalCache, scenarioId: string): boolean {
   const entry = cache[scenarioId];
   return !!entry?.pass;
 }
 
-/** 缓存统计摘要。 */
+/** Сводная статистика по кэшу. */
 export function cacheSummary(cache: EvalCache): { total: number; passed: number; failed: number } {
   let passed = 0;
   let failed = 0;

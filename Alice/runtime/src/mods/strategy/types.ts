@@ -1,15 +1,15 @@
 /**
- * Strategy Mod 共享类型、常量和纯函数。
+ * Strategy Mod — общие типы, константы и чистые функции.
  *
- * 所有子模块共享的基础设施，不含副作用。
+ * Инфраструктура, разделяемая всеми подмодулями; без побочных эффектов.
  */
 
-// -- 类型 --------------------------------------------------------------------
+// -- Типы --------------------------------------------------------------------
 
 export interface ActionRecord {
   target: string | null;
   tick: number;
-  /** ADR-110: 行动发生的墙钟时间（ms）。新数据必有，旧数据可能缺失。 */
+  /** ADR-110: wall-clock время действия (ms). Присутствует в новых данных, может отсутствовать в старых. */
   ms?: number;
   intent: string;
 }
@@ -31,96 +31,97 @@ export interface StrategyHint {
   message: string;
 }
 
-// -- M2: 群聊动态状态 ---------------------------------------------------------
+// -- M2: динамическое состояние группового чата ---------------------------------------------------------
 
 /**
- * 群聊结构化状态（M2 场景 4 增强）。
+ * Структурированное состояние группового чата (усиление M2 сценарий 4).
  *
- * 关键词窗口收集最近消息的高频词，供 LLM 在 contribute 中自行判断话题变化。
- * participationRatio 用简单比例追踪 Alice 在群中的参与度，
- * 避免 Alice 过度或过少参与（Dunbar 社交分配约束）。
+ * Окно ключевых слов собирает часто встречаемые слова из последних сообщений,
+ * чтобы LLM в contribute мог самостоятельно оценить смену темы.
+ * participationRatio отслеживает долю участия Alice в группе простым соотношением,
+ * не допуская чрезмерного или недостаточного участия (ограничение социального распределения Данбара).
  *
  * @see docs/adr/46-real-data-calibration.md §2 Wave 1
  */
 export interface GroupChatState {
-  /** 最近活跃发言者（环形缓冲，10 人）。 */
+  /** Последние активные говорящие (кольцевой буфер, 10 человек). */
   recentSpeakers: string[];
-  /** 话题关键词窗口（最近消息的关键词集合）。 */
+  /** Окно ключевых слов темы (набор ключевых слов из последних сообщений). */
   topicKeywords: string[];
-  /** Alice 在该群的参与率 (alice_msgs / total_msgs，简单比例)。 */
+  /** Доля участия Alice в группе (alice_msgs / total_msgs, простое соотношение). */
   participationRatio: number;
-  /** 总消息计数窗口。 */
+  /** Окно общего счётчика сообщений. */
   totalMessages: number;
-  /** Alice 消息计数窗口。 */
+  /** Окно счётчика сообщений Alice. */
   aliceMessages: number;
 }
 
-/** 频道消息频率追踪（用于危机/活跃度检测）。 */
+/** Отслеживание частоты сообщений в канале (для детекции кризиса/активности). */
 export interface MessageFrequencyWindow {
-  /** 最近 N tick 内的入站消息数（sliding window）。 */
+  /** Число входящих сообщений за последние N тиков (скользящее окно). */
   recentCount: number;
-  /** 基线消息频率（长期均值 EMA）。 */
+  /** Базовая частота сообщений (долгосрочное среднее EMA). */
   baseline: number;
-  /** EMA 方差（用于 Z-score 危机检测）。旧数据可能缺失，此时回退到频率比。 */
+  /** Дисперсия EMA (для Z-score детекции кризиса). Может отсутствовать в старых данных — тогда fallback на отношение частот. */
   variance?: number;
-  /** 上次更新 tick。 */
+  /** Тик последнего обновления. */
   lastTick: number;
-  /** ADR-110: 上次更新的墙钟时间（ms）。新数据必有，旧数据可能缺失。 */
+  /** ADR-110: wall-clock время последнего обновления (ms). Присутствует в новых данных, может отсутствовать в старых. */
   lastMs?: number;
 }
 
 /**
- * M4 人格漂移审计状态。
+ * M4 Состояние аудита дрейфа личности.
  *
- * 理论基础:
- * - drift = l2Distance(π_current, π_home): 累积偏离度
- * - velocity = l2Distance(π_current, π_previous) / interval: 瞬时变化率
- * - 分类: healthy (< 0.1) / warning (0.1~0.2) / alert (>= 0.2)
+ * Теоретическая основа:
+ * - drift = l2Distance(π_current, π_home): накопленное отклонение
+ * - velocity = l2Distance(π_current, π_previous) / interval: мгновенная скорость изменения
+ * - Классификация: healthy (< 0.1) / warning (0.1~0.2) / alert (>= 0.2)
  *
- * 参考: Ashton & Lee (2007) HEXACO 人格稳定性研究 — 人格长期稳定但可漂移。
+ * Ссылка: Ashton & Lee (2007) исследование стабильности личности HEXACO — личность долгосрочно стабильна, но может дрейфовать.
  */
 export interface PersonalityDriftState {
-  /** 上次审计 tick。 */
+  /** Тик последнего аудита. */
   lastAuditTick: number;
-  /** ADR-110: 上次审计的墙钟时间（ms）。新数据必有，旧数据可能缺失。 */
+  /** ADR-110: wall-clock время последнего аудита (ms). Присутствует в новых данных, может отсутствовать в старых. */
   lastAuditMs?: number;
-  /** 上次审计时的人格快照 (用于计算 velocity)。 */
+  /** Снимок личности на момент последнего аудита (для вычисления velocity). */
   previousWeights: number[] | null;
-  /** 当前漂移值。 */
+  /** Текущее значение дрейфа. */
   drift: number;
-  /** 当前变化速度。 */
+  /** Текущая скорость изменения. */
   velocity: number;
-  /** 健康分类。 */
+  /** Классификация здоровья. */
   health: "healthy" | "warning" | "alert";
 }
 
 export interface StrategyState {
-  /** 最近行动日志（环形缓冲，20 条）。 */
+  /** Журнал последних действий (кольцевой буфер, 20 записей). */
   recentActions: ActionRecord[];
-  // contactLastInteraction[Ms] 已移除——与 observer.mod 写到图属性 last_alice_action_ms 完全冗余。
-  // hint-generators 现在直接从图读取（同时查 contact:xxx 和 channel:xxx 变体）。
-  /** 当前活跃策略提示（每 tick 重新计算）。 */
+  // contactLastInteraction[Ms] удалён — полностью избыточно по отношению к last_alice_action_ms в graph-атрибутах, записываемых observer.mod.
+  // hint-generators теперь читают напрямую из графа (проверяют и contact:xxx и channel:xxx варианты).
+  /** Текущие активные стратегические подсказки (пересчитываются каждый тик). */
   activeHints: StrategyHint[];
-  /** 场景 6: 频道消息频率窗口（channelId → window）。 */
+  /** Сценарий 6: окна частоты сообщений каналов (channelId → window). */
   messageFrequency: Record<string, MessageFrequencyWindow>;
-  /** 场景 6: 当前处于危机模式的频道。 */
+  /** Сценарий 6: каналы, находящиеся в режиме кризиса. */
   crisisChannels: Record<string, number>; // channelId → detectedTick
-  /** ADR-110: 危机检测的墙钟时间（channelId → ms）。 */
+  /** ADR-110: wall-clock время детекции кризиса (channelId → ms). */
   crisisChannelsMs?: Record<string, number>;
-  /** M2: 群聊动态状态（channelId → GroupChatState）。 */
+  /** M2: динамическое состояние групповых чатов (channelId → GroupChatState). */
   groupStates: Record<string, GroupChatState>;
-  /** M4: 人格漂移审计。 */
+  /** M4: аудит дрейфа личности. */
   personalityDrift: PersonalityDriftState;
 }
 
-// -- 常量 --------------------------------------------------------------------
+// -- Константы --------------------------------------------------------------------
 
 export const MAX_RECENT_ACTIONS = 20;
 export const MAX_RECENT_SPEAKERS = 10;
 export const MAX_TOPIC_KEYWORDS = 30;
 
-// ADR-113 §D3: Tier → 沉默容忍阈值映射（秒）
-// 与 P6 TIER_EXPECTED_SILENCE_S 对齐——策略层和压力层用相同的时间尺度。
+// ADR-113 §D3: маппинг Tier → порог толерантного молчания (секунды)
+// Согласовано с P6 TIER_EXPECTED_SILENCE_S — стратегический и слой давления используют одну шкалу времени.
 // @see src/pressure/p6-curiosity.ts TIER_EXPECTED_SILENCE_S
 export const SILENCE_THRESHOLD_S: Record<number, number> = {
   5: 14400, // intimate: 4 hours
@@ -130,55 +131,55 @@ export const SILENCE_THRESHOLD_S: Record<number, number> = {
   500: 5184000, // known: 60 days
 };
 
-// M4: 人格漂移审计参数
-/** 漂移审计间隔（ticks）。 */
+// M4: параметры аудита дрейфа личности
+/** Интервал аудита дрейфа (тики). */
 export const DRIFT_AUDIT_INTERVAL = 100;
-/** ADR-110: 漂移审计间隔（秒）。100 ticks × 60 = 6000 秒。 */
+/** ADR-110: интервал аудита дрейфа (секунды). 100 ticks × 60 = 6000 секунд. */
 export const DRIFT_AUDIT_INTERVAL_S = 6000;
-/** 漂移 warning 阈值。 */
+/** Порог warning для дрейфа. */
 export const DRIFT_WARNING_THRESHOLD = 0.1;
 /**
- * 漂移 alert 阈值。
- * ADR-46 F7b: 0.2 → 0.15（ADR-45 发现 0.468 总漂移才触发，太晚）。
+ * Порог alert для дрейфа.
+ * ADR-46 F7b: 0.2 → 0.15 (ADR-45 обнаружил, что срабатывание при суммарном дрейфе 0.468 — слишком поздно).
  * @see docs/adr/45-real-data-validation.md §3.6
  */
 export const DRIFT_ALERT_THRESHOLD = 0.15;
 
 /**
- * 危机检测：Z-score 阈值。unread 偏离 EMA 均值超过 2.5σ → 危机候选。
- * 替代旧频率比（CRISIS_FREQUENCY_RATIO=4.0），统计显著性更强。
- * @see evolve.ts spikeContribs — ADR-191: 相同的 Z-score 方法，通过 tauSpike → rCaution 直接结构路径
+ * Детекция кризиса: Z-score порог. unread отклоняется от EMA более чем на 2.5σ → кризис-кандидат.
+ * Заменяет старое отношение частот (CRISIS_FREQUENCY_RATIO=4.0), статистически значимее.
+ * @see evolve.ts spikeContribs — ADR-191: тот же Z-score метод, прямой структурный путь через tauSpike → rCaution
  */
 export const CRISIS_Z_THRESHOLD = 2.5;
 /**
- * 危机恢复：Z-score 回落到此值以下 → 危机消退。
+ * Восстановление от кризиса: Z-score опускается ниже этого значения → кризис спал.
  */
 export const CRISIS_RECOVERY_Z = 1.0;
 /**
- * @deprecated 旧频率比阈值，仅在 variance 数据缺失时作为回退。
- * @see CRISIS_Z_THRESHOLD — 新检测方式
+ * @deprecated Старый порог отношения частот, используется как fallback при отсутствии данных о дисперсии.
+ * @see CRISIS_Z_THRESHOLD — новый метод детекции
  */
 export const CRISIS_FREQUENCY_RATIO = 4.0;
 /**
- * @deprecated 旧最低基线，仅在 variance 数据缺失时作为回退。
+ * @deprecated Старый минимальный базис, используется как fallback при отсутствии данных о дисперсии.
  */
 export const CRISIS_MIN_BASELINE = 5;
-/** @deprecated 旧恢复比率，Z-score 方式使用 CRISIS_RECOVERY_Z。 */
+/** @deprecated Старый порог восстановления; Z-score метод использует CRISIS_RECOVERY_Z. */
 export const CRISIS_RECOVERY_RATIO = 1.5;
 
-// -- 纯函数 ------------------------------------------------------------------
+// -- Чистые функции ------------------------------------------------------------------
 
-/** @deprecated ADR-110: 使用 getSilenceThresholdS 替代。 */
+/** @deprecated ADR-110: используйте getSilenceThresholdS вместо этого. */
 export function getSilenceThreshold(tier: number): number {
   return SILENCE_THRESHOLD_S[tier] ?? 30000;
 }
 
-/** ADR-110: 返回沉默容忍阈值（秒）。 */
+/** ADR-110: возвращает порог толерантного молчания (секунды). */
 export function getSilenceThresholdS(tier: number): number {
   return SILENCE_THRESHOLD_S[tier] ?? 30000;
 }
 
-/** 创建空白群聊状态。 */
+/** Создаёт пустое состояние группового чата. */
 export function emptyGroupState(): GroupChatState {
   return {
     recentSpeakers: [],
@@ -189,7 +190,7 @@ export function emptyGroupState(): GroupChatState {
   };
 }
 
-/** 解析图属性中的 JSON 权重数组。 */
+/** Разбирает JSON-массив весов из graph-атрибута. */
 export function parseJsonWeights(raw: unknown): number[] | null {
   if (Array.isArray(raw) && raw.every((v): v is number => typeof v === "number")) return raw;
   if (typeof raw === "string") {
@@ -204,7 +205,7 @@ export function parseJsonWeights(raw: unknown): number[] | null {
   return null;
 }
 
-// F24: 提升为模块级常量（一次初始化），避免每次 extractKeywords 调用重建 Set
+// F24: поднято до уровня модульной константы (инициализируется один раз), чтобы не пересоздавать Set при каждом вызове extractKeywords
 const STOP_WORDS = new Set([
   // Английские
   "the",
@@ -393,8 +394,8 @@ const STOP_WORDS = new Set([
 ]);
 
 /**
- * 从文本提取关键词（简单 TF 方法）。
- * 去除停用词和短词，保留有信息量的 token。
+ * Извлечение ключевых слов из текста (простой TF-метод).
+ * Убирает стоп-слова и короткие слова, оставляет информативные токены.
  */
 export function extractKeywords(text: string): string[] {
   return text
@@ -402,5 +403,5 @@ export function extractKeywords(text: string): string[] {
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .split(/\s+/)
     .filter((w) => w.length >= 2 && !STOP_WORDS.has(w))
-    .slice(0, 10); // 每条消息最多 10 个关键词
+    .slice(0, 10); // Не более 10 ключевых слов на сообщение
 }

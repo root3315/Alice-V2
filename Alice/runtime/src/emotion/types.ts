@@ -1,8 +1,8 @@
 /**
  * ADR-268: Emotion Episode State.
  *
- * 这里定义 self affect 的内部事实/状态类型。群聊或联系人 mood 仍属于
- * observer 的外部情绪观察，不在这个模块里退休。
+ * Здесь определены внутренние типы фактов/состояний self affect. Mood группового чата или контакта
+ * по-прежнему относится к внешним эмоциональным наблюдениям observer и не входит в этот модуль.
  *
  * @see docs/adr/268-emotion-episode-state/README.md
  */

@@ -1,16 +1,16 @@
 /**
- * ReAct 外循环 + 交错调度 — 替代旧 loop.ts:411-595 + scheduler.ts 协调。
+ * ReAct внешний цикл + чередующееся планирование — замена старых loop.ts:411-595 + координации scheduler.ts.
  *
- * 保留 ADR-130 交错调度的全部语义：
- * - 多 engagement 并发（Miller 7±2 保守端 = 3）
- * - subcycle 原子性 + engagement exclusivity
- * - expect_reply/stay 非阻塞化
- * - 切换代价（SWITCH_COST_MS）
+ * Сохраняет всю семантику ADR-130 чередующегося планирования:
+ * - параллельность нескольких engagement (консервативный предел Миллера 7±2 = 3)
+ * - атомарность subcycle + эксклюзивность engagement
+ * - неблокирующий режим expect_reply/stay
+ * - стоимость переключения (SWITCH_COST_MS)
  *
- * 关键改变（vs 旧 loop.ts）：
- * - ADR-142: 内部调用 `runTickSubcycle`（Blackboard Tick + SAA 管线）
- * - subcycle 返回后调用 `evaluateAndReflect()` (D9)
- * - processItem 支持 `decideFanOut()` (D8) 条件树搜索
+ * Ключевые изменения (vs старый loop.ts):
+ * - ADR-142: внутренний вызов `runTickSubcycle` (Blackboard Tick + конвейер SAA)
+ * - после возврата subcycle вызывается `evaluateAndReflect()` (D9)
+ * - processItem поддерживает `decideFanOut()` (D8) поиск по дереву условий
  *
  * @see docs/adr/140-react-efficiency-architecture.md
  * @see docs/adr/130-engagement-interleaving.md
@@ -18,8 +18,8 @@
 import type { TelegramClient } from "@mtcute/node";
 
 import type { Config } from "../../config.js";
-// ADR-214 Wave A: ExecutionStats, executeRecordedActions, mergeScriptExecutionResults 已删除。
-// applyFeedbackArc 不再被调用。Wave B 将清理。
+// ADR-214 Wave A: ExecutionStats, executeRecordedActions, mergeScriptExecutionResults удалены.
+// applyFeedbackArc больше не вызывается. Wave B выполнит очистку.
 import type { Dispatcher } from "../../core/dispatcher.js";
 import {
   type CompletedAction,
@@ -58,7 +58,7 @@ import { processResult } from "./feedback-arc.js";
 
 const log = createLogger("react:orchestrator");
 
-/** afterward=resting 的最小结构化离席窗口。更长的夜间节律由 dormant FSM 接管。 */
+/** Минимальное структурированное окно отсутствия для afterward=resting. Более длинные ночные ритмы управляются dormant FSM. */
 const RESTING_DURATION_MS = 30 * 60 * 1000;
 
 function isConversationOutput(action: CompletedAction): boolean {
@@ -69,12 +69,12 @@ function hasConversationOutput(result: ScriptExecutionResult): boolean {
   return completedActionFacts(result).some(isConversationOutput);
 }
 
-// ── ActContext: 行动循环上下文（与旧 loop.ts 兼容）────────────────────────
+// ── ActContext: контекст цикла действий (совместим со старым loop.ts) ────────────────────────
 
 /**
- * ACT 循环上下文 — 行动线程的运行时依赖注入。
+ * Контекст ACT-цикла — внедрение зависимостей во время выполнения потока действий.
  *
- * 与旧 loop.ts 的 ActContext 保持类型兼容。
+ * Сохраняет типовую совместимость с ActContext из старого loop.ts.
  */
 export interface ActContext {
   client: TelegramClient;
@@ -85,21 +85,21 @@ export interface ActContext {
   getCurrentTick: () => number;
   getCurrentPressures: () => PressureDims;
   onPersonalityUpdate: (pv: PersonalityVector) => void;
-  /** Mod Dispatcher。 */
+  /** Mod Dispatcher. */
   dispatcher: Dispatcher;
-  /** ADR-107: EventBuffer 引用，用于浏览会话期间监听回复和抢占事件。 */
+  /** ADR-107: ссылка на EventBuffer для отслеживания ответов и событий вытеснения во время сессии просмотра. */
   buffer: EventBuffer;
-  /** ADR-173: 记录已确认的行动到 evolve 的 recentActions（延迟记录，仅真实 Telegram 行动）。 */
+  /** ADR-173: отложенная запись подтверждённых действий в recentActions evolve (только реальные действия Telegram). */
   recordAction: (action: string, target: string | null) => void;
-  /** ADR-190: 通知 evolve 线程 LLM 调用结果（成功/失败），驱动调度层指数退避。 */
+  /** ADR-190: уведомить поток evolve о результате вызова LLM (успех/неудача), управляет экспоненциальной задержкой на уровне планировщика. */
   reportLLMOutcome: (success: boolean) => void;
 }
 
 /**
- * 过期检查：入队后压力场是否已显著变化。
+ * Проверка устаревания: значительно ли изменилось поле давлений после постановки в очередь.
  *
- * P1-2: 归一化后计算 L2 距离。裸 L2 被 P1/P4（量级~200）主导，
- * P5（量级~3）的剧变几乎无法触发 staleness。归一化到 [0,1] 后各维度等权。
+ * P1-2: L2-расстояние вычисляется после нормализации. Без нормализации L2 доминируется P1/P4 (порядок ~200),
+ * и резкие изменения P5 (порядок ~3) почти не способны вызвать staleness. После нормализации к [0,1] все измерения равнозначны.
  * @see .claude/sessions/review-runtime-G6oHOR/worker-2-engine-core.md §P1-2
  */
 function isStale(
@@ -118,23 +118,23 @@ function isStale(
   return Math.sqrt(sum) > threshold;
 }
 
-// ADR-214 Wave A: applyFeedbackArc 已删除（依赖 ExecutionStats，属于死管线）。
-// shell-native 架构下 Telegram 动作通过 Engine API HTTP 执行，
-// pending_directed 递减和 reachability 更新由 Engine API 路由处理。
+// ADR-214 Wave A: applyFeedbackArc удалён (зависел от ExecutionStats, входит в мёртвый конвейер).
+// В shell-native архитектуре действия Telegram выполняются через HTTP Engine API,
+// декремент pending_directed и обновление reachability обрабатываются маршрутами Engine API.
 
 /**
- * 终结一个 engagement slot：安全网 flush + processResult + cooldown + 释放锁。
- * 从旧 startActLoop 的后处理逻辑提取。
+ * Завершение engagement slot: защитный flush + processResult + cooldown + снятие блокировки.
+ * Извлечено из логики постобработки старого startActLoop.
  */
 async function finalizeSlot(ctx: ActContext, slot: EngagementSlot): Promise<void> {
   const { item, session, graphBefore } = slot;
   const tick = ctx.getCurrentTick();
 
   try {
-    // ADR-214 Wave A: 安全网 flush 已删除。
-    // shell-native 架构下 pendingActions 始终为空——Telegram 动作通过容器内 Engine API HTTP 直接执行。
+    // ADR-214 Wave A: защитный flush удалён.
+    // В shell-native архитектуре pendingActions всегда пуст — действия Telegram выполняются напрямую через Engine API HTTP внутри контейнера.
 
-    // processResult: 一次性调用，传递 engagement metrics
+    // processResult: однократный вызов с передачей метрик engagement
     const mergedResult = session.toMergedResult();
     const closureResult = measureClosureDepth(graphBefore, ctx.G);
     processResult(
@@ -152,10 +152,10 @@ async function finalizeSlot(ctx: ActContext, slot: EngagementSlot): Promise<void
       },
       session.lastTcMeta,
     );
-    // ADR-173: 延迟记录——行动确认后写入 recentActions
-    // ADR-215 Wave 2: 所有行动类型（包括 observe）都计入 rateCap，防止内部循环超频
-    // 区分：真实 Telegram 行动（有 completedActions）vs 内部行动（silence/observe/llm_failed）
-    // 两者都消耗注意力预算，但内部行动的 socialCost 和 netValue 计算方式不同
+    // ADR-173: отложенная запись — записываем в recentActions после подтверждения действия
+    // ADR-215 Wave 2: все типы действий (включая observe) учитываются в rateCap, предотвращает гиперактивность внутреннего цикла
+    // Различие: реальные действия Telegram (есть completedActions) vs внутренние действия (silence/observe/llm_failed)
+    // Оба потребляют бюджет внимания, но socialCost и netValue для внутренних действий считаются иначе
     ctx.recordAction(item.action, item.target);
     // ADR-274: provider outage / quota is runtime health, not LLM quality backoff.
     // Billing incidents already block execution; they must not also poison cadence.
@@ -163,24 +163,24 @@ async function finalizeSlot(ctx: ActContext, slot: EngagementSlot): Promise<void
       session.outcome !== "llm_failed" || session.failureKind === "provider_unavailable",
     );
   } finally {
-    // 释放可观测性信号
+    // освобождаем сигнал наблюдаемости
     releaseSlot(ctx, slot);
-    // C1 fix: preempted slot 不释放 processing 锁——target 已重新入队，
-    // 锁应由新 engagement 继承，否则短暂的无锁窗口会破坏 Exclusivity。
+    // C1 fix: вытесненный slot не снимает блокировку processing — target уже повторно поставлен в очередь,
+    // блокировка должна быть унаследована новым engagement, иначе короткое окно без блокировки нарушит Exclusivity.
     if (item.target && !slot.preempted) ctx.queue.markComplete(item.target);
   }
 
-  // ADR-130: cooldown 改为非阻塞
-  // 通过更新 channel 的 last_alice_action_ms 让 EVOLVE 线程的 proactive_cooldown 自然处理
+  // ADR-130: cooldown переведён в неблокирующий режим
+  // обновляем last_alice_action_ms канала, позволяя proactive_cooldown потока EVOLVE обрабатывать это естественно
   if (slot.targetChannelId && ctx.G.has(slot.targetChannelId)) {
     ctx.G.updateChannel(slot.targetChannelId, { last_alice_action_ms: Date.now() });
   }
 }
 
 /**
- * 清理所有 done 的 slot：异步终结并释放。
- * 返回过滤后的活跃 slot 数组。
- * finalization promises 注入 `pending` Set，settled 后自动移除。
+ * Очистка всех завершённых slot: асинхронное завершение и освобождение.
+ * Возвращает отфильтрованный массив активных slot.
+ * Промисы финализации добавляются в Set `pending` и удаляются автоматически после завершения.
  */
 function cleanupDoneSlots(
   ctx: ActContext,
@@ -194,7 +194,7 @@ function cleanupDoneSlots(
       remaining.push(slot);
       continue;
     }
-    // 异步终结（不阻塞 scheduler 继续调度其他 engagement）
+    // асинхронная финализация (не блокирует планировщик при продолжении диспетчеризации других engagement)
     const p = finalizeSlot(ctx, slot).catch((err) => {
       log.error("Failed to finalize engagement slot", {
         target: slot.item.target,
@@ -202,7 +202,7 @@ function cleanupDoneSlots(
       });
     });
     pending.add(p);
-    // settled 后自动从 Set 中移除，防止无限增长
+    // автоматически удаляется из Set после завершения, предотвращает бесконечный рост
     p.then(
       () => pending.delete(p),
       () => pending.delete(p),
@@ -213,12 +213,12 @@ function cleanupDoneSlots(
 }
 
 /**
- * ADR-140: 启动 ReAct 循环 — 交错调度版（替代旧 startActLoop）。
+ * ADR-140: Запуск ReAct-цикла — версия с чередующимся планированием (замена старого startActLoop).
  *
- * 整体结构与旧 startActLoop 几乎相同——交错调度、slot 管理、switch cost、
- * staleness check 都保留。区别在于：
- * - ADR-142: 内部调用 `runTickSubcycle`（Blackboard Tick + SAA 两层过滤）
- * - subcycle 返回后支持 D8 fan-out + D9 reflection（由 orchestrator 协调）
+ * Общая структура почти идентична старому startActLoop — чередующееся планирование, управление slot,
+ * switch cost и staleness check сохранены. Отличия:
+ * - ADR-142: внутренний вызов `runTickSubcycle` (Blackboard Tick + двухуровневая фильтрация SAA)
+ * - после возврата subcycle поддерживается D8 fan-out + D9 reflection (координируется orchestrator)
  *
  * @see docs/adr/140-react-efficiency-architecture.md
  * @see docs/adr/130-engagement-interleaving.md
@@ -226,21 +226,21 @@ function cleanupDoneSlots(
 export async function startReActLoop(ctx: ActContext): Promise<void> {
   let active: EngagementSlot[] = [];
   let lastTarget: string | null = null;
-  /** 异步 finalization 追踪——关闭时 await 所有 pending finalization。settled 后自动移除。 */
+  /** Отслеживание асинхронной финализации — при закрытии ожидаем все pending finalization. Автоудаляются после завершения. */
   const pendingFinalizations = new Set<Promise<void>>();
 
   while (!ctx.queue.closed) {
-    // ── 1. 吸收新 item（不阻塞，最多填充到 MAX_CONCURRENT） ──
+    // ── 1. Приём новых item (без блокировки, заполняем до MAX_CONCURRENT) ──
     while (active.length < MAX_CONCURRENT_ENGAGEMENTS) {
       const item =
         active.length === 0
-          ? await ctx.queue.dequeue() // 空时阻塞等待
-          : ctx.queue.tryDequeue(); // 非空时非阻塞尝试
+          ? await ctx.queue.dequeue() // блокирующее ожидание при пустой очереди
+          : ctx.queue.tryDequeue(); // неблокирующая попытка при непустой
       if (!item) break;
 
       // Staleness check
-      // directed_override 豁免：义务驱动行动的决策基于 pending_directed（缓变信号），
-      // 不应被无关压力维度（P1/P3/P6）的自然漂移作废。
+      // исключение directed_override: решение об обязательном действии основывается на pending_directed (медленный сигнал),
+      // не должно аннулироваться естественным дрейфом несвязанных измерений давления (P1/P3/P6).
       const tick = ctx.getCurrentTick();
       const currentP = ctx.getCurrentPressures();
       if (
@@ -270,8 +270,8 @@ export async function startReActLoop(ctx: ActContext): Promise<void> {
         continue;
       }
 
-      // 群组成员校验——在 initSlot（fetchRecentMessages + prompt 组装）之前拦截，
-      // 避免为已离开的群浪费 LLM token。
+      // Проверка членства в группе — перехватываем до initSlot (fetchRecentMessages + сборка prompt),
+      // чтобы не тратить токены LLM на группы, из которых уже вышли.
       if (item.target) {
         const rawId = extractNumericId(item.target) ?? item.target;
         if (await isGroupOutboundBlocked(ctx.client, ctx.G, item.target, rawId)) {
@@ -320,21 +320,21 @@ export async function startReActLoop(ctx: ActContext): Promise<void> {
 
     if (active.length === 0) continue;
 
-    // ── 2. 检查 watch slot 是否有事件唤醒 ──
+    // ── 2. Проверяем, не разбудило ли watch slot какое-либо событие ──
     checkWatchers(active);
 
-    // ── 3. 选择下一个 ready 的 engagement ──
+    // ── 3. Выбираем следующий готовый engagement ──
     const next = selectNextEngagement(active);
     if (!next) {
-      // 所有 slot 都在 runtime watch 中 — await 任意一个唤醒
+      // все slot в режиме runtime watch — ждём пробуждения любого из них
       await awaitAnyWakeup(active, ctx.queue);
-      // 唤醒后继续循环（checkWatchers 会更新状态）
-      // 清理 done 的 slot
+      // после пробуждения продолжаем цикл (checkWatchers обновит состояние)
+      // очищаем завершённые slot
       active = cleanupDoneSlots(ctx, active, pendingFinalizations);
       continue;
     }
 
-    // ── 4. 切换代价（切换到不同目标时的认知间隙）──
+    // ── 4. Стоимость переключения (когнитивный разрыв при переходе к другой цели) ──
     if (lastTarget && lastTarget !== next.item.target) {
       await new Promise((resolve) => setTimeout(resolve, SWITCH_COST_MS));
       log.info("Switch cost applied", {
@@ -345,17 +345,17 @@ export async function startReActLoop(ctx: ActContext): Promise<void> {
     }
     lastTarget = next.item.target;
 
-    // ── 5. 设置 Dispatcher 目标 ──
+    // ── 5. Устанавливаем цель Dispatcher ──
     ctx.dispatcher.dispatch("SET_CONTACT_TARGET", { nodeId: next.item.target ?? "" });
     ctx.dispatcher.dispatch("SET_CHAT_TARGET", {
       chatId: next.item.target ?? "",
       liveMessageCount: next.liveMessages.length,
     });
 
-    // ── 6. 执行一个 subcycle ──
+    // ── 6. Выполняем один subcycle ──
     next.session.subcycle++;
 
-    // 拉取最新消息（可能在其他 engagement 执行期间有新消息到达）
+    // получаем свежие сообщения (новые могли прийти пока выполнялись другие engagement)
     if (next.session.subcycle > 1 && next.targetChatId) {
       const prevMessageCount = next.liveMessages.length;
       const chatType =
@@ -366,8 +366,8 @@ export async function startReActLoop(ctx: ActContext): Promise<void> {
         chatType,
       });
 
-      // D2: Observation Quality Gate — 频道无新消息时跳过 LLM 调用。
-      // 私聊/群组不检查——Alice 应主动参与对话，不依赖"有新消息"触发。
+      // D2: Observation Quality Gate — пропускаем вызов LLM, если в канале нет новых сообщений.
+      // Личные чаты/группы не проверяются — Alice должна активно участвовать в разговоре, не ожидая триггера "есть новые сообщения".
       // @see docs/adr/242-command-interface-standardization.md §Phase 3
       if (ChatTarget.isChannelChat(chatType) && next.liveMessages.length <= prevMessageCount) {
         log.info("D2: No new messages since last subcycle → terminate", {
@@ -385,8 +385,8 @@ export async function startReActLoop(ctx: ActContext): Promise<void> {
 
     const tick = ctx.getCurrentTick();
 
-    // D8: fan-out 决策点（未来由 decideFanOut() 驱动，当前走单路径）
-    // D9: reflection 评估点（未来由 evaluateAndReflect() 驱动）
+    // D8: точка решения fan-out (в будущем управляется decideFanOut(), сейчас — единственный путь)
+    // D9: точка оценки reflection (в будущем управляется evaluateAndReflect())
     const sub = await runTickSubcycle(
       ctx,
       next.item,
@@ -399,10 +399,10 @@ export async function startReActLoop(ctx: ActContext): Promise<void> {
     );
     next.session.absorb(sub);
 
-    // ADR-204: 意识流事件 emit（执行级）
+    // ADR-204: emit событий потока сознания (уровень исполнения)
     try {
-      // ADR-214 Wave A: SubcycleResult 不再有 actions/instructions。
-      // shell-native 副作用通过 execution.completedActions 传递。
+      // ADR-214 Wave A: SubcycleResult больше не содержит actions/instructions.
+      // shell-native побочные эффекты передаются через execution.completedActions.
       commitActEvents(
         getDb(),
         tick,
@@ -414,13 +414,13 @@ export async function startReActLoop(ctx: ActContext): Promise<void> {
       log.warn("consciousness act-emit failed", e);
     }
 
-    // ADR-214 Wave A: SPEAK 阶段已删除。
-    // shell-native 架构下 pendingActions 始终为空——Telegram 动作通过容器内 Engine API HTTP 直接执行。
-    // executeRecordedActions 和 correction tick 不再被调用。
+    // ADR-214 Wave A: фаза SPEAK удалена.
+    // В shell-native архитектуре pendingActions всегда пуст — действия Telegram выполняются напрямую через Engine API HTTP внутри контейнера.
+    // executeRecordedActions и correction tick больше не вызываются.
 
-    // ── 8. BRANCH — 更新 slot 状态 ──
-    // ADR-169: 查询解析和错误驱动续轮已内化到 tick() 核心循环。
-    // sub.outcome 是 tick 循环的最终意图，不需要外层续轮修正。
+    // ── 8. BRANCH — обновляем состояние slot ──
+    // ADR-169: разрешение запросов и возобновление по ошибкам встроены в основной цикл tick().
+    // sub.outcome — финальное намерение цикла tick, внешняя коррекция возобновления не нужна.
     if (
       sub.outcome === "terminal" ||
       sub.outcome === "empty" ||
@@ -481,8 +481,8 @@ export async function startReActLoop(ctx: ActContext): Promise<void> {
           active = cleanupDoneSlots(ctx, active, pendingFinalizations);
           continue;
         }
-        // 告别承诺：将 target 的活跃 conversation 转为 closing + turn_state: closed。
-        // LLM 决定离开（语义），代码执行结构性后果（状态机）。
+        // Обещание прощания: переводим активный conversation цели в closing + turn_state: closed.
+        // LLM решает уйти (семантика), код реализует структурные последствия (автомат состояний).
         if (next.targetChannelId) {
           const { findActiveConversation } = await import("../../graph/queries.js");
           const convId = findActiveConversation(ctx.G, next.targetChannelId);
@@ -497,10 +497,10 @@ export async function startReActLoop(ctx: ActContext): Promise<void> {
               convId,
             });
           }
-          // ADR-217: 社交回避——写 aversion 属性，在 IAUS 层乘性调制目标价值。
-          // 不再注入 act_silences（那是基础设施故障通道，语义不同）。
-          // 恢复由时间指数衰减驱动（群聊 τ=2h，私聊 τ=8h），不被 directed 消息重置。
-          // @see docs/adr/217-pressure-field-aversion-gap.md §方案 D
+          // ADR-217: социальное избегание — записываем атрибут aversion, мультипликативно модулирует ценность цели на уровне IAUS.
+          // act_silences больше не инжектируются (это канал инфраструктурных сбоев, семантически другой).
+          // Восстановление управляется экспоненциальным затуханием по времени (группы τ=2ч, личные чаты τ=8ч), не сбрасывается directed-сообщениями.
+          // @see docs/adr/217-pressure-field-aversion-gap.md §Вариант D
           if (ctx.G.has(next.targetChannelId)) {
             const patch: Partial<import("../../graph/entities.js").ChannelAttrs> = {
               pending_directed: 0,
@@ -513,8 +513,8 @@ export async function startReActLoop(ctx: ActContext): Promise<void> {
       }
       next.state = "done";
     } else if (sub.outcome === "waiting_reply" || sub.outcome === "watching") {
-      // ADR-130: deferred afterward 非阻塞化
-      // LLM 的 afterward 是对话语义；scheduler 内部转换成 runtime watch plan。
+      // ADR-130: deferred afterward переведён в неблокирующий режим
+      // afterward LLM — это диалоговая семантика; планировщик внутренне преобразует её в runtime watch plan.
       startWatcher(ctx, next, watchPlanFromOutcome(sub.outcome as DeferredTurnOutcome));
       log.info(`Engagement ${sub.outcome}`, {
         target: next.item.target,
@@ -524,17 +524,17 @@ export async function startReActLoop(ctx: ActContext): Promise<void> {
       });
     }
 
-    // 检查 engagement 是否已耗尽
+    // проверяем, не исчерпан ли engagement
     if (next.state === "ready" && !next.session.canContinue()) {
       next.session.outcome = "limit";
       next.state = "done";
     }
 
-    // ── 10. 清理 done 的 slot ──
+    // ── 10. Очищаем завершённые slot ──
     active = cleanupDoneSlots(ctx, active, pendingFinalizations);
   }
 
-  // 关闭时：等待所有异步 finalization 完成 + 清理残留 slot
+  // При закрытии: ожидаем завершения всех асинхронных финализаций + очищаем оставшиеся slot
   await Promise.allSettled([...pendingFinalizations]);
   for (const slot of active) {
     await finalizeSlot(ctx, slot);

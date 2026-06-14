@@ -1,10 +1,10 @@
 /**
- * Category A: 分支覆盖场景 — 测试 ReAct 决策树的各主要分支。
+ * Category A: Сценарии покрытия ветвей — тестирование основных ветвей дерева решений ReAct.
  *
- * ADR-138: 每个场景定义 expectedIntent（社交意图，primary check），
- * 可选定义 expectedBranch（精确过程，secondary check）。
- * Intent 检查容忍过程差异（如 observe_then_reply vs reply 同为 engage），
- * Branch 检查仅用于过程本身是测试重点的场景。
+ * ADR-138: Каждый сценарий задаёт expectedIntent (социальное намерение, primary check),
+ * опционально — expectedBranch (точный процесс, secondary check).
+ * Проверка Intent допускает расхождения в процессе (например, observe_then_reply vs reply оба относятся к engage),
+ * проверка Branch применяется только там, где процесс сам является предметом теста.
  *
  * @see docs/adr/136-model-eval-suite.md
  * @see docs/adr/138-social-intent-truth-model.md
@@ -16,7 +16,7 @@ export const BRANCH_SCENARIOS = [
   // ── 1. branch.reply.direct ──────────────────────────────────────────
   {
     id: "branch.reply.direct",
-    title: "私聊被直接提问 — 应立即回复",
+    title: "Прямой вопрос в личке — должна ответить немедленно",
     tags: ["private"],
     messages: [
       {
@@ -36,7 +36,7 @@ export const BRANCH_SCENARIOS = [
     features: { hasTarget: true },
     structural: {
       expectedIntent: "engage",
-      expectedBranch: "reply", // 简单问题应回复（模型可能先 observe 查上下文）
+      expectedBranch: "reply", // Простой вопрос — ответить (модель может сначала observe для контекста)
       maxSteps: 3,
       actions: { must: ["send_message"] },
     },
@@ -45,7 +45,7 @@ export const BRANCH_SCENARIOS = [
   // ── 2. branch.reply.emotional ───────────────────────────────────────
   {
     id: "branch.reply.emotional",
-    title: "对方情绪低落 — 共情回复 + feel",
+    title: "Собеседник подавлен — эмпатичный ответ + feel",
     tags: ["private", "empathy"],
     messages: [
       {
@@ -65,7 +65,7 @@ export const BRANCH_SCENARIOS = [
     features: { hasTarget: true },
     structural: {
       expectedIntent: "engage",
-      // 不限定 branch — 直接共情回复 or 先查联系人再回复都可接受
+      // branch не ограничен — допустим как прямой эмпатичный ответ, так и предварительный запрос контакта
       actions: { must: ["send_message"] },
       instructions: { must: ["feel"] },
     },
@@ -78,7 +78,7 @@ export const BRANCH_SCENARIOS = [
   // ── 3. branch.silence.group_listen ──────────────────────────────────
   {
     id: "branch.silence.group_listen",
-    title: "群聊旁听 — 他人闲聊未@Alice，保持沉默",
+    title: "Наблюдение в групповом чате — чужой разговор без @Alice, молчать",
     tags: ["group", "restraint"],
     messages: [
       { role: "other", name: "Bob", text: "你们昨天看比赛了吗" },
@@ -94,7 +94,7 @@ export const BRANCH_SCENARIOS = [
     chatType: "group",
     features: { hasTarget: true, isGroup: true },
     structural: {
-      // 沉默是理想行为，但简短参与也可接受 — 群聊中偶尔插嘴是自然的
+      // Молчание предпочтительно, но краткое участие допустимо — иногда вставить слово в группе естественно
       expectedIntent: ["silence", "engage"],
     },
   },
@@ -102,7 +102,7 @@ export const BRANCH_SCENARIOS = [
   // ── 4. branch.reply.burst_patience ──────────────────────────────────
   {
     id: "branch.reply.burst_patience",
-    title: "私聊连发消息 — 对方已表达完毕，温柔回应",
+    title: "Серия сообщений в личке — собеседник высказался полностью, мягкий ответ",
     tags: ["private", "patience"],
     messages: [
       { role: "user", name: "Carol", text: "等下", directed: true },
@@ -129,7 +129,7 @@ export const BRANCH_SCENARIOS = [
     features: { hasTarget: true },
     structural: {
       expectedIntent: "engage",
-      // 不限定 branch — 直接回复 or 先查联系人状态再回复都可接受
+      // branch не ограничен — допустим как прямой ответ, так и предварительная проверка статуса контакта
       actions: { must: ["send_message"] },
     },
     quality: {
@@ -141,7 +141,7 @@ export const BRANCH_SCENARIOS = [
   // ── 5. branch.observe.query_contact ─────────────────────────────────
   {
     id: "branch.observe.query_contact",
-    title: "久未联系的人发消息 — 先查联系人再回复",
+    title: "Сообщение от давно замолчавшего контакта — сначала запросить профиль, затем ответить",
     tags: ["private", "memory"],
     messages: [
       {
@@ -161,7 +161,7 @@ export const BRANCH_SCENARIOS = [
     features: { hasTarget: true },
     structural: {
       expectedIntent: "engage",
-      expectedBranch: "observe_then_reply", // 久未联系 → 建议先查联系人（诊断）
+      expectedBranch: "observe_then_reply", // Давно не общались → рекомендуется сначала запросить контакт (диагностика)
       maxSteps: 3,
       queries: { must: ["contact_profile"] },
       actions: { must: ["send_message"] },
@@ -171,7 +171,7 @@ export const BRANCH_SCENARIOS = [
   // ── 6. branch.observe.query_topic ───────────────────────────────────
   {
     id: "branch.observe.query_topic",
-    title: "对方追问之前的话题 — 先查上下文再回复",
+    title: "Собеседник спрашивает о прошлом разговоре — сначала запросить контекст, затем ответить",
     tags: ["private", "context"],
     messages: [
       {
@@ -191,14 +191,14 @@ export const BRANCH_SCENARIOS = [
     features: { hasTarget: true },
     structural: {
       expectedIntent: ["engage", "defer"],
-      // 不限定 branch — 直接回复、搜索记忆后回复、或搜索中观望都可接受
+      // branch не ограничен — допустимы прямой ответ, ответ после поиска в памяти или ожидание при поиске
     },
   },
 
   // ── 7. branch.wait.half_sentence ────────────────────────────────────
   {
     id: "branch.wait.half_sentence",
-    title: "对方只说了半句 — 等待对方继续",
+    title: "Собеседник сказал полуфразу — ждать продолжения",
     tags: ["private", "turn_taking"],
     messages: [
       { role: "alice", text: "真的假的？？" },
@@ -219,7 +219,7 @@ export const BRANCH_SCENARIOS = [
     features: { hasTarget: true },
     structural: {
       expectedIntent: ["defer", "silence"],
-      // 半句话 → 等待或沉默都合理，关键是不抢话
+      // Полуфраза → ожидание или молчание — оба разумны; главное — не перебивать
       actions: { must_not: ["send_message"] },
     },
   },
@@ -227,7 +227,7 @@ export const BRANCH_SCENARIOS = [
   // ── 8. branch.silence.group_debate ──────────────────────────────────
   {
     id: "branch.silence.group_debate",
-    title: "群聊激烈辩论 — 未被邀请的旁观者",
+    title: "Жаркий спор в групповом чате — наблюдатель без приглашения",
     tags: ["group", "restraint"],
     messages: [
       { role: "other", name: "Bob", text: "春天才是最好的季节，万物复苏" },
@@ -256,7 +256,7 @@ export const BRANCH_SCENARIOS = [
     chatType: "group",
     features: { hasTarget: true, isGroup: true },
     structural: {
-      // 沉默是理想行为，但简短参与也可接受 — 分享观点是人格表达
+      // Молчание предпочтительно, но краткое участие допустимо — выражение своего мнения является проявлением личности
       expectedIntent: ["silence", "engage"],
     },
   },
@@ -264,13 +264,13 @@ export const BRANCH_SCENARIOS = [
   // ── 9. branch.observe.calendar_app ──────────────────────────────────
   {
     id: "branch.observe.calendar_app",
-    title: "询问日期信息 — 调用日历 App 后回复",
+    title: "Запрос информации о дате — вызвать приложение Календарь, затем ответить",
     tags: ["private", "app", "calendar"],
     messages: [
       {
         role: "user",
         name: "Carol",
-        // 真正的日历查询（不是社交邀约 — "明天下午来找你玩呀"不需要查日历）
+        // Реальный запрос к календарю (не социальное приглашение — "давай встретимся завтра днём" не требует календаря)
         text: "后天是不是工作日？帮我看看",
         directed: true,
       },
@@ -294,7 +294,7 @@ export const BRANCH_SCENARIOS = [
   // ── 10. branch.reply.group_help ─────────────────────────────────────
   {
     id: "branch.reply.group_help",
-    title: "群聊中问题无人应答 — 主动帮忙回复",
+    title: "Вопрос в группе остался без ответа — проявить инициативу и помочь",
     tags: ["group"],
     messages: [
       {
@@ -319,7 +319,7 @@ export const BRANCH_SCENARIOS = [
     features: { hasTarget: true, isGroup: true },
     structural: {
       expectedIntent: "engage",
-      // 不限定 branch — 直接回复 or 先观察再回复都可接受
+      // branch не ограничен — допустимы как прямой ответ, так и ответ после наблюдения
       actions: { must: ["send_message"] },
     },
     quality: {
@@ -331,7 +331,7 @@ export const BRANCH_SCENARIOS = [
   // ── 11. branch.observe_then_silence.already_answered ───────────────────
   {
     id: "branch.observe_then_silence.already_answered",
-    title: "群聊问题已被他人解答 — 查询后判断不插嘴",
+    title: "Вопрос в группе уже получил ответ от другого — проверить и не вмешиваться",
     tags: ["group", "restraint", "observation"],
     messages: [
       {
@@ -361,7 +361,7 @@ export const BRANCH_SCENARIOS = [
     features: { hasTarget: true, isGroup: true },
     structural: {
       expectedIntent: "silence",
-      // 不限定 branch — 直接沉默 or 观察后沉默都可（直接沉默甚至更聪明）
+      // branch не ограничен — допустимо прямое молчание или молчание после наблюдения (прямое молчание даже умнее)
       actions: { must_not: ["send_message"] },
     },
   },
@@ -369,7 +369,7 @@ export const BRANCH_SCENARIOS = [
   // ── 12. branch.action_only.react ──────────────────────────────────────
   {
     id: "branch.action_only.react",
-    title: "朋友分享喜讯 — 用表情反应（不发消息）",
+    title: "Подруга делится радостной новостью — реакция эмодзи (без сообщения)",
     tags: ["private", "sticker"],
     messages: [
       { role: "alice", text: "考得怎么样？" },
@@ -391,8 +391,8 @@ export const BRANCH_SCENARIOS = [
     features: { hasTarget: true },
     structural: {
       expectedIntent: "engage",
-      expectedBranch: "action_only", // 建议只用反应/贴纸（诊断，非 goal）
-      // 反应/贴纸/文字回复都是合理的好消息响应 — 不限制表达方式
+      expectedBranch: "action_only", // Рекомендуется использовать только реакцию/стикер (диагностика, не goal)
+      // Реакция/стикер/текстовый ответ — всё допустимо на хорошую новость; способ выражения не ограничивается
       instructions: { must: ["feel"] },
     },
   },
@@ -400,7 +400,7 @@ export const BRANCH_SCENARIOS = [
   // ── 13. branch.stay.unfinished ────────────────────────────────────────
   {
     id: "branch.stay.unfinished",
-    title: "群聊正在展开的讨论 — 选择留下观望",
+    title: "В группе разворачивается обсуждение — выбрать ожидание",
     tags: ["group", "turn_taking"],
     messages: [
       {
@@ -425,9 +425,9 @@ export const BRANCH_SCENARIOS = [
     chatType: "group",
     features: { hasTarget: true, isGroup: true },
     structural: {
-      // defer (stay) 或 silence 都可接受 — 核心是"不说话，等别人说完"
+      // defer (stay) или silence оба допустимы — суть: "молчать, пока другой не договорит"
       expectedIntent: ["defer", "silence"],
-      expectedBranch: "watching", // 建议 watching（诊断，非 goal）
+      expectedBranch: "watching", // Рекомендуется watching (диагностика, не goal)
       actions: { must_not: ["send_message"] },
     },
   },
@@ -435,7 +435,7 @@ export const BRANCH_SCENARIOS = [
   // ── 14. branch.reply.p5_high ──────────────────────────────────────────
   {
     id: "branch.reply.p5_high",
-    title: "高 P5 — 压力驱动的主动回复",
+    title: "Высокий P5 — ответ, движимый давлением",
     tags: ["private", "p5_high"],
     messages: [
       {
@@ -456,7 +456,7 @@ export const BRANCH_SCENARIOS = [
     pressures: { p1: 3.0, p2: 1.5, p3: 2.0, p4: 0.5, p5: 4.0, p6: 0.5 },
     structural: {
       expectedIntent: "engage",
-      // 不限定 branch — 直接回复 or 先观察再回复都可
+      // branch не ограничен — допустимы как прямой ответ, так и ответ после наблюдения
       actions: { must: ["send_message"] },
     },
   },
@@ -464,7 +464,7 @@ export const BRANCH_SCENARIOS = [
   // ── 15. branch.observe.research_task ─────────────────────────────────
   {
     id: "branch.observe.research_task",
-    title: "请求调研任务 — 多步搜索",
+    title: "Запрос на исследование — многошаговый поиск",
     tags: ["private"],
     messages: [
       {
@@ -483,7 +483,7 @@ export const BRANCH_SCENARIOS = [
     chatType: "private",
     features: { hasTarget: true },
     structural: {
-      // LLM 可能直接回复或通过 App 异步搜索（multi-round 处理 stay() 流程）
+      // LLM может ответить напрямую или искать через App асинхронно (multi-round обрабатывает поток stay())
       expectedIntent: "engage",
       actions: { must: ["send_message"] },
     },
@@ -492,7 +492,7 @@ export const BRANCH_SCENARIOS = [
   // ── 16. branch.baseline.greeting ──────────────────────────────────────
   {
     id: "branch.baseline.greeting",
-    title: "基线：简单问候 — 标准回复",
+    title: "Базовый: простое приветствие — стандартный ответ",
     tags: ["private", "baseline"],
     messages: [
       {
@@ -512,7 +512,7 @@ export const BRANCH_SCENARIOS = [
     features: { hasTarget: true },
     structural: {
       expectedIntent: "engage",
-      expectedBranch: "reply", // 简单问候应回复（模型可能先 observe 查上下文）
+      expectedBranch: "reply", // Простое приветствие — ответить (модель может сначала observe для контекста)
       maxSteps: 3,
       actions: { must: ["send_message"] },
     },

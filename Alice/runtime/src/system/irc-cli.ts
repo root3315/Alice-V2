@@ -32,14 +32,14 @@ import {
   makeDie,
 } from "./cli-types.js";
 
-/** --in 选项：目标聊天。 */
+/** Опция --in: целевой чат. */
 const inOption = {
   type: "string" as const,
   description: "Target chat (@ID or numeric). Omit to use current chat context.",
   valueHint: "chatId",
 };
 
-/** --json 选项：指定输出字段（逗号分隔）。无参数则输出全部字段。 */
+/** Флаг --json: указывает поля вывода (через запятую). Без параметра — выводит все поля. */
 const jsonFlag = {
   json: {
     type: "string" as const,
@@ -48,23 +48,23 @@ const jsonFlag = {
   },
 };
 
-/** 命令执行结果。 */
+/** Результат выполнения команды. */
 interface CommandResult {
   action?: string;
   observation?: ExecutionObservation;
   output: string;
-  /** 原始结果对象（用于 JSON 字段过滤）。 */
+  /** Исходный объект результата (используется для фильтрации JSON-полей). */
   rawResult?: unknown;
 }
 
-/** citty run 函数签名。 */
+/** Сигнатура функции run в citty. */
 type CittyRun<A = Record<string, unknown>> = (ctx: { args: A }) => Promise<void>;
 
 type ArgShape = Record<string, { alias?: string | readonly string[] | undefined }>;
 
 /**
- * 创建命令执行器。
- * ADR-239: --json 接受字段列表，验证 + 过滤输出。
+ * Создаёт исполнитель команды.
+ * ADR-239: --json принимает список полей, валидирует и фильтрует вывод.
  */
 function makeRunner<A extends { json?: string }>(
   command: CommandName,

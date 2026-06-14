@@ -1,14 +1,14 @@
 /**
- * Result Contract — CQRS 查询结果的类型安全桥梁。
+ * Result Contract — типобезопасный мост для CQRS-результатов запросов.
  *
- * Schema 是 write（impl store）和 read（formatResult safeParse）的单一真相来源。
- * 消除了 impl 与 formatResult 之间的隐式形状同步。
+ * Schema является единым источником истины для write (impl store) и read (formatResult safeParse).
+ * Устраняет неявную синхронизацию формы между impl и formatResult.
  *
- * 返回值满足 QueryRuntimeFields（运行时 CQRS 子集）——
- * 展开到 TelegramActionDef 时由 action 注册补齐 returnDoc，编译期强制完整性。
+ * Возвращаемое значение удовлетворяет QueryRuntimeFields (runtime-подмножество CQRS) —
+ * при разворачивании в TelegramActionDef action-регистрация добавляет returnDoc, компилятор принудительно обеспечивает полноту.
  *
  * @see docs/adr/105-react-cqrs-read-during-next.md
- * @see src/telegram/action-types.ts — QueryRuntimeFields / QueryActionFields 类型
+ * @see src/telegram/action-types.ts — типы QueryRuntimeFields / QueryActionFields
  */
 
 import { z } from "zod";
@@ -30,20 +30,20 @@ import {
 import type { QueryRuntimeFields } from "./action-types.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Contract 工厂
+// Фабрика Contract
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 创建类型安全的 CQRS result contract。
+ * Создаёт типобезопасный CQRS result contract.
  *
- * 返回对象同时满足：
- * - `QueryActionFields`（展开到 TelegramActionDef）
- * - `store()` 方法（impl 调用，编译期类型检查）
+ * Возвращаемый объект одновременно удовлетворяет:
+ * - `QueryActionFields` (разворачивается в TelegramActionDef)
+ * - методу `store()` (вызывается из impl, проверка типов на этапе компиляции)
  *
- * @param schema Zod schema — write/read 的单一真相来源
- * @param source 结果存储节点语义——"self" 或 "target"
- * @param attrKey 图属性名——结果存储在此属性中
- * @param format 格式化函数——将结果转为 observation 文本行
+ * @param schema Zod-схема — единый источник истины для write/read
+ * @param source Семантика узла хранения результата — "self" или "target"
+ * @param attrKey Имя атрибута графа — результат хранится в этом атрибуте
+ * @param format Функция форматирования — преобразует результат в строки observation
  */
 export function resultContract<T extends z.ZodTypeAny>(
   schema: T,
@@ -55,12 +55,12 @@ export function resultContract<T extends z.ZodTypeAny>(
     returnsResult: true as const,
     resultSource: source,
     resultAttrKey: attrKey,
-    /** impl 调用——编译期类型检查，确保存入数据匹配 schema。 */
+    /** Вызывается из impl — компилятор проверяет, что сохраняемые данные соответствуют схеме. */
     store(G: WorldModel, nodeId: string, data: z.infer<T>): void {
       if (!G.has(nodeId)) return;
       G.setDynamic(nodeId, attrKey, data);
     },
-    /** formatQueryObservations 调用——运行时 safeParse + 格式化。 */
+    /** Вызывается из formatQueryObservations — runtime safeParse + форматирование. */
     formatResult(raw: unknown): string[] | null {
       const parsed = schema.safeParse(raw);
       if (!parsed.success) return null;
@@ -71,14 +71,14 @@ export function resultContract<T extends z.ZodTypeAny>(
   };
 }
 
-/** resultContract 返回类型（含 store 方法）。 */
+/** Тип возврата resultContract (включает метод store). */
 export type ResultContract<T extends z.ZodTypeAny> = ReturnType<typeof resultContract<T>>;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Contract 实例
+// Экземпляры Contract
 // ═══════════════════════════════════════════════════════════════════════════
 
-// ── Bot 交互 ──
+// ── Bot-взаимодействие ──
 
 export const clickInlineButtonContract = resultContract(
   CallbackAnswerResult,
@@ -112,7 +112,7 @@ export const inlineQueryContract = resultContract(
   },
 );
 
-// ── 贴纸 ──
+// ── Стикеры ──
 
 export const listStickersContract = resultContract(
   z.array(StickerSetSummary),
@@ -151,9 +151,9 @@ export const getStickerSetContract = resultContract(
   },
 );
 
-// ── 搜索 ──
+// ── Поиск ──
 
-/** ADR-145 W3: 统一搜索 contract（多源联合：messages/diary/threads/all）。 */
+/** ADR-145 W3: Единый search contract (объединение источников: messages/diary/threads/all). */
 export const unifiedSearchContract = resultContract(
   UnifiedSearchResult,
   "self",
@@ -168,7 +168,7 @@ export const unifiedSearchContract = resultContract(
       if (source === "all") m.line("— Messages:");
       for (const r of messages.slice(0, 10)) {
         const time = r.date.slice(11, 16);
-        // 优先用 FTS5 snippet（已标记命中关键词），否则截断原文
+        // Предпочтительнее FTS5 snippet (уже помечены ключевые слова), иначе усекаем оригинал
         const preview = r.snippet || (r.text.length > 120 ? `${r.text.slice(0, 120)}...` : r.text);
         m.line(`[${time}] ${r.sender} (${r.chatId}): ${preview}`);
       }
@@ -259,7 +259,7 @@ export const getBotCommandsContract = resultContract(
   },
 );
 
-// ── 笔记 ──
+// ── Заметки ──
 
 export const readNotesContract = resultContract(z.array(NoteItem), "self", "last_notes", (data) => {
   if (data.length === 0) return null;
@@ -272,7 +272,7 @@ export const readNotesContract = resultContract(z.array(NoteItem), "self", "last
   return m.build();
 });
 
-// ── 知识 ──
+// ── Знания ──
 
 export const createInviteLinkContract = resultContract(
   z.string().min(1),
@@ -305,10 +305,10 @@ export const commandOutputContract = resultContract(
   },
 );
 
-// googleContract, visitContract — 已迁移为 Skill CLI 脚本（runtime/skills/google/, runtime/skills/visit/）
-// google/visit 结果通过 Exa API + Engine API LLM 管线获取，
-// CLI 脚本直接写入 graph 属性 self.last_google_result / self.last_visit_result。
+// googleContract, visitContract — перенесены в Skill CLI-скрипты (runtime/skills/google/, runtime/skills/visit/)
+// Результаты google/visit получаются через Exa API + LLM-конвейер Engine API,
+// CLI-скрипт напрямую записывает в атрибуты графа self.last_google_result / self.last_visit_result.
 
-// selfcheckContract — 已迁移为 Skill CLI 脚本（runtime/skills/selfcheck/）
-// selfcheck 结果通过 Engine API 端点 POST /engine/selfcheck 获取，
-// CLI 脚本直接写入 graph 属性 self.last_selfcheck_result。
+// selfcheckContract — перенесён в Skill CLI-скрипт (runtime/skills/selfcheck/)
+// Результаты selfcheck получаются через эндпоинт Engine API POST /engine/selfcheck,
+// CLI-скрипт напрямую записывает в атрибут графа self.last_selfcheck_result.

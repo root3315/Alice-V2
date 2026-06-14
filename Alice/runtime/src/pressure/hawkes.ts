@@ -1,16 +1,16 @@
 /**
- * Per-contact Hawkes 自激过程 — 环境预测模型。
+ * Per-contact Hawkes самовозбуждающийся процесс — модель предсказания среды.
  *
- * 对每个联系人独立建模入站消息的自激动力学：
+ * Независимо моделирует самовозбуждающуюся динамику входящих сообщений для каждого контакта:
  *   λ(t) = μ + λ_carry · exp(-β · Δt)
  *
- * 递归 O(1) 在线更新，按 Dunbar tier 标定初始参数。
- * 纯函数模块——零副作用、零 IO。
+ * Рекурсивное O(1) онлайн-обновление, начальные параметры задаются по уровню Dunbar tier.
+ * Чистый функциональный модуль — никаких побочных эффектов, никакого IO.
  *
- * 认知架构定位：
- *   - signal-decay.ts = 感觉寄存器（Alice 侧信号衰减）
- *   - hawkes.ts = 环境预测模型（对方的行为模式预测）
- *   两者正交，不替换。
+ * Позиция в когнитивной архитектуре:
+ *   - signal-decay.ts = сенсорный регистр (затухание сигнала на стороне Alice)
+ *   - hawkes.ts = модель предсказания среды (прогноз поведенческих паттернов собеседника)
+ *   Оба ортогональны и не заменяют друг друга.
  *
  * @see docs/adr/153-per-contact-hawkes/README.md
  * @see Masuda et al. 2013: Self-exciting point process modeling of conversation
@@ -20,66 +20,66 @@
 import type { DunbarTier } from "../graph/entities.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 类型定义
+// Определения типов
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Per-contact Hawkes 过程参数。
- * 每个联系人独立一组；初始值从 tier 查表，可选在线校准。
+ * Параметры процесса Hawkes для отдельного контакта.
+ * Для каждого контакта своя независимая группа; начальные значения берутся из таблицы tier, возможна онлайн-калибровка.
  *
- * 稳定性条件：α/β < 1（分枝比 < 1），否则过程爆炸。
+ * Условие устойчивости: α/β < 1 (коэффициент ветвления < 1), иначе процесс взрывается.
  *
  * @see docs/adr/153-per-contact-hawkes/README.md §3
  */
 export interface HawkesParams {
-  /** 基线强度 μ (events/s)。"对方在无刺激时的消息率"。 */
+  /** Базовая интенсивность μ (events/s). "Частота сообщений собеседника без внешних стимулов". */
   readonly mu: number;
-  /** 自激强度 α。事件到达时 λ 的跳升量。 */
+  /** Интенсивность самовозбуждения α. Скачок λ при поступлении события. */
   readonly alpha: number;
-  /** 衰减速率 β (1/s)。自激效应的消退速度。halfLife = ln2/β。 */
+  /** Скорость затухания β (1/s). Скорость угасания эффекта самовозбуждения. halfLife = ln2/β. */
   readonly beta: number;
 }
 
 /**
- * Per-contact Hawkes 运行时状态。
- * 仅需两个数即可 O(1) 在线更新。
+ * Состояние среды выполнения Hawkes для отдельного контакта.
+ * Для O(1) онлайн-обновления достаточно всего двух чисел.
  *
- * 持久化策略：存储在图节点属性 (ContactAttrs) 中，
- * 随 graph snapshot 一起持久化到 SQLite。
+ * Стратегия хранения: сохраняется в атрибутах узла графа (ContactAttrs),
+ * персистируется вместе со снимком графа в SQLite.
  */
 export interface HawkesState {
-  /** 累积激发量（递归更新中间变量）。 */
+  /** Накопленная величина возбуждения (промежуточная переменная рекурсивного обновления). */
   lambdaCarry: number;
-  /** 上次事件的墙钟时间 (ms)。0 = 无历史事件。 */
+  /** Время настенных часов последнего события (ms). 0 = нет истории событий. */
   lastEventMs: number;
 }
 
 /**
- * Hawkes 强度查询结果。
+ * Результат запроса интенсивности Hawkes.
  */
 export interface HawkesIntensity {
-  /** 瞬时强度 λ(t) = μ + carry_decayed。 */
+  /** Мгновенная интенсивность λ(t) = μ + carry_decayed. */
   lambda: number;
-  /** 基线强度 μ（供归一化使用）。 */
+  /** Базовая интенсивность μ (для нормализации). */
   mu: number;
-  /** 自激分量 λ(t) - μ（对话热度的纯增量）。 */
+  /** Компонент самовозбуждения λ(t) - μ (чистый прирост активности разговора). */
   excitation: number;
-  /** 归一化热度 excitation / (α/β)，clamp [0, 1]。 */
+  /** Нормализованная «теплота» excitation / (α/β), clamp [0, 1]. */
   normalizedHeat: number;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 默认参数表
+// Таблица параметров по умолчанию
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Dunbar tier → 默认 Hawkes 参数。
+ * Dunbar tier → параметры Hawkes по умолчанию.
  *
- * 设计依据：
- * - μ ≈ 4 / DUNBAR_TIER_THETA — 基线消息率（1/μ ≈ θ_c/4）。
- *   含义："冷却阈值 θ_c 约为典型消息间隔的 4 倍"——超过 4 倍间隔才开始积累关系冷却压力。
- * - α: 保守设定，分枝比 α/β ∈ [0.36, 0.91]
- * - β: 亲密朋友余热持续更久（半衰期 ~3.5min），疏远联系人更快消退（~21min）
+ * Обоснование дизайна:
+ * - μ ≈ 4 / DUNBAR_TIER_THETA — базовая частота сообщений (1/μ ≈ θ_c/4).
+ *   Смысл: «порог охлаждения θ_c примерно в 4 раза больше типичного интервала между сообщениями» — давление охлаждения отношений накапливается только при превышении интервала в 4 раза.
+ * - α: консервативное значение, коэффициент ветвления α/β ∈ [0.36, 0.91]
+ * - β: у близких друзей остаточная теплота сохраняется дольше (полупериод ~3.5 мин), у дальних контактов угасает быстрее (~21 мин)
  *
  * @see docs/adr/153-per-contact-hawkes/README.md §3.1
  * @see docs/adr/151-algorithm-audit/research-online-calibration.md §2.1
@@ -93,35 +93,35 @@ export const HAWKES_TIER_DEFAULTS: Record<DunbarTier, HawkesParams> = {
 };
 
 /**
- * 群组 Hawkes 参数修正系数。
+ * Корректирующие коэффициенты параметров Hawkes для группового чата.
  *
- * 群组消息大多不针对 Alice，自激效应弱、衰减快。
- * 事件定义：仅 directed / mentions_alice 消息计入。
+ * Большинство сообщений в группе не адресованы Alice, самовозбуждение слабее, затухание быстрее.
+ * Определение события: учитываются только directed / mentions_alice сообщения.
  *
  * @see docs/adr/153-per-contact-hawkes/README.md §3.3
  */
 export const HAWKES_GROUP_MODIFIERS = {
-  /** α 折扣——群组自激弱于私聊。 */
+  /** Скидка α — самовозбуждение в группе слабее, чем в личном чате. */
   alphaDiscount: 0.3,
-  /** β 加速——群组对话切换更快。 */
+  /** Множитель β — переключение тем в группе происходит быстрее. */
   betaMultiplier: 1.5,
 } as const;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 核心纯函数
+// Основные чистые функции
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 查询联系人的瞬时 Hawkes 强度 λ(t)。O(1)。
- * 纯函数——不修改 state。
+ * Запрашивает мгновенную интенсивность Hawkes λ(t) для контакта. O(1).
+ * Чистая функция — не изменяет state.
  *
  * λ(t) = μ + λ_carry · exp(-β · Δt_s)
  *
- * 冷启动（lastEventMs = 0）退化为纯基线 μ。
+ * Холодный старт (lastEventMs = 0) деградирует до чистой базовой интенсивности μ.
  *
- * @param params - 联系人的 Hawkes 参数
- * @param state - 联系人的 Hawkes 运行时状态
- * @param nowMs - 当前墙钟时间 (ms)
+ * @param params - параметры Hawkes контакта
+ * @param state - состояние среды выполнения Hawkes контакта
+ * @param nowMs - текущее время настенных часов (ms)
  */
 export function queryIntensity(
   params: HawkesParams,
@@ -130,7 +130,7 @@ export function queryIntensity(
 ): HawkesIntensity {
   const { mu, alpha, beta } = params;
 
-  // 冷启动：无历史事件 → 纯基线
+  // Холодный старт: нет исторических событий → чистая базовая интенсивность
   if (state.lastEventMs <= 0 || state.lambdaCarry <= 0) {
     return { lambda: mu, mu, excitation: 0, normalizedHeat: 0 };
   }
@@ -140,15 +140,17 @@ export function queryIntensity(
   const lambda = mu + carryDecayed;
   const excitation = carryDecayed;
 
-  // 归一化热度：excitation / theoreticalMax，clamp [0, 1]。
+  // Нормализованная «теплота»: excitation / theoreticalMax, clamp [0, 1].
   //
-  // 审计修复: 旧归一化 excitation/(α/β) 使用分枝比作为参照量，
-  // 但连续几条消息的 excitation 就超过 α/β（α/β ≈ 0.9），
-  // 导致所有活跃对话的 normalizedHeat 都 clamp 到 1.0（二值开关）。
+  // Исправление по результатам аудита: старая нормализация excitation/(α/β) использовала
+  // коэффициент ветвления как ориентир, но excitation нескольких подряд идущих сообщений
+  // уже превышает α/β (α/β ≈ 0.9), из-за чего normalizedHeat для всех активных диалогов
+  // зажимается до 1.0 (бинарный переключатель).
   //
-  // 新参照量: α/(1 - α/β) = α·β/(β-α) — 无限快连续事件时 excitation 的理论极限。
-  // 对参数表 α/β ∈ [0.36, 0.91]，此值比 α/β 大 1.6~11 倍，
-  // 使 normalizedHeat 在 2~20 条消息的范围内保持连续敏感性。
+  // Новый ориентир: α/(1 - α/β) = α·β/(β-α) — теоретический предел excitation
+  // при бесконечно быстрых последовательных событиях.
+  // Для таблицы параметров α/β ∈ [0.36, 0.91] это значение в 1.6–11 раз больше α/β,
+  // что обеспечивает непрерывную чувствительность normalizedHeat в диапазоне 2–20 сообщений.
   const branchRatio = beta > 0 ? alpha / beta : 0;
   const theoreticalMax = branchRatio < 1 && beta > alpha ? (alpha * beta) / (beta - alpha) : alpha;
   const normalizedHeat = Math.min(1, theoreticalMax > 0 ? excitation / theoreticalMax : 0);
@@ -157,16 +159,16 @@ export function queryIntensity(
 }
 
 /**
- * 更新联系人的 Hawkes 状态（事件到达时调用）。O(1)。
- * 返回新状态（不可变更新）。
+ * Обновляет состояние Hawkes для контакта (вызывается при поступлении события). O(1).
+ * Возвращает новое состояние (иммутабельное обновление).
  *
  * λ_carry_new = λ_carry_old · exp(-β · Δt_s) + α
  *
- * 先衰减旧 carry，再叠加新激发——保证递归精确性。
+ * Сначала затухает старый carry, затем накладывается новое возбуждение — гарантирует рекурсивную точность.
  *
- * @param params - 联系人的 Hawkes 参数
- * @param state - 旧状态
- * @param eventMs - 事件到达时间 (ms)
+ * @param params - параметры Hawkes контакта
+ * @param state - старое состояние
+ * @param eventMs - время поступления события (ms)
  */
 export function updateOnEvent(
   params: HawkesParams,
@@ -175,7 +177,7 @@ export function updateOnEvent(
 ): HawkesState {
   const { alpha, beta } = params;
 
-  // 首次事件或时间倒流守卫
+  // Первое событие или защита от обратного хода времени
   if (state.lastEventMs <= 0 || eventMs <= state.lastEventMs) {
     return { lambdaCarry: alpha, lastEventMs: eventMs };
   }
@@ -189,13 +191,13 @@ export function updateOnEvent(
 }
 
 /**
- * 从 Dunbar tier 获取默认 Hawkes 参数，可选群组修正。
+ * Возвращает параметры Hawkes по умолчанию для заданного Dunbar tier с опциональной групповой коррекцией.
  *
- * 群组修正：α × alphaDiscount (0.3), β × betaMultiplier (1.5)。
- * μ 保持不变（群组事件定义已过滤为 directed 消息，基线率语义相同）。
+ * Групповая коррекция: α × alphaDiscount (0.3), β × betaMultiplier (1.5).
+ * μ остаётся неизменным (определение группового события уже отфильтровано до directed-сообщений, семантика базовой частоты та же).
  *
  * @param tier - Dunbar tier
- * @param isGroup - 是否为群组场景
+ * @param isGroup - является ли сценарий групповым
  */
 export function getDefaultParams(tier: DunbarTier, isGroup?: boolean): HawkesParams {
   const base = HAWKES_TIER_DEFAULTS[tier] ?? HAWKES_TIER_DEFAULTS[50];
@@ -208,21 +210,21 @@ export function getDefaultParams(tier: DunbarTier, isGroup?: boolean): HawkesPar
 }
 
 /**
- * 初始化零状态（新联系人/无历史）。
+ * Инициализирует нулевое состояние (новый контакт / нет истории).
  */
 export function initialState(): HawkesState {
   return { lambdaCarry: 0, lastEventMs: 0 };
 }
 
 /**
- * 计算 Hawkes λ discount 用于 V-maximizer 的 per-candidate λ 调制。
+ * Вычисляет Hawkes λ discount для per-candidate λ модуляции в V-maximizer.
  *
- * 对话热度高（normalizedHeat → 1）→ discount 低 → 社交成本降低 → 更愿意回复。
- * 对话冷淡（normalizedHeat → 0）→ discount = 1.0 → 不影响。
+ * Высокая «теплота» разговора (normalizedHeat → 1) → низкий discount → снижение социальных издержек → большая готовность ответить.
+ * Холодный разговор (normalizedHeat → 0) → discount = 1.0 → без влияния.
  *
- * discount = 1 - 0.3 × normalizedHeat，clamp [0.7, 1.0]
+ * discount = 1 - 0.3 × normalizedHeat, clamp [0.7, 1.0]
  *
- * @param intensity - queryIntensity 的返回值
+ * @param intensity - возвращаемое значение queryIntensity
  * @returns ∈ [0.7, 1.0]
  */
 export function computeHawkesLambdaDiscount(intensity: HawkesIntensity): number {
@@ -230,11 +232,11 @@ export function computeHawkesLambdaDiscount(intensity: HawkesIntensity): number 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Phase 2: μ 在线校准 + 昼夜调制
+// Phase 2: онлайн-калибровка μ + циркадная модуляция
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 贝叶斯在线校准阈值：需要 30 个事件才完全信任观测值。
+ * Порог байесовской онлайн-калибровки: требуется 30 событий для полного доверия наблюдениям.
  * w = min(1, event_count / N_threshold)
  *
  * @see docs/adr/153-per-contact-hawkes/README.md §3.2
@@ -242,23 +244,23 @@ export function computeHawkesLambdaDiscount(intensity: HawkesIntensity): number 
 export const MU_CALIBRATION_THRESHOLD = 30;
 
 /**
- * 计算有效基线率 μ_eff——整合在线校准和昼夜调制。
+ * Вычисляет эффективную базовую частоту μ_eff с учётом онлайн-калибровки и циркадной модуляции.
  *
- * 两种修正可独立使用也可组合：
- * 1. 在线校准: μ_eff = prior_μ × (1-w) + observed_μ × w
- * 2. 昼夜调制: μ_eff × (circadianFactor / 1.5)
+ * Обе коррекции можно применять независимо или совместно:
+ * 1. Онлайн-калибровка: μ_eff = prior_μ × (1-w) + observed_μ × w
+ * 2. Циркадная модуляция: μ_eff × (circadianFactor / 1.5)
  *
- * circadianMultiplier 范围 [0.5, 2.5]，24h 均值 1.5。
- * 除以 1.5 归一化使 24h 平均 μ_eff = μ_tier。
+ * Диапазон circadianMultiplier [0.5, 2.5], среднее за 24 ч = 1.5.
+ * Деление на 1.5 нормализует так, что среднее μ_eff за 24 ч = μ_tier.
  *
- * @param tierMu - tier 默认 μ (events/s)
- * @param eventCount - 累积事件计数（可选）
- * @param firstEventMs - 首次事件时间 ms（可选）
- * @param nowMs - 当前时间 ms（可选）
- * @param circadianFactor - circadianMultiplier 返回值（可选）
+ * @param tierMu - μ по умолчанию для tier (events/s)
+ * @param eventCount - накопленное число событий (опционально)
+ * @param firstEventMs - время первого события в ms (опционально)
+ * @param nowMs - текущее время в ms (опционально)
+ * @param circadianFactor - возвращаемое значение circadianMultiplier (опционально)
  *
  * @see docs/adr/153-per-contact-hawkes/README.md §3.2
- * @see simulation/experiments/exp_hawkes_phase2_validation.py 验证 4/5
+ * @see simulation/experiments/exp_hawkes_phase2_validation.py валидация 4/5
  */
 export function effectiveMu(
   tierMu: number,
@@ -269,7 +271,7 @@ export function effectiveMu(
 ): number {
   let mu = tierMu;
 
-  // 在线校准: 累积率 = event_count / duration
+  // Онлайн-калибровка: накопленная частота = event_count / duration
   if (
     eventCount != null &&
     eventCount > 0 &&
@@ -285,7 +287,7 @@ export function effectiveMu(
     }
   }
 
-  // 昼夜调制: circadianMultiplier ∈ [0.5, 2.5], mean=1.5
+  // Циркадная модуляция: circadianMultiplier ∈ [0.5, 2.5], mean=1.5
   if (circadianFactor != null) {
     mu *= circadianFactor / 1.5;
   }

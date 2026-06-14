@@ -1,11 +1,11 @@
 /**
- * use_selfcheck_app — Alice 的镜子（clean-room 替代 debug.mod）。
+ * use_selfcheck_app — зеркало Алисы (clean-room замена debug.mod).
  *
- * 五个维度的自我感知：情绪、社交、人格、压力、行动。
- * 所有输出语义化——绝对不暴露原始数值（P1-P6、drift、mood_valence 等）。
+ * Пять измерений самоосознания: эмоции, социальность, личность, давление, действия.
+ * Весь вывод семантизирован — сырые числа (P1-P6, drift, mood_valence и т.п.) не раскрываются.
  *
- * @see docs/adr/133-app-social-value-audit.md — Wave 5 Agent 专属 App
- * @see AGENTS.md — LLM 语义无障碍原则
+ * @see docs/adr/133-app-social-value-audit.md — Wave 5 App только для агента
+ * @see AGENTS.md — принцип семантической доступности LLM
  */
 
 import { desc } from "drizzle-orm";
@@ -27,11 +27,11 @@ import type { SelfcheckResultSchema as SelfcheckResult } from "../action-schemas
 export type { SelfcheckResultSchema as SelfcheckResult } from "../action-schemas.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 语义标签映射（代码侧完成，LLM 不接触数值）
-// @see AGENTS.md — LLM 语义无障碍原则
+// Маппинг семантических меток (выполняется на стороне кода, LLM числа не видит)
+// @see AGENTS.md — принцип семантической доступности LLM
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 数值效价 → 语义标签（复用 observer.mod 的逻辑）。 */
+/** Числовая валентность → семантическая метка (переиспользует логику observer.mod). */
 function valenceLabel(v: number): string {
   if (v > 0.6) return "very positive";
   if (v > 0.2) return "slightly positive";
@@ -40,14 +40,14 @@ function valenceLabel(v: number): string {
   return "very negative";
 }
 
-/** 数值唤醒度 → 语义标签。 */
+/** Числовое возбуждение → семантическая метка. */
 function arousalLabel(a: number): string {
   if (a > 0.7) return "intense";
   if (a > 0.35) return "mild";
   return "calm";
 }
 
-/** 人格权重百分比 → 语义强度（不暴露百分比数值）。 */
+/** Процентный вес личности → семантическая интенсивность (числовой процент не раскрывается). */
 function weightStrengthLabel(pct: number): string {
   if (pct >= 35) return "dominant";
   if (pct >= 25) return "strong";
@@ -55,14 +55,14 @@ function weightStrengthLabel(pct: number): string {
   return "mild";
 }
 
-/** 行动成功率 → 语义标签。 */
+/** Доля успешных действий → семантическая метка. */
 function successRateLabel(rate: number): string {
   if (rate >= 0.8) return "most succeeded";
   if (rate >= 0.5) return "mixed results";
   return "struggling";
 }
 
-/** 压力趋势方向。 */
+/** Направление тренда давления. */
 function trendLabel(first: number, second: number): string {
   const delta = second - first;
   const threshold = Math.max(Math.abs(first) * 0.15, 0.5);
@@ -71,7 +71,7 @@ function trendLabel(first: number, second: number): string {
   return "steady";
 }
 
-/** P1-P6 的人话名称。 */
+/** Человекочитаемые названия P1-P6. */
 const PRESSURE_NAMES: Record<string, string> = {
   p1: "Intimacy need",
   p2: "Memory pressure",
@@ -82,10 +82,10 @@ const PRESSURE_NAMES: Record<string, string> = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 各维度聚合函数
+// Агрегирующие функции по каждому измерению
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 情绪快照。 */
+/** Снимок эмоционального состояния. */
 function gatherMood(graph: WorldModel, nowMs: number): string[] {
   const m = new PromptBuilder();
   if (!graph.has("self")) {
@@ -111,12 +111,12 @@ function gatherMood(graph: WorldModel, nowMs: number): string[] {
   return m.build();
 }
 
-/** 社交健康（吸收 contacts）。 */
+/** Социальное здоровье (агрегирует contacts). */
 function gatherSocial(graph: WorldModel, nowMs: number, detailed: boolean): string[] {
   const m = new PromptBuilder();
   const contacts = graph.getEntitiesByType("contact");
 
-  // Tier 分桶
+  // разбивка по Tier
   const buckets: Record<string, number> = {
     intimate: 0,
     "close friend": 0,
@@ -135,7 +135,7 @@ function gatherSocial(graph: WorldModel, nowMs: number, detailed: boolean): stri
     .join(", ");
   m.line(`Social circle: ${summary}`);
 
-  // Cooling 检测 + Goldilocks
+  // определение охлаждающих контактов + Goldilocks
   interface CoolingEntry {
     name: string;
     tierName: string;
@@ -169,7 +169,7 @@ function gatherSocial(graph: WorldModel, nowMs: number, detailed: boolean): stri
       if (goldilocksNames.length < 3) goldilocksNames.push(displayName);
     }
 
-    // Cooling: 超过阈值
+    // Cooling: превышен порог
     if (silenceS > thresholdS) {
       cooling.push({
         name: displayName,
@@ -179,7 +179,7 @@ function gatherSocial(graph: WorldModel, nowMs: number, detailed: boolean): stri
     }
   }
 
-  // 排序：沉默最久的在前
+  // сортировка: самые длительные молчания — первыми
   cooling.sort((a, b) => a.silenceDesc.localeCompare(b.silenceDesc));
 
   const showCooling = detailed ? cooling : cooling.slice(0, 3);
@@ -199,7 +199,7 @@ function gatherSocial(graph: WorldModel, nowMs: number, detailed: boolean): stri
   return m.build();
 }
 
-/** 人格健康。 */
+/** Здоровье личности. */
 function gatherPersonality(graph: WorldModel): string[] {
   const m = new PromptBuilder();
   if (!graph.has("self")) {
@@ -215,20 +215,20 @@ function gatherPersonality(graph: WorldModel): string[] {
     try {
       const weights: number[] = JSON.parse(weightsRaw);
       const VOICE_NAMES = ["diligence", "curiosity", "sociability", "caution"];
-      // 将权重转为占比并排序
+      // переводим веса в проценты и сортируем
       const total = weights.reduce((a, b) => a + b, 0) || 1;
       const ranked = weights
         .map((w, i) => ({ name: VOICE_NAMES[i] ?? `voice${i}`, pct: (w / total) * 100 }))
         .sort((a, b) => b.pct - a.pct);
 
-      // 只展示前两位，用语义强度标签代替百分比
+      // показываем только топ-2, заменяя проценты семантическими метками интенсивности
       const topTwo = ranked
         .slice(0, 2)
         .map((r) => `${r.name} (${weightStrengthLabel(r.pct)})`)
         .join(", ");
       line += ` — leaning ${topTwo}`;
     } catch {
-      // JSON parse 失败，只显示 health
+      // ошибка JSON parse, показываем только health
     }
   }
 
@@ -241,7 +241,7 @@ function gatherPersonality(graph: WorldModel): string[] {
   return m.build();
 }
 
-/** 压力趋势（绝对不暴露原始 P 值）。 */
+/** Тренд давления (сырые значения P ни в коем случае не раскрываются). */
 function gatherPressureTrend(): string[] {
   const m = new PromptBuilder();
   try {
@@ -265,7 +265,7 @@ function gatherPressureTrend(): string[] {
       return m.build();
     }
 
-    // 时间正序
+    // приводим к хронологическому порядку
     const ordered = rows.reverse();
     const half = Math.floor(ordered.length / 2);
     const firstHalf = ordered.slice(0, half);
@@ -288,7 +288,7 @@ function gatherPressureTrend(): string[] {
   return m.build();
 }
 
-/** 行动质量 + 异常检测。 */
+/** Качество действий + обнаружение аномалий. */
 function gatherActions(currentTick: number): string[] {
   const m = new PromptBuilder();
   try {
@@ -315,13 +315,13 @@ function gatherActions(currentTick: number): string[] {
       byVoice[r.voice] = (byVoice[r.voice] ?? 0) + 1;
     }
 
-    // 成功率用语义标签
+    // для доли успеха используем семантическую метку
     const dominantVoice = Object.entries(byVoice).sort(([, a], [, b]) => b - a)[0]?.[0];
     let line = `${successRateLabel(rate)}`;
     if (dominantVoice) line += `, mostly ${dominantVoice} voice`;
     m.line(line);
 
-    // 异常检测（语义化）
+    // обнаружение аномалий (семантизировано)
     const anomalies = runAnomalyCheck(currentTick);
     for (const a of anomalies) {
       m.line(`\u26A0 ${semanticAnomaly(a)}`);
@@ -332,7 +332,7 @@ function gatherActions(currentTick: number): string[] {
   return m.build();
 }
 
-/** 将 anomaly alert 转为语义化描述（不暴露内部数值）。 */
+/** Преобразует anomaly alert в семантическое описание (внутренние числа не раскрываются). */
 function semanticAnomaly(a: AnomalyAlert): string {
   switch (a.type) {
     case "api_stagnant":
@@ -350,7 +350,7 @@ function semanticAnomaly(a: AnomalyAlert): string {
     case "personality_drift":
       return "Personality is drifting — check in";
     case "voice_starvation": {
-      // 提取声部名称，转换 tick 为人话时间
+      // извлекаем имя голоса, переводим tick в человекочитаемое время
       const match = a.message.match(/Голос (\w+) уже (\d+) tick/);
       if (match) {
         const voice = match[1];
@@ -374,18 +374,18 @@ function semanticAnomaly(a: AnomalyAlert): string {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 公开 API
+// Публичный API
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 聚合 selfcheck 数据。
+ * Агрегирует данные selfcheck.
  *
- * 不依赖任何 Mod state——所有数据从 graph 和 DB 直接读取。
+ * Не зависит ни от какого Mod state — все данные читаются напрямую из graph и DB.
  *
- * @param graph 世界模型
- * @param nowMs 当前墙钟时间
- * @param currentTick 当前 tick（用于异常检测）
- * @param focus 可选聚焦维度（省略则全景概览）
+ * @param graph Модель мира
+ * @param nowMs Текущее время по настенным часам
+ * @param currentTick Текущий tick (используется для обнаружения аномалий)
+ * @param focus Опциональный фокус на измерении (без указания — полный обзор)
  */
 export function getSelfcheckData(
   graph: WorldModel,

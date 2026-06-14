@@ -1,12 +1,12 @@
 /**
- * use_calendar_app — 日历/农历/节气/节假日/黄历/历史上的今天。
+ * use_calendar_app — календарь/лунный календарь/солнечные термины/праздники/традиционный альманах/этот день в истории.
  *
- * 依赖 tyme4ts 做公历↔农历转换、节气、节假日、黄历宜忌。
- * 历史上的今天 + 节气诗句为零依赖硬编码精选数据。
- * 业务逻辑纯函数，不依赖框架类型。
+ * Использует tyme4ts для конвертации григорианский↔лунный, солнечных терминов, праздников, рекомендаций альманаха.
+ * «Этот день в истории» и стихи к солнечным терминам — жёстко закодированная подборка без внешних зависимостей.
+ * Бизнес-логика в чистых функциях, без зависимости от типов фреймворка.
  *
  * @see docs/adr/132-app-toolkit.md
- * @see docs/adr/133-app-social-value-audit.md — Wave 3 文化增强
+ * @see docs/adr/133-app-social-value-audit.md — Wave 3 культурное обогащение
  */
 
 import { SolarDay } from "tyme4ts";
@@ -45,7 +45,7 @@ const SOLAR_TERM_POEMS: Record<string, string> = {
   大寒: "Старый снег ещё не стаял, а новый уже подпирает двери — Шао Юн",
 };
 
-// ── 历史上的今天（按 MM-DD 索引，精选文化常识级事件） ──
+// ── этот день в истории (индекс по MM-DD, отборные события культурного уровня) ──
 
 const TODAY_IN_HISTORY: Record<string, string> = {
   // январь
@@ -343,12 +343,12 @@ const TODAY_IN_HISTORY: Record<string, string> = {
 const WEEKDAYS_RU = ["воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"];
 
 /**
- * 获取指定日期的日历信息。
- * @param dateStr YYYY-MM-DD 格式，空字符串或无效格式则使用今天
- * @param timezoneOffset 时区偏移（仅在 dateStr 为空时使用）
+ * Возвращает календарные данные для указанной даты.
+ * @param dateStr Формат YYYY-MM-DD; пустая строка или невалидный формат — используется сегодня
+ * @param timezoneOffset Смещение часового пояса (применяется только когда dateStr пуст)
  */
 export function getCalendarData(dateStr: string, timezoneOffset: number): CalendarResult {
-  // 时间感知（从 clock 吸收）
+  // осознание времени (получаем из clock)
   const now = localNow(timezoneOffset);
   const datetime = now.toISOString().replace("T", " ").slice(0, 19);
   const timezone = formatTimezone(timezoneOffset);
@@ -373,29 +373,29 @@ export function getCalendarData(dateStr: string, timezoneOffset: number): Calend
   const weekday = WEEKDAYS_RU[solar.getWeek().getIndex()] ?? "";
   const gregorian = formatYMD(year, month, day);
 
-  // 农历
+  // лунный календарь
   const lunarStr = `${lunar.getLunarMonth().getLunarYear().getName()} ${lunar.getLunarMonth().getName()}${lunar.getName()}`;
 
-  // 节气：仅当日是节气日时返回
+  // солнечный термин: возвращаем только если сегодня день солнечного термина
   const term = solar.getTerm();
   const solarTerm = term.getJulianDay().getSolarDay().getDay() === day ? term.getName() : null;
 
-  // 节假日（公历 + 农历）
+  // праздники (григорианские + лунные)
   const holidays: string[] = [];
   const solarFestival = solar.getFestival();
   if (solarFestival) holidays.push(solarFestival.getName());
   const lunarFestival = lunar.getFestival();
   if (lunarFestival) holidays.push(lunarFestival.getName());
 
-  // Wave 3: 黄历宜忌
+  // Wave 3: благоприятные и неблагоприятные дела по альманаху
   const recommends = lunar.getRecommends().map((t) => t.getName());
   const avoids = lunar.getAvoids().map((t) => t.getName());
 
-  // Wave 3: 历史上的今天
+  // Wave 3: этот день в истории
   const mmdd = `${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   const todayInHistory = TODAY_IN_HISTORY[mmdd] ?? null;
 
-  // Wave 3: 节气诗句
+  // Wave 3: стихотворение к солнечному термину
   const solarTermPoem = solarTerm ? (SOLAR_TERM_POEMS[solarTerm] ?? null) : null;
 
   return {
@@ -414,7 +414,7 @@ export function getCalendarData(dateStr: string, timezoneOffset: number): Calend
   };
 }
 
-/** 导出数据集大小，供测试断言用。 */
+/** Экспортируем размеры наборов данных для использования в тестовых утверждениях. */
 export const _DATA_SIZE = {
   todayInHistory: Object.keys(TODAY_IN_HISTORY).length,
   solarTermPoems: Object.keys(SOLAR_TERM_POEMS).length,

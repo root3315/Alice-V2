@@ -1,6 +1,6 @@
 /**
- * group 类别动作：join_chat, leave_chat, search_public, preview_chat,
- * get_similar_channels, create_invite_link。
+ * Действия категории group: join_chat, leave_chat, search_public, preview_chat,
+ * get_similar_channels, create_invite_link.
  *
  * @see docs/adr/149-define-action-builder.md
  */
@@ -55,7 +55,7 @@ export const groupActions: TelegramActionDef[] = [
         guard.recordJoin();
         guard.recordSuccess("join");
 
-        // ADR-115: 注册延迟评估——3 天后 deferred generator 创建评估线程
+        // ADR-115: регистрация отложенной оценки — через 3 дня deferred generator создаёт поток оценки
         const graphId = ctx.ensureGraphId(args.chatIdOrLink);
         if (ctx.G.has(graphId)) {
           ctx.G.setDynamic(graphId, "deferred_eval_ms", Date.now() + 3 * 24 * 3600_000);

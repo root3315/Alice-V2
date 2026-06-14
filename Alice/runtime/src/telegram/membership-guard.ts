@@ -1,12 +1,12 @@
 /**
- * 群组成员资格实时校验。
+ * Проверка членства в группе в реальном времени.
  *
- * 防止 Alice 向已离开/被踢的群发送消息（可触发 Telegram 封号）。
- * 通过 getChatMember("me") 实时验证，内存缓存避免频繁 API 调用。
+ * Предотвращает отправку сообщений Alice в группы, которые она покинула или из которых была исключена (может привести к блокировке Telegram-аккаунта).
+ * Проверяется через getChatMember("me") в реальном времени; кэш в памяти снижает частоту вызовов API.
  *
- * 两个消费者：
- * - orchestrator（initSlot 前拦截 → 省 LLM token）
- * - action-executor（executeTelegramAction 统一拦截 → 兜底安全网）
+ * Два потребителя:
+ * - orchestrator (перехват до initSlot → экономия LLM-токенов)
+ * - action-executor (единый перехват через executeTelegramAction → страховочная сеть)
  */
 
 import { MtPeerNotFoundError, type TelegramClient, tl } from "@mtcute/node";
@@ -15,9 +15,9 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("membership-guard");
 
-// ─── 缓存 ────────────────────────────────────────────────────────────────
+// ─── Кэш ────────────────────────────────────────────────────────────────
 
-/** 缓存条目 */
+/** Запись кэша */
 interface CacheEntry {
   isMember: boolean;
   checkedMs: number;
@@ -25,23 +25,23 @@ interface CacheEntry {
 
 const cache = new Map<string | number, CacheEntry>();
 
-/** 已确认是成员：缓存 6 小时 */
+/** Подтверждённое членство: кэш на 6 часов */
 const TTL_MEMBER_MS = 6 * 3600_000;
-/** 确认不是成员：缓存 1 小时（允许重新加入后恢复） */
+/** Подтверждённое не-членство: кэш на 1 час (позволяет восстановить после повторного входа) */
 const TTL_NON_MEMBER_MS = 1 * 3600_000;
 
-/** 暴露给测试 */
+/** Открыто для тестов */
 export function _clearMembershipCache(): void {
   cache.clear();
 }
 
-// ─── 核心 API ─────────────────────────────────────────────────────────────
+// ─── Основное API ─────────────────────────────────────────────────────────────
 
 /**
- * 检查 Alice 是否是指定群组的成员。
- * 先查缓存，miss 时调用 getChatMember("me")。
+ * Проверяет, является ли Alice членом указанной группы.
+ * Сначала проверяет кэш; при промахе вызывает getChatMember("me").
  *
- * @returns true = 是成员或无法确定（保守放行），false = 确定不是成员
+ * @returns true = является членом или не удалось определить (пропускаем по умолчанию), false = точно не член
  */
 export async function isGroupMember(
   client: TelegramClient,
@@ -54,10 +54,10 @@ export async function isGroupMember(
     if (now - cached.checkedMs < ttl) return cached.isMember;
   }
 
-  // mtcute 需要数字 ID 才能正确解析 peer，字符串会被当 username 查
+  // mtcute требует числовой ID для корректного разрешения peer; строка воспринимается как username
   const numericId = typeof rawId === "string" ? Number(rawId) : rawId;
   if (typeof rawId === "string" && Number.isNaN(numericId)) {
-    // 非数字字符串（如 username）→ 无法判定，放行
+    // Нечисловая строка (например, username) → не можем определить, пропускаем
     log.info("Non-numeric rawId, allowing send", { chatId: rawId });
     return true;
   }
@@ -71,7 +71,7 @@ export async function isGroupMember(
     }
     return isMember;
   } catch (e) {
-    // 结构化 RPC 错误匹配（不依赖 error.message 字符串）
+    // Структурированное сопоставление RPC-ошибок (без привязки к строке error.message)
     // @see docs/reference/mtcute/packages/core/src/highlevel/methods/chats/get-chat-member.ts
     if (
       tl.RpcError.is(e, "CHANNEL_PRIVATE") ||
@@ -89,13 +89,13 @@ export async function isGroupMember(
       });
       return false;
     }
-    // mtcute peer 解析失败（数字 ID 在本地缓存中找不到对应 peer）
+    // Сбой разрешения peer в mtcute (числовой ID не найден в локальном кэше)
     if (e instanceof MtPeerNotFoundError) {
       cache.set(rawId, { isMember: false, checkedMs: now });
       log.info("Peer not found", { chatId: rawId });
       return false;
     }
-    // 网络错误/限流/未知 RPC → 保守放行
+    // Сетевая ошибка / рейт-лимит / неизвестный RPC → пропускаем по умолчанию
     const msg = e instanceof Error ? e.message : String(e);
     log.info("Check failed, allowing send", { chatId: rawId, error: msg });
     return true;
@@ -103,15 +103,15 @@ export async function isGroupMember(
 }
 
 /**
- * 群组外发安全门：检查 graphId 对应的群组是否可达。
+ * Защитный шлюз исходящих сообщений в группу: проверяет доступность группы по graphId.
  *
- * 两层检查：
- * 1. 图状态快检（failure_type / reachability_score）— 零开销
- * 2. MTProto 实时校验（getChatMember）— 缓存命中时零开销
+ * Двухуровневая проверка:
+ * 1. Быстрая проверка состояния графа (failure_type / reachability_score) — без накладных расходов
+ * 2. MTProto-проверка в реальном времени (getChatMember) — без накладных расходов при попадании в кэш
  *
- * 不是成员时自动标记 graph 为 permanent unreachable。
+ * Если не является членом — автоматически помечает граф как permanent unreachable.
  *
- * @returns true = 已拦截（不可发送），false = 放行
+ * @returns true = заблокировано (отправка невозможна), false = разрешено
  */
 export async function isGroupOutboundBlocked(
   client: TelegramClient,
@@ -122,8 +122,8 @@ export async function isGroupOutboundBlocked(
   if (!G.has(graphId)) return false;
   const attrs = G.getChannel(graphId);
 
-  // 仅检查群组和频道——私聊不受此限制
-  // ADR-206: 频道也需要成员资格校验（Alice 可能被踢出频道）
+  // Проверяем только группы и каналы — личные чаты не ограничены
+  // ADR-206: каналы также требуют проверки членства (Alice может быть исключена из канала)
   if (
     attrs.chat_type !== "supergroup" &&
     attrs.chat_type !== "group" &&
@@ -131,11 +131,11 @@ export async function isGroupOutboundBlocked(
   )
     return false;
 
-  // L1: 图状态快检
+  // L1: быстрая проверка состояния графа
   if (attrs.failure_type === "permanent") return true;
   if ((attrs.reachability_score ?? 1) <= 0) return true;
 
-  // L2: MTProto 实时校验
+  // L2: MTProto-проверка в реальном времени
   const isMember = await isGroupMember(client, rawId);
   if (!isMember) {
     G.updateChannel(graphId, {

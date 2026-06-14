@@ -1,9 +1,9 @@
 /**
- * irc — 共享解析工具。
+ * irc — общие утилиты разбора аргументов.
  *
- * ADR-238: 简化为纯工具函数，命令定义在 irc.ts 中。
+ * ADR-238: упрощено до чистых утилитарных функций; команды определены в irc.ts.
  *
- * 命令签名设计（IRC 直觉 + POSIX 严格）：
+ * Дизайн сигнатур команд (IRC-интуиция + строгий POSIX):
  *   irc say [--in TARGET] --text <text>
  *   irc reply [--in TARGET] --ref <msgId> --text <text>
  *   irc react [--in TARGET] --ref <msgId> --emoji <emoji>
@@ -18,12 +18,12 @@
  *   irc leave [--in TARGET]
  *   irc forward --from SOURCE --ref <msgId> [--to TARGET] [--comment <text>]
  *
- * --in TARGET = "在哪个聊天室操作"（空间介词，IRC "I'm in #channel"）。
- * --to TARGET 仅用于 forward（方向介词，"转发到"）。
- * TARGET 支持 @ID（聊天平台惯例）、~ID（向后兼容）和裸数字。
- * 省略时自动从 ALICE_CTX_TARGET_CHAT 环境变量获取当前聊天上下文。
- * 兼容别名：`0` / `me` / `@me` / `~me` / `current` / `here` / `this`
- * 也解析为当前聊天。
+ * --in TARGET = "в каком чате выполняется команда" (пространственный предлог, IRC "I'm in #channel").
+ * --to TARGET используется только для forward (направление, "переслать в").
+ * TARGET поддерживает @ID (стандарт чат-платформ), ~ID (обратная совместимость) и голое число.
+ * Если не указан, контекст чата берётся автоматически из переменной окружения ALICE_CTX_TARGET_CHAT.
+ * Алиасы совместимости: `0` / `me` / `@me` / `~me` / `current` / `here` / `this`
+ * также разрешаются как текущий чат.
  *
  * @see docs/adr/238-citty-native-cli-redesign.md
  */
@@ -31,18 +31,18 @@
 import { enginePost } from "../../skills/_lib/engine-client.js";
 import { CliExecutionError } from "./cli-types.js";
 
-// ── 共享解析工具 ──
+// ── Общие утилиты разбора ──
 
 const CURRENT_CHAT_ALIASES = new Set(["0", "me", "@me", "~me", "current", "here", "this"]);
 
 /**
- * 解析 --in TARGET（或 forward 的 --to/--from TARGET）。
+ * Разбирает --in TARGET (или --to/--from TARGET для forward).
  *
- * ADR-237: 支持名称解析。
- * - 数字 ID / @数字 / ~数字 → 直接返回数字
- * - 名称 / @名称 → 调用 Engine API /resolve/name 解析
+ * ADR-237: поддерживается разрешение имён.
+ * - числовой ID / @число / ~число → возвращается напрямую как число
+ * - имя / @имя → вызывается Engine API /resolve/name
  *
- * 省略时自动从 ALICE_CTX_TARGET_CHAT 环境变量获取当前聊天上下文。
+ * Если не указан, контекст чата берётся из переменной окружения ALICE_CTX_TARGET_CHAT.
  */
 export async function resolveTarget(raw?: string): Promise<number> {
   const trimmed = raw?.trim();
@@ -53,18 +53,18 @@ export async function resolveTarget(raw?: string): Promise<number> {
     throw new CliExecutionError("command_missing_argument", "missing target: use --in @ID");
   }
 
-  // 去掉 @ 或 ~ 前缀
+  // Убираем префикс @ или ~
   const stripped =
     effective.startsWith("@") || effective.startsWith("~") ? effective.slice(1) : effective;
 
-  // 尝试解析为数字
+  // Пытаемся разобрать как число
   const n = Number(stripped);
   if (Number.isFinite(n)) {
     return n;
   }
 
-  // 不是数字 → 尝试名称解析
-  // 调用 Engine API /resolve/name
+  // Не число → пробуем разрешить имя
+  // Вызываем Engine API /resolve/name
   const result = (await enginePost("/resolve/name", { name: effective })) as {
     result?: { telegramId: number | null } | null;
   };
@@ -77,7 +77,7 @@ export async function resolveTarget(raw?: string): Promise<number> {
 }
 
 /**
- * 解析 msgId，容忍带引号的 # 前缀；提示面不再主动展示 shell 不安全的裸 #。
+ * Разбирает msgId, допуская префикс # в кавычках; интерфейс подсказок больше не показывает небезопасный для shell голый #.
  */
 export function parseMsgId(raw: string): number {
   const stripped = raw.trim().replace(/^#/, "");
@@ -103,7 +103,7 @@ export function parseMsgId(raw: string): number {
   return n;
 }
 
-// ── --in 选项定义（所有需要 target 的 subcommand 共用）──
+// ── Определение опции --in (общее для всех субкоманд, требующих target) ──
 
 export const inOption = {
   type: "string" as const,

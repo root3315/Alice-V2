@@ -1,81 +1,81 @@
 /**
- * Mod 系统核心类型 — 移植自叙事引擎。
+ * Базовые типы системы Mod — перенесены из нарративного движка.
  *
- * 叙事引擎使用 ECS + Mod 架构：
- * - 每个关注点是独立 Mod，声明指令（写）、查询（读）、监听（响应广播）
- * - Dispatcher 路由指令 → 执行 → 广播给所有 listener
- * - Storyteller 从所有 Mod 的 contribute() 收集上下文 → 排序 → 渲染
+ * Нарративный движок использует архитектуру ECS + Mod:
+ * - Каждая область ответственности — отдельный Mod, объявляющий инструкции (запись), запросы (чтение), слушатели (реакция на широковещание)
+ * - Dispatcher маршрутизирует инструкции → выполняет → широковещает всем listener
+ * - Storyteller собирает контекст из contribute() всех Mod → сортирует → рендерит
  *
- * Alice 适配：
- * - WorldGraph → WorldModel（伴侣图）
- * - Turn → Tick（60s 周期）
- * - 保留核心接口：ModDefinition, ModContext, ContributionItem
- * - 简化 HUD（无 GUI，不需要）
+ * Адаптация для Alice:
+ * - WorldGraph → WorldModel (граф компаньона)
+ * - Turn → Tick (цикл 60 с)
+ * - Сохранены ключевые интерфейсы: ModDefinition, ModContext, ContributionItem
+ * - Упрощён HUD (без GUI — не требуется)
  *
- * 参考: narrative-engine/mods/types.ts
+ * Источник: narrative-engine/mods/types.ts
  */
 import type { z } from "zod";
 import type { AffordanceDeclaration } from "../engine/tick/types.js";
 import type { WorldModel } from "../graph/world-model.js";
 import type { PromptLine } from "./prompt-style.js";
 
-// -- Mod 元数据 ---------------------------------------------------------------
+// -- Метаданные Mod -----------------------------------------------------------
 
 export interface ModMeta {
-  /** Mod 唯一标识。 */
+  /** Уникальный идентификатор Mod. */
   name: string;
-  /** 分类：core（核心基础设施）| mechanic（可选机制）。 */
+  /** Категория: core (базовая инфраструктура) | mechanic (опциональный механизм). */
   category: "core" | "mechanic";
-  /** 人类可读描述。 */
+  /** Человекочитаемое описание. */
   description?: string;
-  /** 依赖的 Mod 列表（名称）。 */
+  /** Список Mod-зависимостей (по именам). */
   depends?: string[];
   /**
-   * 话题归属（支持多话题）。用于按意图分组渲染查询函数。
-   * 省略时 = 分到 "other" 分组（core 基础设施通常省略）。
+   * Принадлежность к темам (поддерживается несколько). Используется для группировки функций запросов при рендеринге по намерению.
+   * Если не указано — попадает в группу "other" (для базовой инфраструктуры core обычно не указывается).
    */
   topics?: string[];
 }
 
-// -- Mod 上下文 ---------------------------------------------------------------
+// -- Контекст Mod -------------------------------------------------------------
 
-/** 传入每个 Mod 方法的执行上下文。 */
+/** Контекст выполнения, передаваемый в каждый метод Mod. */
 export interface ModContext<TState = unknown> {
-  /** 伴侣图（全局共享，可读写）。 */
+  /** Граф компаньона (глобально разделяемый, доступен для чтения и записи). */
   graph: WorldModel;
-  /** 当前 Mod 的私有状态（可变引用）。 */
+  /** Приватное состояние текущего Mod (изменяемая ссылка). */
   state: TState;
-  /** 当前 tick。 */
+  /** Текущий тик. */
   tick: number;
-  /** ADR-110: 当前墙钟时间（ms），evolveTick 顶部计算一次，线程到所有子函数。 */
+  /** ADR-110: Текущее wall-clock время (мс), вычисляется один раз в начале evolveTick и передаётся всем дочерним функциям. */
   nowMs: number;
-  /** 可行动目标白名单。null = 未启用白名单；空集合 = 无可行动目标。 */
+  /** Белый список целей для действий. null = белый список не включён; пустое множество = нет доступных целей. */
   targetWhitelist?: ReadonlySet<string> | null;
-  /** 读取其他 Mod 的状态（只读）。 */
+  /** Чтение состояния других Mod (только чтение). */
   getModState: <T = unknown>(modName: string) => T | undefined;
-  /** 调用其他 Mod 的指令（跨 Mod 协作）。由 Dispatcher 注入。 */
+  /** Вызов инструкций другого Mod (межмодульное взаимодействие). Внедряется Dispatcher. */
   dispatch: (instruction: string, args: Record<string, unknown>) => unknown;
 }
 
-// -- 指令系统 -----------------------------------------------------------------
+// -- Система инструкций -------------------------------------------------------
 
-/** 参数定义。schema 是唯一的类型+必选性真相源。 */
+/** Определение параметра. schema — единственный источник истины о типе и обязательности. */
 export interface ParamDefinition {
   description: string;
   schema: z.ZodTypeAny;
 }
 
 /**
- * 指令定义（写操作，有副作用，触发广播）。
+ * Определение инструкции (операция записи, имеет побочные эффекты, инициирует широковещание).
  *
- * 设计继承自叙事引擎（指令名=函数名、params key 顺序=位置参数顺序）。
+ * Дизайн унаследован от нарративного движка (имя инструкции = имя функции, порядок ключей params = порядок позиционных аргументов).
  * @see narrative-engine/mods/types.ts — InstructionDefinition
- * @see narrative-engine/sandbox/inject.ts — 通用注入循环
+ * @see narrative-engine/sandbox/inject.ts — универсальный цикл инъекции
  */
 export interface InstructionDefinition {
   /**
-   * 参数签名。Record 的 key 插入顺序 = LLM 调用时的位置参数顺序。
-   * 注入层自动将 `feel("positive", "reason")` 映射为 `{valence: "positive", reason: "reason"}`。
+   * Сигнатура параметров. Порядок вставки ключей Record = порядок позиционных аргументов при вызове LLM.
+   * Слой инъекции автоматически отображает `feel("positive", "reason")` в `{valence: "positive", reason: "reason"}`.
    */
   params: Record<string, ParamDefinition>;
   description: string;
@@ -83,8 +83,8 @@ export interface InstructionDefinition {
   impl: (ctx: ModContext, args: Record<string, unknown>) => unknown;
 
   /**
-   * 上下文注入：当 LLM 未传某 param 时，从 sandbox contextVars 自动填充。
-   * key = param 名, value = 从 contextVars 派生默认值的函数。
+   * Контекстная инъекция: если LLM не передал параметр, он автоматически заполняется из sandbox contextVars.
+   * key = имя параметра, value = функция, выводящая значение по умолчанию из contextVars.
    */
   deriveParams?: Record<
     string,
@@ -92,115 +92,115 @@ export interface InstructionDefinition {
   >;
 
   /**
-   * 每轮调用上限。数字 = 独立配额，{ limit, group } = 共享配额。
-   * 例: intend 使用 { limit: 2, group: "thread_create" }。
+   * Лимит вызовов за раунд. Число = отдельная квота; { limit, group } = общая квота.
+   * Пример: intend использует { limit: 2, group: "thread_create" }.
    */
   perTurnCap?: number | { limit: number; group: string };
 
   /**
-   * ADR-142: Affordance 声明 — LLM 可见工具的可发现性元数据。
+   * ADR-142: Объявление Affordance — метаданные обнаруживаемости для инструментов, видимых LLM.
    * @see docs/adr/142-action-space-architecture/README.md
    */
   affordance?: AffordanceDeclaration;
 }
 
-/** 查询定义（读操作，无副作用，不广播）。 */
+/** Определение запроса (операция чтения, без побочных эффектов, не широковещает). */
 export interface QueryDefinition {
   params: Record<string, ParamDefinition>;
   description: string;
-  /** 返回值的 TypeScript 类型字符串（用于生成 .d.ts 声明）。 */
+  /** Строка типа TypeScript для возвращаемого значения (используется для генерации объявлений .d.ts). */
   returns?: string;
-  /** LLM 可读的返回值简述。渲染为 JSDoc @returns。 */
+  /** Краткое описание возвращаемого значения, читаемое LLM. Рендерится как JSDoc @returns. */
   returnHint?: string;
   impl: (ctx: ModContext, args: Record<string, unknown>) => unknown;
-  /** 上下文注入：当 LLM 未传某 param 时，从 sandbox contextVars 自动注入。 */
+  /** Контекстная инъекция: если LLM не передал параметр, он автоматически вводится из sandbox contextVars. */
   deriveParams?: Record<
     string,
     (contextVars: Record<string, unknown>, args?: Record<string, unknown>) => unknown
   >;
   /**
-   * 将 impl 返回值格式化为 LLM 可读文本。
-   * 省略时 fallback 到 JSON.stringify。
+   * Форматирование возвращаемого значения impl в читаемый для LLM текст.
+   * Если не указано — fallback на JSON.stringify.
    */
   format?: (result: unknown) => string[];
 
   /**
-   * ADR-142: Affordance 声明 — LLM 可见查询的可发现性元数据。
+   * ADR-142: Объявление Affordance — метаданные обнаруживаемости для запросов, видимых LLM.
    * @see docs/adr/142-action-space-architecture/README.md
    */
   affordance?: AffordanceDeclaration;
 }
 
-/** 监听处理器（响应其他 Mod 的指令广播）。 */
+/** Обработчик слушателя (реакция на широковещание инструкций другого Mod). */
 export type ListenHandler = (
   ctx: ModContext,
   args: Record<string, unknown>,
   result: unknown,
 ) => void;
 
-// -- 贡献系统（Storyteller 上下文组装）----------------------------------------
+// -- Система вкладов (сборка контекста Storyteller) ---------------------------
 
-/** 贡献桶类型（对应 LLM prompt 的区域）。 */
+/** Тип корзины вклада (соответствует области LLM prompt). */
 export type BucketType = "header" | "section" | "footer";
 
 /**
- * 单条贡献项。
- * Storyteller 收集所有 Mod 的贡献 → 按 bucket/order/priority 排序 → 渲染成 prompt。
+ * Единичный элемент вклада.
+ * Storyteller собирает вклады всех Mod → сортирует по bucket/order/priority → рендерит в prompt.
  *
- * ⚠ 诚实性原则：lines 中的文本是 Alice 的内心世界。她不知道引擎的存在。
- * 禁止系统术语（tick/voice/pressure/mod）、原始数值（百分比/计数/ID）、
- * 元指令（"Decide what to do"）。只写观察事实和人类化的语义标签。
- * @see docs/adr/209-tui-native-prompt.md — 诚实性原则
+ * ⚠ Принцип честности: текст в lines — это внутренний мир Alice. Она не знает о существовании движка.
+ * Запрещены системные термины (tick/voice/pressure/mod), сырые числа (проценты/счётчики/ID),
+ * мета-инструкции ("Decide what to do"). Писать только наблюдаемые факты и человекочитаемые семантические метки.
+ * @see docs/adr/209-tui-native-prompt.md — принцип честности
  */
 export interface ContributionItem {
-  /** 属于哪个大类（header 最先，section 中间，footer 最后）。 */
+  /** Большая категория (header — первый, section — средний, footer — последний). */
   bucket: BucketType;
-  /** 分组 key（同 bucket 内同 key 的项合并）。 */
+  /** Ключ группировки (элементы с одинаковым key в одном bucket объединяются). */
   key?: string;
-  /** 组标题（同 (bucket, key) 内第一个带 title 的生效）。 */
+  /** Заголовок группы (действует первый элемент с title в рамках (bucket, key)). */
   title?: string;
-  /** 组间排序（数值越小越靠前，默认 50）。 */
+  /** Сортировка между группами (меньшее значение — выше, по умолчанию 50). */
   order?: number;
-  /** 组内优先级（数值越高越重要，默认 50）。 */
+  /** Приоритет внутри группы (большее значение — важнее, по умолчанию 50). */
   priority?: number;
-  /** 贡献内容行（必须经由 PromptBuilder 产出）。 */
+  /** Строки содержимого вклада (должны быть сформированы через PromptBuilder). */
   lines: PromptLine[];
 }
 
-// -- Mod 定义 -----------------------------------------------------------------
+// -- Определение Mod ----------------------------------------------------------
 
 /**
- * Mod 定义接口 — Alice 版。
+ * Интерфейс определения Mod — версия для Alice.
  *
- * 每个 Mod 实现此接口，声明：
- * - meta: 元数据（名称、分类、依赖）
- * - initialState: 初始私有状态
- * - instructions: 写操作（指令名 = LLM 函数名，触发广播）
- * - queries: 读操作（不广播）
- * - listen: 监听其他 Mod 的指令
- * - contribute: 为 Storyteller 贡献 LLM 上下文
- * - onTickStart / onTickEnd: 生命周期钩子
+ * Каждый Mod реализует этот интерфейс и объявляет:
+ * - meta: метаданные (имя, категория, зависимости)
+ * - initialState: начальное приватное состояние
+ * - instructions: операции записи (имя инструкции = имя функции LLM, инициируют широковещание)
+ * - queries: операции чтения (без широковещания)
+ * - listen: прослушивание инструкций других Mod
+ * - contribute: вклад LLM-контекста для Storyteller
+ * - onTickStart / onTickEnd: хуки жизненного цикла
  */
 export interface ModDefinition<TState = unknown> {
   meta: ModMeta;
   initialState: TState;
 
-  /** 写操作（指令名 = LLM 函数名），有副作用，触发广播。 */
+  /** Операции записи (имя инструкции = имя функции LLM), имеют побочные эффекты, инициируют широковещание. */
   instructions?: Record<string, InstructionDefinition>;
 
-  /** 读操作，无副作用。 */
+  /** Операции чтения, без побочных эффектов. */
   queries?: Record<string, QueryDefinition>;
 
-  /** 监听其他 Mod 的指令广播。key = 指令名。 */
+  /** Прослушивание широковещания инструкций других Mod. key = имя инструкции. */
   listen?: Record<string, ListenHandler>;
 
-  /** Tick 开始时调用（清空临时状态等）。 */
+  /** Вызывается в начале тика (очистка временного состояния и т.д.). */
   onTickStart?: (ctx: ModContext<TState>) => void;
 
-  /** Tick 结束时调用（计算汇总、被动效果等）。 */
+  /** Вызывается в конце тика (вычисление агрегатов, пассивные эффекты и т.д.). */
   onTickEnd?: (ctx: ModContext<TState>) => void;
 
-  /** 意识流事件钩子（可选）。未来 C2 元认知的入口点。
+  /** Хук событий потока сознания (опционально). Точка входа для будущей мета-когниции C2.
    * @see docs/adr/204-consciousness-stream/ */
   onEvent?: (
     ctx: ModContext<TState>,
@@ -208,17 +208,17 @@ export interface ModDefinition<TState = unknown> {
   ) => void;
 
   /**
-   * 为 Storyteller 贡献 LLM 上下文。
-   * 返回 ContributionItem[]，由 Storyteller 排序渲染。
+   * Вклад LLM-контекста для Storyteller.
+   * Возвращает ContributionItem[], которые Storyteller сортирует и рендерит.
    */
   contribute?: (ctx: ModContext<TState>) => ContributionItem[];
 }
 
-// -- 跨 Mod 类型安全访问器 ---------------------------------------------------
+// -- Типобезопасные межмодульные аксессоры ------------------------------------
 
 /**
- * Mod 状态类型注册表 — 每个 Mod 只暴露允许跨 Mod 读取的公共部分。
- * 单一入口的受控 `as` 断言，调用站点零 `as`。
+ * Реестр типов состояний Mod — каждый Mod раскрывает только публичную часть, доступную для межмодульного чтения.
+ * Единственный контролируемый cast через `as` на входе; на всех сайтах вызова `as` отсутствует.
  */
 export interface ModStateRegistry {
   relationships: { targetNodeId: string | null };
@@ -241,8 +241,8 @@ export interface ModStateRegistry {
 }
 
 /**
- * 类型安全的跨 Mod 状态读取。
- * 内部有一处受控 `as`（泛型参数传递），但所有调用站点零 `as`。
+ * Типобезопасное межмодульное чтение состояния.
+ * Внутри один контролируемый `as` (передача обобщённого параметра), на всех сайтах вызова `as` отсутствует.
  */
 export function readModState<K extends keyof ModStateRegistry>(
   ctx: ModContext,
@@ -252,16 +252,16 @@ export function readModState<K extends keyof ModStateRegistry>(
 }
 
 /**
- * 安全读取 pressure mod 的当前 API 值。
- * 基于 readModState，零手动断言。
- * @see docs/adr/81-reflection-separation.md §Mod 贡献从声部门控改为压力门控
+ * Безопасное чтение текущего значения API из Mod давления.
+ * Основано на readModState, ручные утверждения типов отсутствуют.
+ * @see docs/adr/81-reflection-separation.md §Вклады Mod: переход с управления по голосу на управление по давлению
  */
 export function readPressureApi(ctx: ModContext): number {
   const state = readModState(ctx, "pressure");
   return state?.latest?.API ?? 0;
 }
 
-// -- 贡献工厂函数（便捷 API）--------------------------------------------------
+// -- Фабричные функции вкладов (удобный API) ----------------------------------
 
 export function header(
   lines: PromptLine | PromptLine[],

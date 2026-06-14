@@ -1,18 +1,18 @@
 /**
- * Engine API — LLM 管线路由。
+ * Engine API — маршруты LLM-конвейера.
  *
  * POST /llm/synthesize → { answer: string }
  * POST /llm/summarize  → { summary: string }
  *
- * 包装 actions.ts 中的 synthesizeAnswer / summarizeWebContent 纯函数，
- * 供 Skill CLI 脚本通过 Engine API 调用引擎内 LLM。
+ * Оборачивает чистые функции synthesizeAnswer / summarizeWebContent из actions.ts,
+ * чтобы Skill CLI-скрипты могли вызывать внутренний LLM движка через Engine API.
  *
  * @see docs/adr/202-engine-api.md
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { summarizeWebContent, synthesizeAnswer } from "../../telegram/actions.js";
 
-/** 从 request body 收集 JSON。 */
+/** Читает JSON из тела запроса. */
 function readBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];

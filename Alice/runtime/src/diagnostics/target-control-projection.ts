@@ -1,8 +1,8 @@
 /**
  * ADR-254 / ADR-255: target control projection shadow diagnostics.
  *
- * 只读诊断面：从 intervention_outcome_evidence 解释 target receptionScore。
- * 不参与 IAUS / P5 / prompt 控制路径。
+ * Диагностика только для чтения: интерпретация target receptionScore из intervention_outcome_evidence.
+ * Не участвует в путях управления IAUS / P5 / prompt.
  *
  * @see docs/adr/254-target-control-projection/README.md
  * @see docs/adr/255-intervention-outcome-truth-model/README.md

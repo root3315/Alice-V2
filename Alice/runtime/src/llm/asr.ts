@@ -1,9 +1,9 @@
 /**
- * ADR-119: ASR 模块 — OpenAI Whisper-compatible 语音识别。
+ * ADR-119: модуль ASR — распознавание речи, совместимое с OpenAI Whisper.
  *
- * 后端：任何 OpenAI /audio/transcriptions 兼容的 API（OpenAI, Groq, Azure, local Whisper）。
- * 输入：OGG/Opus 音频（Telegram voice message 原始格式）。
- * 输出：转写文本。
+ * Бэкенд: любой API, совместимый с OpenAI /audio/transcriptions (OpenAI, Groq, Azure, local Whisper).
+ * Вход: аудио OGG/Opus (исходный формат голосовых сообщений Telegram).
+ * Выход: транскрибированный текст.
  *
  * @see docs/adr/119-multimodal-perception-completion.md
  */
@@ -12,7 +12,7 @@ import { createLogger } from "../utils/logger.js";
 const log = createLogger("asr");
 
 export interface ASRConfig {
-  asrBaseUrl: string; // 空 = 禁用
+  asrBaseUrl: string; // пусто = отключено
   asrApiKey: string;
   asrModel: string; // default: "whisper-1"
 }
@@ -21,15 +21,15 @@ export function isASREnabled(config: ASRConfig): boolean {
   return !!config.asrBaseUrl && !!config.asrApiKey;
 }
 
-/** 文件大小上限：10MB（Whisper 限制 25MB，预留安全余量）。 */
+/** Максимальный размер файла: 10 МБ (лимит Whisper — 25 МБ; запас для безопасности). */
 const MAX_AUDIO_SIZE = 10_485_760;
 
 /**
- * 语音转文字。
+ * Преобразование речи в текст.
  *
- * @param audioBuffer OGG/Opus 音频（Telegram voice message 原始格式）
- * @param config ASR 配置
- * @returns 转写文本，或 undefined（禁用/失败）
+ * @param audioBuffer аудио OGG/Opus (исходный формат голосовых сообщений Telegram)
+ * @param config конфигурация ASR
+ * @returns транскрибированный текст или undefined (отключено/ошибка)
  */
 export async function transcribeVoice(
   audioBuffer: Buffer,
@@ -40,7 +40,7 @@ export async function transcribeVoice(
   if (audioBuffer.byteLength > MAX_AUDIO_SIZE) return undefined;
 
   const baseUrl = config.asrBaseUrl.replace(/\/$/, "");
-  // 将 Buffer 转为 ArrayBuffer 副本，避免 SharedArrayBuffer 类型兼容问题
+  // Конвертируем Buffer в копию ArrayBuffer, чтобы избежать проблем совместимости типов SharedArrayBuffer
   const ab = audioBuffer.buffer.slice(
     audioBuffer.byteOffset,
     audioBuffer.byteOffset + audioBuffer.byteLength,

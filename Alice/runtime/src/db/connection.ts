@@ -1,7 +1,7 @@
 /**
- * SQLite + Drizzle 初始化（使用 better-sqlite3）。
+ * Инициализация SQLite + Drizzle (через better-sqlite3).
  *
- * ADR-53: 统一到 Drizzle migration，删除手写 raw SQL DDL。
+ * ADR-53: переход на Drizzle migration, удаление рукописного raw SQL DDL.
  * @see docs/adr/53-audit-gap-closure.md
  */
 import { resolve } from "node:path";
@@ -17,14 +17,14 @@ let _db: ReturnType<typeof drizzle> | null = null;
 let _sqlite: InstanceType<typeof Database> | null = null;
 let _dbPath: string | null = null;
 
-/** drizzle/ 目录的绝对路径（兼容 tsx 和 vitest 两种运行环境）。 */
+/** Абсолютный путь к директории drizzle/ (совместим со средами tsx и vitest). */
 const MIGRATIONS_FOLDER = resolve(fileURLToPath(import.meta.url), "../../../drizzle");
 
 /**
- * 获取 Drizzle 数据库实例。必须先调用 initDb()。
+ * Возвращает экземпляр Drizzle. Требует предварительного вызова initDb().
  *
- * I10: 移除 dbPath 参数，消除隐式懒初始化。
- * 所有初始化统一走 initDb(path)，getDb() 只做纯读取。
+ * I10: параметр dbPath удалён, неявная ленивая инициализация устранена.
+ * Вся инициализация проходит через initDb(path), getDb() выполняет только чтение.
  */
 export function getDb() {
   if (!_db) {
@@ -34,8 +34,8 @@ export function getDb() {
 }
 
 /**
- * 获取当前数据库文件路径。
- * M4 修复: 供 anomaly.ts 等模块获取实际 DB 路径，避免硬编码。
+ * Возвращает текущий путь к файлу базы данных.
+ * M4 исправление: позволяет anomaly.ts и другим модулям получить реальный путь к БД без хардкода.
  */
 export function getDbPath(): string {
   return _dbPath ?? "alice.db";
@@ -46,10 +46,10 @@ export function isDbInitialized(): boolean {
 }
 
 /**
- * 初始化数据库：打开连接 + 运行迁移。
+ * Инициализирует базу данных: открывает соединение и запускает миграции.
  *
- * I10: 只能调用一次。再次初始化需先 closeDb()。
- * 保证整个生命周期 initDb → getDb → closeDb 的严格顺序。
+ * I10: может вызываться только один раз. Для повторной инициализации сначала вызовите closeDb().
+ * Гарантирует строгий порядок жизненного цикла: initDb → getDb → closeDb.
  */
 export function initDb(dbPath: string = "alice.db"): void {
   if (_db) {
@@ -61,8 +61,8 @@ export function initDb(dbPath: string = "alice.db"): void {
   _dbPath = dbPath;
   _sqlite = new Database(dbPath);
   _sqlite.exec("PRAGMA journal_mode = WAL");
-  // ADR-145: 加载 better_trigram FTS5 tokenizer——必须在 migrate() 之前，
-  // 因为 migration SQL 会引用 better_trigram tokenizer。
+  // ADR-145: загружаем токенизатор better_trigram FTS5 — обязательно до migrate(),
+  // поскольку migration SQL ссылается на токенизатор better_trigram.
   try {
     loadBetterTrigram(_sqlite);
   } catch (e) {
@@ -77,12 +77,12 @@ export function initDb(dbPath: string = "alice.db"): void {
 
   migrate(_db, { migrationsFolder: MIGRATIONS_FOLDER });
 
-  // ADR-145: 首次部署后历史数据补全——FTS 索引为空时全量 rebuild
+  // ADR-145: восстановление исторических данных после первого деплоя — полный rebuild при пустом FTS-индексе
   ftsEnsurePopulated();
 }
 
 /**
- * 获取底层 better-sqlite3 实例（用于 transaction）。
+ * Возвращает нижележащий экземпляр better-sqlite3 (для транзакций).
  */
 export function getSqlite(): InstanceType<typeof Database> {
   if (!_sqlite) throw new Error("Database not initialized");
@@ -90,7 +90,7 @@ export function getSqlite(): InstanceType<typeof Database> {
 }
 
 /**
- * 关闭数据库连接。
+ * Закрывает соединение с базой данных.
  */
 export function closeDb(): void {
   if (_sqlite) {

@@ -1,8 +1,8 @@
 /**
- * Engine API — 命令目录端点。
+ * Engine API — эндпоинт каталога команд.
  *
- * GET /meta/commands → 返回所有 LLM 可见指令和查询的元数据。
- * 供 `self --help` 和未来的 prompt catalog 生成使用。
+ * GET /meta/commands → возвращает метаданные всех инструкций и запросов, видимых LLM.
+ * Используется для `self --help` и будущей генерации каталога промптов.
  *
  * @see docs/adr/217-cli-unification.md
  */
@@ -23,7 +23,7 @@ export function handleMetaCommands(res: ServerResponse, deps: EngineApiDeps): vo
   const commands: CommandMeta[] = [];
 
   for (const mod of mods) {
-    // 收集有 affordance 的指令
+    // Собираем инструкции с affordance
     for (const [name, def] of Object.entries(mod.instructions ?? {})) {
       if (!def.affordance) continue;
       const derivedKeys = def.deriveParams ? new Set(Object.keys(def.deriveParams)) : new Set();
@@ -49,7 +49,7 @@ export function handleMetaCommands(res: ServerResponse, deps: EngineApiDeps): vo
       });
     }
 
-    // 收集有 affordance 的查询
+    // Собираем запросы с affordance
     for (const [name, def] of Object.entries(mod.queries ?? {})) {
       if (!def.affordance) continue;
       const derivedKeys = def.deriveParams ? new Set(Object.keys(def.deriveParams)) : new Set();

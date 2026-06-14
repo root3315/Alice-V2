@@ -1,12 +1,13 @@
 /**
- * 群组元信息持久缓存 — 独立 SQLite KV（与主 alice.db 隔离）。
+ * Персистентный кеш метаданных групп — отдельная SQLite KV (изолирована от основной alice.db).
  *
- * 缓存内容：
- * - 群组管理员列表（user ID → status + custom title）
- * - 群组元信息（成员数、媒体限制、Alice 是否为 admin）
+ * Содержимое кеша:
+ * - список администраторов группы (user ID → status + custom title)
+ * - метаданные группы (кол-во участников, медиаограничения, является ли Alice admin)
  *
- * 使用 raw better-sqlite3（无 Drizzle）——schema 简单，与 media-cache 同模式。
- * 管理员/权限变动极低频（天/周级），持久化避免重启后的冷启动 API burst。
+ * Использует raw better-sqlite3 (без Drizzle) — схема простая, аналог media-cache.
+ * Изменения прав/администраторов крайне редки (дни/недели), персистентность устраняет
+ * API burst при холодном старте после перезапуска.
  */
 import type Database from "better-sqlite3";
 import type { Statement } from "better-sqlite3";
@@ -25,7 +26,7 @@ let _infoGet: Statement | null = null;
 let _infoSet: Statement | null = null;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 类型定义
+// Определения типов
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface AdminInfo {
@@ -35,14 +36,14 @@ export interface AdminInfo {
 
 export interface ChatInfo {
   membersCount: number | null;
-  /** 被禁止的媒体类型列表。空 = 无限制。 */
+  /** Список запрещённых типов медиа. Пусто = без ограничений. */
   restrictions: string[];
-  /** Alice 是否为该群 admin。 */
+  /** Является ли Alice администратором этой группы. */
   isAliceAdmin: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 生命周期
+// Жизненный цикл
 // ═══════════════════════════════════════════════════════════════════════════
 
 export function initGroupCache(dbPath = "group-cache.db"): void {
@@ -82,7 +83,7 @@ export function initGroupCache(dbPath = "group-cache.db"): void {
     "INSERT OR REPLACE INTO chat_info (chat_id, members_count, restrictions, is_alice_admin) VALUES (?, ?, ?, ?)",
   );
 
-  // TTL 清理：90 天无更新的群组记录（Alice 可能已离开）
+  // TTL-очистка: записи групп без обновлений за 90 дней (Alice, вероятно, покинула их)
   const TTL_SECONDS = 90 * 24 * 3600;
   _db.prepare("DELETE FROM chat_admins WHERE updated_at < unixepoch() - ?").run(TTL_SECONDS);
   _db.prepare("DELETE FROM chat_info WHERE updated_at < unixepoch() - ?").run(TTL_SECONDS);
@@ -103,10 +104,10 @@ export function closeGroupCache(): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 管理员缓存
+// Кеш администраторов
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 获取缓存的管理员列表。 */
+/** Получить закешированный список администраторов. */
 export function getCachedAdmins(chatId: number): Map<number, AdminInfo> | undefined {
   if (!_adminGet) return undefined;
   const rows = _adminGet.all(chatId) as Array<{
@@ -122,7 +123,7 @@ export function getCachedAdmins(chatId: number): Map<number, AdminInfo> | undefi
   return map;
 }
 
-/** 写入管理员列表（全量替换）。 */
+/** Записать список администраторов (полная замена). */
 export function setCachedAdmins(chatId: number, admins: Map<number, AdminInfo>): void {
   if (!_db || !_adminDel || !_adminSet) return;
   const del = _adminDel;
@@ -137,10 +138,10 @@ export function setCachedAdmins(chatId: number, admins: Map<number, AdminInfo>):
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 群组元信息缓存
+// Кеш метаданных группы
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 获取缓存的群组元信息。 */
+/** Получить закешированные метаданные группы. */
 export function getCachedChatInfo(chatId: number): ChatInfo | undefined {
   if (!_infoGet) return undefined;
   const row = _infoGet.get(chatId) as
@@ -154,7 +155,7 @@ export function getCachedChatInfo(chatId: number): ChatInfo | undefined {
   };
 }
 
-/** 写入群组元信息。 */
+/** Записать метаданные группы. */
 export function setCachedChatInfo(chatId: number, info: ChatInfo): void {
   _infoSet?.run(
     chatId,

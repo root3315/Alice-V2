@@ -1,11 +1,11 @@
 /**
- * A1 行动/沉默节律分析 — ADR-76 自动化行为验证。
+ * A1 Анализ ритма действий/тишины — ADR-76 автоматизированная верификация поведения.
  *
- * - 行动间隔分布（中位数 / P90 / 按目标分组对比）→ 验证 V3 Tier 差异化节律
- * - 锯齿波周期检测 → 验证 V1 压力轨迹
- * - Circadian 调制验证（UTC 小时 × 行动频率热图）
+ * - Распределение интервалов между действиями (медиана / P90 / сравнение по целям) → верификация дифференцированного ритма V3 Tier
+ * - Обнаружение периодов пилообразной волны → верификация траектории давления V1
+ * - Верификация циркадной модуляции (час UTC × тепловая карта частоты действий)
  *
- * 对标基线：人类私聊回复 5-30s，群聊发言间隔 30s-5min
+ * Целевые базовые показатели: ответ в личке человека 5-30 с, интервал сообщений в группе 30 с — 5 мин
  *
  * @see docs/adr/76-naturalness-validation-methodology.md
  * @see docs/adr/63-theory-validation-checklist.md §V1, §V3
@@ -16,7 +16,7 @@ import { getDb } from "../db/connection.js";
 import { actionLog, tickLog } from "../db/schema.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 类型
+// Типы
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface IntervalStats {
@@ -26,26 +26,26 @@ export interface IntervalStats {
 }
 
 export interface SawtoothDetection {
-  /** 检测到的锯齿波周期数。 */
+  /** Число обнаруженных периодов пилообразной волны. */
   cycleCount: number;
-  /** 周期长度中位数（tick）。 */
+  /** Медианная длина периода (в тиках). */
   medianCycleLength: number;
-  /** 符合锯齿模式的 tick 占比。 */
+  /** Доля тиков, соответствующих пилообразному паттерну. */
   sawtoothRatio: number;
 }
 
 export interface RhythmReport {
   actionIntervals: IntervalStats & {
-    /** 按目标实体分组的间隔统计（目标作为 tier 代理）。 */
+    /** Статистика интервалов по целевым сущностям (цель как прокси для tier). */
     byTarget: Record<string, IntervalStats>;
   };
   sawtoothDetection: SawtoothDetection;
-  /** UTC 小时 (0-23) → 该小时内的行动数。 */
+  /** UTC-час (0-23) → количество действий за этот час. */
   circadianHeatmap: Record<number, number>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 统计工具
+// Статистические утилиты
 // ═══════════════════════════════════════════════════════════════════════════
 
 function sortedCopy(arr: number[]): number[] {
@@ -75,21 +75,21 @@ function intervalStats(intervals: number[]): IntervalStats {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 分析函数
+// Функции анализа
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 分析行动/沉默节律。
+ * Анализирует ритм действий/тишины.
  *
- * 从 tick_log + action_log 读取数据，计算：
- * 1. 行动间隔分布 → V3 Tier 差异化节律验证
- * 2. P1 锯齿波周期检测 → V1 压力轨迹验证
- * 3. Circadian 热图 → 日内节律验证
+ * Читает данные из tick_log + action_log, вычисляет:
+ * 1. Распределение интервалов между действиями → верификация дифференцированного ритма V3 Tier
+ * 2. Обнаружение периодов пилообразной волны P1 → верификация траектории давления V1
+ * 3. Циркадная тепловая карта → верификация внутридневного ритма
  */
 export function analyzeRhythm(): RhythmReport {
   const db = getDb();
 
-  // ── 1. 行动间隔分布 ───────────────────────────────────────────────────
+  // ── 1. Распределение интервалов между действиями ─────────────────────
   const actions = db
     .select({ tick: actionLog.tick, target: actionLog.target })
     .from(actionLog)
@@ -99,7 +99,7 @@ export function analyzeRhythm(): RhythmReport {
   const allIntervals: number[] = [];
   const intervalsByTarget: Record<string, number[]> = {};
 
-  // 按目标分组计算间隔——同一目标的连续行动间隔
+  // Вычисление интервалов с группировкой по цели — интервалы между последовательными действиями к одной цели
   const lastTickByTarget: Record<string, number> = {};
   for (const row of actions) {
     const target = row.target ?? "__no_target__";
@@ -117,8 +117,8 @@ export function analyzeRhythm(): RhythmReport {
     byTarget[target] = intervalStats(intervals);
   }
 
-  // ── 2. 锯齿波检测（V1）──────────────────────────────────────────────
-  // P1 idle growth: 行动后骤降，idle 期间递增
+  // ── 2. Обнаружение пилообразной волны (V1) ──────────────────────────
+  // P1 idle growth: резкий спад после действия, нарастание в idle-период
   const ticks = db
     .select({
       tick: tickLog.tick,
@@ -138,12 +138,12 @@ export function analyzeRhythm(): RhythmReport {
     const hasAction = ticks[i].target !== null;
 
     if (ticks[i].p1 >= ticks[i - 1].p1) {
-      // P1 递增 — 符合锯齿上升沿
+      // P1 нарастает — соответствует переднему фронту пилы
       sawtoothTicks++;
     }
 
     if (hasAction && ticks[i].p1 < ticks[i - 1].p1) {
-      // 行动后压力骤降 — 锯齿下降沿
+      // Резкий спад давления после действия — задний фронт пилы
       cycleCount++;
       sawtoothTicks++;
       if (lastDropIdx >= 0) {
@@ -153,7 +153,7 @@ export function analyzeRhythm(): RhythmReport {
     }
   }
 
-  // ── 3. Circadian 热图 ─────────────────────────────────────────────────
+  // ── 3. Циркадная тепловая карта ──────────────────────────────────────
   const circadianHeatmap: Record<number, number> = {};
   for (let h = 0; h < 24; h++) circadianHeatmap[h] = 0;
 

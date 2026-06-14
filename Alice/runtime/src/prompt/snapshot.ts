@@ -1,11 +1,11 @@
 /**
- * ADR-220: User Prompt Snapshot 构建器。
+ * ADR-220: Строитель User Prompt Snapshot.
  *
- * 从引擎数据源一次性构建类型化快照，供场景渲染器消费。
- * 不直接查 DB——所有数据从传入参数获取。
+ * Единовременно строит типизированный снимок из источников данных движка для потребления рендерерами сцен.
+ * DB напрямую не запрашивается — все данные берутся из переданных аргументов.
  *
- * EntityRef 构建原则：id + displayName 缺一则返回 null，不进 prompt。
- * 这是 "(a group)" 问题的根治。
+ * Принцип построения EntityRef: если отсутствует id или displayName — вернуть null, в prompt не попадает.
+ * Это коренное устранение проблемы "(a group)".
  */
 
 import { and, desc, eq, lte } from "drizzle-orm";
@@ -72,7 +72,7 @@ import type {
 import { ChatTarget } from "./types.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 快照构建参数
+// Параметры построения снимка
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface SnapshotInput {
@@ -81,20 +81,20 @@ export interface SnapshotInput {
   observations: string[];
   item: ActionQueueItem;
   round: number;
-  /** @deprecated ADR-233: TC 循环已接管续轮，不再使用 */
+  /** @deprecated ADR-233: Цикл TC взял на себя продолжение раундов, больше не используется */
   episodeRound?: number;
   board: {
     maxSteps: number;
     contextVars: Readonly<Record<string, unknown>>;
   };
   nowMs: number;
-  /** 用户时区偏移（小时），如 UTC+8 → 8 */
+  /** Смещение часового пояса пользователя (в часах), например UTC+8 → 8 */
   timezoneOffset: number;
   chatType: string;
   isGroup: boolean;
   isChannel: boolean;
 
-  /** 策略 C: 预收集的联系人画像（来自 relationships mod state）。 */
+  /** Стратегия C: предварительно собранные профили контактов (из relationships mod state). */
   contactProfiles?: Record<
     string,
     {
@@ -105,19 +105,19 @@ export interface SnapshotInput {
     }
   >;
 
-  /** 策略 C: 群组黑话（来自 learning mod state）。 */
+  /** Стратегия C: жаргон группы (из learning mod state). */
   jargonEntries?: Array<{ term: string; meaning: string }>;
 
-  /** 策略 C: Feed 条目（来自 feeds mod cache）。 */
+  /** Стратегия C: элементы ленты (из feeds mod cache). */
   feedItems?: Array<{ title: string; url: string; snippet: string }>;
 
-  /** 行动反馈事实（来自 observer/outcome contribution，经 prompt-builder 明确投影）。 */
+  /** Факты обратной связи по действиям (из observer/outcome contribution, явно проецируется prompt-builder). */
   feedbackEntries?: string[];
 
-  /** ADR-262: 当前场景可见的 social case brief lines。 */
+  /** ADR-262: краткие строки social case, видимые в текущей сцене. */
   socialCaseLines?: string[];
 
-  /** 策略 D: Peripheral vision 配置参数。 */
+  /** Стратегия D: параметры конфигурации peripheral vision. */
   peripheralConfig?: {
     perChannelCap: number;
     totalCap: number;
@@ -143,12 +143,12 @@ function renderEmotionStyleHint(G: WorldModel, nowMs: number): string | undefine
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// EntityRef 构建器 — null = 不进 prompt
+// Строитель EntityRef — null = не попадает в prompt
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 从图节点构建 EntityRef。
- * 返回 null 的情况：节点不存在、无 displayName、无法提取数字 ID。
+ * Строит EntityRef из узла графа.
+ * Возвращает null, если: узел не существует, нет displayName, не удаётся извлечь числовой ID.
  */
 export function buildEntityRef(G: WorldModel, nodeId: string): EntityRef | null {
   if (!G.has(nodeId)) return null;
@@ -156,7 +156,7 @@ export function buildEntityRef(G: WorldModel, nodeId: string): EntityRef | null 
   const numericId = extractNumericId(nodeId);
   if (numericId == null) return null;
 
-  // 尝试从 channel 节点获取名称
+  // Попытка получить имя из узла channel
   let displayName: string | undefined;
   const nodeType = G.getNodeType(nodeId);
 
@@ -167,7 +167,7 @@ export function buildEntityRef(G: WorldModel, nodeId: string): EntityRef | null 
     const attrs = G.getContact(nodeId);
     displayName = attrs.display_name;
   } else {
-    // 泛型 fallback
+    // Универсальный fallback
     displayName =
       (G.getDynamic(nodeId, "display_name") as string | undefined) ??
       (G.getDynamic(nodeId, "title") as string | undefined);
@@ -175,7 +175,7 @@ export function buildEntityRef(G: WorldModel, nodeId: string): EntityRef | null 
 
   if (!displayName || String(displayName).trim() === "") return null;
 
-  // 获取 chatType
+  // Получить chatType
   let chatType: EntityRef["chatType"];
   if (nodeType === "channel") {
     const ct = G.getChannel(nodeId).chat_type;
@@ -188,15 +188,15 @@ export function buildEntityRef(G: WorldModel, nodeId: string): EntityRef | null 
 }
 
 /**
- * 为私聊目标构建 EntityRef——如果 channel 节点没有 display_name，
- * 尝试从 contact 节点获取。
+ * Строит EntityRef для цели приватного чата — если у узла channel нет display_name,
+ * пытается получить его из узла contact.
  */
 function buildTargetRef(G: WorldModel, target: string): EntityRef | null {
-  // 先尝试直接从 channel 节点构建
+  // Сначала попытка построить напрямую из узла channel
   const ref = buildEntityRef(G, target);
   if (ref) return ref;
 
-  // channel 没有 display_name → 试从 contact 节点获取
+  // У channel нет display_name → пробуем получить из узла contact
   const numericId = extractNumericId(target);
   if (numericId == null) return null;
 
@@ -207,7 +207,7 @@ function buildTargetRef(G: WorldModel, target: string): EntityRef | null {
   const displayName = contactAttrs.display_name;
   if (!displayName || String(displayName).trim() === "") return null;
 
-  // 获取 chatType from channel node if exists
+  // Получить chatType из узла channel, если существует
   const channelId = ensureChannelId(target);
   let chatType: EntityRef["chatType"];
   if (channelId && G.has(channelId)) {
@@ -221,7 +221,7 @@ function buildTargetRef(G: WorldModel, target: string): EntityRef | null {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 社交全景（频道用）— 从 Graph 构建
+// Социальная панорама (для канала) — строится из Graph
 // ═══════════════════════════════════════════════════════════════════════════
 
 const PANORAMA_MAX_CONTACTS = 8;
@@ -238,13 +238,13 @@ function buildContactPanorama(
     ContactSlot & { tier: number; lastActiveMs: number; hasInterests: boolean; reception: number }
   > = [];
 
-  // 遍历 Alice 的 "knows" 邻居（联系人）
+  // Обход соседей Alice по рёбрам "knows" (контакты)
   for (const cid of G.getEntitiesByType("contact")) {
     if (cid === ALICE_SELF) continue;
     const attrs = G.getContact(cid);
     if (attrs.is_bot) continue;
     const tier = attrs.tier ?? 150;
-    // 放宽到 500——兴趣标签积累集中在远圈联系人
+    // Расширено до 500 — накопление тегов интересов сосредоточено у дальних контактов
     if (tier > 500) continue;
 
     const numId = extractNumericId(cid);
@@ -252,24 +252,24 @@ function buildContactPanorama(
     const displayName = attrs.display_name;
     if (!displayName || String(displayName).trim() === "") continue;
 
-    // ADR-156 Fix 1: 只展示有对话历史的联系人（不向陌生人转发）
+    // ADR-156 Fix 1: показывать только контакты с историей диалога (не пересылать незнакомцам)
     const channelId = ensureChannelId(cid);
     if (channelId && G.has(channelId)) {
       const ch = G.getChannel(channelId);
       if (!ch.last_activity_ms && !ch.last_alice_action_ms) continue;
     } else {
-      continue; // 无对应 channel = 从未有过私聊
+      continue; // Нет соответствующего channel = приватного чата никогда не было
     }
 
-    // ADR-156 Fix 3: 被拉黑的联系人不出现在全景中
+    // ADR-156 Fix 3: заблокированные контакты не попадают в панораму
     if (isBlockedByContact(G, cid)) continue;
 
-    // 收集兴趣：优先从 ContactProfile.crystallizedInterests（Mod State），
-    // 回退到 ContactProfile.interests，最后从 fact 节点获取。
+    // Сбор интересов: приоритет ContactProfile.crystallizedInterests (Mod State),
+    // откат к ContactProfile.interests, затем из узлов fact.
     const profile = contactProfiles?.[cid];
     let interests: string[] = [];
 
-    // 策略 1: crystallizedInterests（最高质量——经过多次观察结晶）
+    // Стратегия 1: crystallizedInterests (наивысшее качество — кристаллизация из множества наблюдений)
     const crystallized = Object.values(profile?.crystallizedInterests ?? {})
       .sort((a, b) => b.confidence - a.confidence)
       .slice(0, PANORAMA_MAX_INTERESTS)
@@ -277,11 +277,11 @@ function buildContactPanorama(
     if (crystallized.length > 0) {
       interests = crystallized;
     }
-    // 策略 2: 旧 interests 数组
+    // Стратегия 2: старый массив interests
     else if (profile?.interests && profile.interests.length > 0) {
       interests = profile.interests.slice(0, PANORAMA_MAX_INTERESTS);
     }
-    // 策略 3: fact 节点 fallback
+    // Стратегия 3: fallback через узлы fact
     else {
       const factNeighbors = G.getPredecessors(cid, "from");
       for (const factId of factNeighbors) {
@@ -294,7 +294,7 @@ function buildContactPanorama(
       }
     }
 
-    // topTrait: 优先从 profile.traits，回退到 fact 节点
+    // topTrait: приоритет из profile.traits, откат к узлам fact
     let topTrait: string | undefined;
     const traitEntries = Object.entries(profile?.traits ?? {});
     if (traitEntries.length > 0) {
@@ -311,11 +311,11 @@ function buildContactPanorama(
       }
     }
 
-    // Bio: 从 cache 同步读取（miss 时不阻塞，下次 tick 生效）
+    // Bio: синхронное чтение из кэша (при промахе не блокирует, вступит в силу на следующем тике)
     const bioEntry = getCachedBio(cid);
     const bio = bioEntry?.bio ?? undefined;
 
-    // 读取该联系人私聊 channel 的社交接收度（转发反馈信号）
+    // Чтение социальной восприимчивости приватного channel контакта (сигнал обратной связи при пересылке)
     const contactReception = channelId ? readSocialReception(G, channelId) : 0;
     const lastSharedMs = channelId ? readLastSharedMs(G, channelId) : 0;
     const sharedRecently =
@@ -336,10 +336,10 @@ function buildContactPanorama(
     });
   }
 
-  // 排序：reception warm 优先 → 有兴趣优先 → tier 升序 → 最近活跃优先
-  // cold reception 的联系人自然沉底，不需要 [shared recently] 补丁
+  // Сортировка: warm reception в приоритете → наличие интересов → tier по возрастанию → недавняя активность
+  // Контакты с cold reception естественно оседают вниз, патч [shared recently] не нужен
   results.sort((a, b) => {
-    // reception >= 0 的排前面，< 0 的排后面
+    // reception >= 0 идут первыми, < 0 — последними
     const aWarm = a.reception >= 0 ? 0 : 1;
     const bWarm = b.reception >= 0 ? 0 : 1;
     if (aWarm !== bWarm) return aWarm - bWarm;
@@ -363,12 +363,12 @@ function buildContactPanorama(
 function buildGroupPanorama(G: WorldModel): GroupSlot[] {
   const results: GroupSlot[] = [];
 
-  // Alice 通过 "monitors" 边关联群组（不是 "joined"）
+  // Alice связана с группами через рёбра "monitors" (не "joined")
   const monitoredChannels = G.getNeighbors(ALICE_SELF, "monitors");
   for (const chId of monitoredChannels) {
     if (!G.has(chId) || G.getNodeType(chId) !== "channel") continue;
     const attrs = G.getChannel(chId);
-    // 只要非私聊、非频道的群组
+    // Только группы, не являющиеся приватными чатами или каналами
     if (attrs.chat_type === "private" || attrs.chat_type === "channel") continue;
     const displayName = attrs.display_name;
     if (!displayName || String(displayName).trim() === "") continue;
@@ -376,7 +376,7 @@ function buildGroupPanorama(G: WorldModel): GroupSlot[] {
     const numericId = extractNumericId(chId);
     if (numericId == null) continue;
 
-    // 查找 active conversation topic
+    // Поиск активной темы разговора
     const convId = findActiveConversation(G, chId);
     let topic: string | undefined;
     if (convId && G.has(convId)) {
@@ -384,7 +384,7 @@ function buildGroupPanorama(G: WorldModel): GroupSlot[] {
       if (convAttrs.topic) topic = String(convAttrs.topic);
     }
 
-    // 收集群组兴趣（从关联 fact 节点）
+    // Сбор интересов группы (из связанных узлов fact)
     const interests: string[] = [];
     const factNeighbors = G.getPredecessors(chId, "from");
     for (const factId of factNeighbors) {
@@ -396,7 +396,7 @@ function buildGroupPanorama(G: WorldModel): GroupSlot[] {
       }
     }
 
-    // Bio: 从 cache 同步读取
+    // Bio: синхронное чтение из кэша
     const bioEntry = getCachedBio(chId);
     const bio = bioEntry?.bio ?? undefined;
 
@@ -414,7 +414,7 @@ function buildGroupPanorama(G: WorldModel): GroupSlot[] {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Alice 的频道（ADR-237：策展人转发目标）
+// Каналы Alice (ADR-237: цели пересылки куратора)
 // ═══════════════════════════════════════════════════════════════════════════
 
 const PANORAMA_MAX_OWNED_CHANNELS = 3;
@@ -447,7 +447,7 @@ function buildOwnedChannels(G: WorldModel): OwnedChannelSlot[] {
 }
 
 // ══════════════════��════════════════════════════════════════════════════════
-// 对话状态（防复读）
+// Состояние диалога (защита от повторов)
 // ═══════════════════════════════════════════════════════════════════════════
 
 function buildPresence(
@@ -480,7 +480,7 @@ function buildPresence(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 线程
+// Треды
 // ═══════════════════════════════════════════════════════════════════════════
 
 function sanitizeThreadTitle(title: string): string {
@@ -502,7 +502,7 @@ function buildThreads(contextVars: Readonly<Record<string, unknown>>): ThreadSlo
 }
 
 // ══════════════���════════════════════════════════════════════════════════════
-// 时间线构建
+// Построение временной шкалы
 // ═══════════════════════════════════════════════════════════════════════════
 
 const MAX_TIMELINE_LINES = 30;
@@ -529,7 +529,7 @@ function buildTimelineSlot(
   if (timeline.length === 0) return { lines: [] };
 
   const rendered = renderTimeline(timeline, nowMs, timezoneOffset);
-  // 固定窗口——超过上限时 clip-top（保留最新）
+  // Фиксированное окно — при превышении лимита обрезаем сверху (сохраняем новейшее)
   if (rendered.length > MAX_TIMELINE_LINES) {
     return { lines: rendered.slice(-MAX_TIMELINE_LINES) };
   }
@@ -537,7 +537,7 @@ function buildTimelineSlot(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 轮次感知
+// Осведомлённость о раунде
 // ═══════════════════════════════════════════════════════════════════════════
 
 function buildRoundHint(round: number, maxSteps: number): string | undefined {
@@ -550,8 +550,8 @@ function buildRoundHint(round: number, maxSteps: number): string | undefined {
 }
 
 /**
- * Episode 提示：当 block 在同一 tick 内被 host 续轮时，
- * 告知 LLM 命令结果已在 observations 中，可以继续决策。
+ * Подсказка episode: когда block продолжается host-ом в том же тике,
+ * сообщает LLM, что результаты команд уже в observations и можно продолжать принятие решений.
  */
 function buildEpisodeHint(episodeRound: number): string | undefined {
   if (episodeRound <= 0) return undefined;
@@ -559,17 +559,17 @@ function buildEpisodeHint(episodeRound: number): string | undefined {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 策略 A: 纯 Graph 推导
+// Стратегия A: чистый вывод из Graph
 // ═══════════════════════════════════════════════════════════════════════════
 
 const SEVEN_DAYS_MS = 7 * 24 * 3600_000;
 const MAX_TIMING_SIGNALS = 2;
 
 /**
- * 层③ 全局感知信号。
+ * Уровень③ Глобальные сигналы осведомлённости.
  *
- * 从 Graph 遍历推导：漂移联系人、活跃群组、等待回复的频道。
- * LLM 用这些信号决定是否主动联系某人或关注某群。
+ * Вывод обходом Graph: дрейфующие контакты, активные группы, каналы, ожидающие ответа.
+ * LLM использует эти сигналы для решения о проактивном обращении или наблюдении за группой.
  */
 function buildSituationSignals(
   G: WorldModel,
@@ -579,15 +579,15 @@ function buildSituationSignals(
 ): string[] {
   const signals: string[] = [];
 
-  // 漂移联系人：last_active_ms 距今 > 7 天
-  // 只在 round=0（首轮/非 engagement）显示——engagement 中漂移信号是分心噪音
+  // Дрейфующие контакты: last_active_ms > 7 дней назад
+  // Показывать только при round=0 (первый раунд / не engagement) — в ходе engagement дрейф является отвлекающим шумом
   if (round === 0) {
     for (const cid of G.getEntitiesByType("contact")) {
       if (cid === ALICE_SELF) continue;
       const attrs = G.getContact(cid);
       if (attrs.is_bot) continue;
       const name = safeDisplayName(G, cid);
-      if (name.startsWith("(")) continue; // 泛称 = 无有效名字，跳过
+      if (name.startsWith("(")) continue; // Обобщённое обозначение = нет реального имени, пропуск
       const lastActive = attrs.last_active_ms ?? 0;
       if (lastActive > 0 && nowMs - lastActive > SEVEN_DAYS_MS) {
         const days = Math.round((nowMs - lastActive) / (24 * 3600_000));
@@ -597,7 +597,7 @@ function buildSituationSignals(
     }
   }
 
-  // 活跃群组：unread > 5 且非 target（排除私聊和频道）
+  // Активные группы: unread > 5 и не текущий target (исключая приватные чаты и каналы)
   const joined = G.has(ALICE_SELF) ? G.getNeighbors(ALICE_SELF, "monitors") : [];
   for (const chId of joined) {
     if (!G.has(chId) || G.getNodeType(chId) !== "channel") continue;
@@ -613,8 +613,8 @@ function buildSituationSignals(
     if (signals.length >= 5) break;
   }
 
-  // ADR-221 No-Silent-Drop: pending_directed > 0 的信号必须呈现。
-  // 非当前私聊只给汇总，不暴露姓名/@ID，避免当前 target 的 act prompt 诱导跨私聊主动发话。
+  // ADR-221 No-Silent-Drop: сигналы с pending_directed > 0 обязательно отображаются.
+  // Для не-текущих приватных чатов — только сводка, без имён/@ID, чтобы act prompt текущего target не провоцировал проактивные сообщения в другой чат.
   let otherPrivateDirected = 0;
   for (const chId of joined) {
     if (!G.has(chId) || G.getNodeType(chId) !== "channel") continue;
@@ -626,13 +626,13 @@ function buildSituationSignals(
       continue;
     }
 
-    // Fallback 链：channel display_name → safeDisplayName。私聊已在上方汇总，不在当前 target 暴露。
+    // Цепочка fallback: channel display_name → safeDisplayName. Приватные чаты уже суммированы выше, здесь не раскрываются для текущего target.
     let name = ch.display_name;
     if (!name || String(name).trim() === "") {
       name = safeDisplayName(G, chId);
     }
 
-    // 添加数字 ID，让 LLM 能正确调用 irc 命令
+    // Добавляем числовой ID, чтобы LLM мог корректно вызывать команды irc
     const numericId = extractNumericId(chId);
     const idPart = numericId != null ? ` @${numericId}` : "";
 
@@ -652,16 +652,16 @@ function buildSituationSignals(
 }
 
 /**
- * 层② 联系人心情。
+ * Уровень② Настроение собеседника.
  *
- * 从 target channel 推导 contact → mood_valence。
- * LLM 用心情标签调整语气（对方心情低落时更温柔）。
+ * Выводит contact → mood_valence из target channel.
+ * LLM использует метку настроения для корректировки тона (мягче, когда собеседник подавлен).
  */
 function buildContactMood(G: WorldModel, target: string): string | undefined {
   const contactId = ensureContactId(target);
   const cid = contactId && G.has(contactId) ? contactId : null;
 
-  // 尝试从 channel ID 反推 contact ID
+  // Попытка вывести contact ID из channel ID
   const resolvedCid =
     cid ??
     (() => {
@@ -687,10 +687,10 @@ function buildContactMood(G: WorldModel, target: string): string | undefined {
 }
 
 /**
- * 层③ 风险标记。
+ * Уровень③ Флаги риска.
  *
- * 从 target channel 的 graph 属性中提取安全/风险标记。
- * LLM 用风险标记调整行为谨慎度。
+ * Извлекает флаги безопасности/риска из атрибутов target channel в графе.
+ * LLM использует флаги риска для регулировки уровня осторожности.
  */
 function buildRiskFlags(G: WorldModel, target: string): string[] {
   const flags: string[] = [];
@@ -709,9 +709,9 @@ function buildRiskFlags(G: WorldModel, target: string): string[] {
 }
 
 /**
- * 层⑤ 当前对话话题（bug fix — 之前依赖 groupMeta.topic，私聊无法获取）。
+ * Уровень⑤ Текущая тема разговора (исправление бага — ранее зависел от groupMeta.topic, который недоступен в приватном чате).
  *
- * LLM 用 openTopic 维持对话连贯性。
+ * LLM использует openTopic для поддержания связности диалога.
  */
 function buildOpenTopic(G: WorldModel, target: string): string | undefined {
   const channelId = ensureChannelId(target) ?? target;
@@ -723,15 +723,15 @@ function buildOpenTopic(G: WorldModel, target: string): string | undefined {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 策略 B: DB 查询
+// Стратегия B: запросы к DB
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 层① 对话回顾。
+ * Уровень① Ретроспектива диалога.
  *
- * 从 DB messageLog 查最近 120 条消息，跳过最新 20 条（已在 live timeline），
- * 按时间间隔 > 10 分钟分段，每段取首尾 + 时间范围 + 消息数。
- * LLM 用回顾理解"之前聊了什么"以保持话题连贯。
+ * Запрашивает 120 последних сообщений из DB messageLog, пропуская 20 новейших (уже в live timeline),
+ * разбивает на сегменты по паузе > 10 минут; для каждого — первое/последнее сообщение, диапазон времени и количество.
+ * LLM использует ретроспективу для понимания «о чём говорили раньше» и поддержания связности тем.
  */
 function buildConversationRecap(target: string | null, nowMs: number): RecapSegment[] {
   if (!target) return [];
@@ -753,11 +753,11 @@ function buildConversationRecap(target: string | null, nowMs: number): RecapSegm
 
     if (rows.length <= 20) return [];
 
-    // 跳过最新 20 条（已在 live timeline 中）
+    // Пропускаем 20 новейших (уже есть в live timeline)
     const older = rows.slice(0, rows.length - 20);
     if (older.length === 0) return [];
 
-    // 按时间间隔 > 10 分钟分段
+    // Разбивка на сегменты по паузе > 10 минут
     const TEN_MIN = 10 * 60_000;
     const segments: Array<typeof older> = [];
     let current: typeof older = [older[0]];
@@ -793,15 +793,15 @@ function buildConversationRecap(target: string | null, nowMs: number): RecapSegm
   }
 }
 
-// ADR-225: FIFTY_FOUR_DAYS_MS 已随 buildDiary() 一同删除。
+// ADR-225: FIFTY_FOUR_DAYS_MS удалена вместе с buildDiary().
 
-// ADR-225: buildDiary() 已删除。日记注入唯一路径 = diary.mod.ts contribute()。
+// ADR-225: buildDiary() удалена. Единственный путь инъекции дневника = diary.mod.ts contribute().
 
 /**
- * 层③ 定时任务。
+ * Уровень③ Запланированные задачи.
  *
- * 从 DB scheduledTasks 查已触发的活跃任务。
- * LLM 用任务信号执行到期行动。
+ * Запрашивает из DB scheduledTasks активные задачи, у которых наступило время выполнения.
+ * LLM использует сигналы задач для выполнения просроченных действий.
  */
 function buildScheduledEvents(nowMs: number): string[] {
   try {
@@ -825,10 +825,10 @@ function buildScheduledEvents(nowMs: number): string[] {
 type RhythmProfileRow = typeof rhythmProfiles.$inferSelect;
 
 /**
- * 层③ 当前对象节律提示。
+ * Уровень③ Сигналы ритма текущего объекта.
  *
- * 只读取当前 target 的 projection，把数学参数压成一句人话。
- * Prompt 是观测面：这里只呈现 timing fact，不参与打分，也不承担硬刹车。
+ * Читает только проекцию текущего target и сжимает математические параметры в одну человекочитаемую фразу.
+ * Prompt — наблюдательный уровень: здесь отображается только timing fact, без участия в скоринге и без жёстких блокировок.
  */
 function buildTimingSignals(
   G: WorldModel,
@@ -1013,17 +1013,17 @@ function emptyRhythmDiagnostics(): RhythmProfileProjection["diagnostics"] {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 策略 C: Mod State 预收集
+// Стратегия C: предварительный сбор из Mod State
 // ═══════════════════════════════════════════════════════════════════════════
 
 const MAX_PROFILE_TRAITS = 3;
 const MAX_PROFILE_INTERESTS = 3;
 
 /**
- * 层② 联系人详细画像。
+ * Уровень② Детальный профиль контакта.
  *
- * 从预收集的 relationships mod state 提取 portrait、traits、interests。
- * LLM 用画像个性化对话（了解对方性格和兴趣）。
+ * Извлекает portrait, traits, interests из предварительно собранного relationships mod state.
+ * LLM использует профиль для персонализации диалога (знание характера и интересов собеседника).
  */
 function buildContactProfile(
   target: string,
@@ -1064,7 +1064,7 @@ function buildContactProfile(
     interests.push(...profile.interests.slice(0, MAX_PROFILE_INTERESTS));
   }
 
-  // Bio: 从 cache 同步读取（联系人 Telegram 签名）
+  // Bio: синхронное чтение из кэша (Telegram-подпись контакта)
   const resolvedCid = contactId ?? altContactId;
   const bioEntry = resolvedCid ? getCachedBio(resolvedCid) : null;
   const bio = bioEntry?.bio ?? undefined;
@@ -1080,14 +1080,14 @@ function buildContactProfile(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 策略 D: Peripheral Vision 配置
+// Стратегия D: конфигурация Peripheral Vision
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 层③ 社交余光配置。
+ * Уровень③ Конфигурация социального периферийного зрения.
  *
- * 仅私聊 + 已识别联系人 + tier < 500 时激活。
- * 从 Graph 推导联系人共享频道，构建 PeripheralVisionConfig。
+ * Активируется только в приватном чате + распознанный контакт + tier < 500.
+ * Выводит общие каналы контакта из Graph и строит PeripheralVisionConfig.
  */
 function buildPeripheralConfig(
   G: WorldModel,
@@ -1127,7 +1127,7 @@ function buildPeripheralConfig(
 }
 
 // ════���══════════════════════════════════════════════════════════════════════
-// 群组元信息
+// Метаинформация группы
 // ═══════════════════════════════════════════════════════════════════════════
 
 function buildGroupMeta(G: WorldModel, target: string): UserPromptSnapshot["groupMeta"] {
@@ -1145,7 +1145,7 @@ function buildGroupMeta(G: WorldModel, target: string): UserPromptSnapshot["grou
     }
   }
 
-  // 查找活跃对话的 topic
+  // Поиск темы активного разговора
   const channelId = ensureChannelId(target);
   let topic: string | undefined;
   if (channelId && G.has(channelId)) {
@@ -1156,14 +1156,14 @@ function buildGroupMeta(G: WorldModel, target: string): UserPromptSnapshot["grou
     }
   }
 
-  // directed: 来自 channel 的 pending_directed
+  // directed: берётся из pending_directed канала
   let directed = false;
   if (channelId && G.has(channelId)) {
     const ch = G.getChannel(channelId);
     directed = (ch.pending_directed ?? 0) > 0;
   }
 
-  // Bio: 群组简介（来自 bio_cache）
+  // Bio: описание группы (из bio_cache)
   const channelBioEntry = channelId ? getCachedBio(channelId) : null;
   const bio = channelBioEntry?.bio ?? undefined;
 
@@ -1171,13 +1171,13 @@ function buildGroupMeta(G: WorldModel, target: string): UserPromptSnapshot["grou
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 关系描述（私聊）
+// Описание отношений (приватный чат)
 // ═══════════════════════════════════════════════════════════════════════════
 
 function buildRelationshipDesc(G: WorldModel, target: string): string | undefined {
   const contactId = ensureContactId(target);
   if (!contactId || !G.has(contactId)) {
-    // 尝试从 channel ID 推导
+    // Попытка вывести из channel ID
     const numId = extractNumericId(target);
     if (numId == null) return undefined;
     const altContactId = ensureContactId(String(Math.abs(numId)));
@@ -1201,7 +1201,7 @@ function buildRelationshipDesc(G: WorldModel, target: string): string | undefine
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// buildUserPromptSnapshot — 公共 API
+// buildUserPromptSnapshot — публичный API
 // ═══════════════════════════════════════════════════════════════════════════
 
 export function buildUserPromptSnapshot(input: SnapshotInput): UserPromptSnapshot {
@@ -1218,10 +1218,10 @@ export function buildUserPromptSnapshot(input: SnapshotInput): UserPromptSnapsho
     isChannel: inputIsChannel,
   } = input;
 
-  // ── ADR-237: 场景判定（封闭状态空间）──
-  // 使用 ChatTarget 类封装判定逻辑，派生属性通过 getter 访问
+  // ── ADR-237: Определение сцены (закрытое пространство состояний) ──
+  // Логика определения инкапсулирована в классе ChatTarget, производные атрибуты доступны через getter
   const chatTarget = (() => {
-    // 频道场景
+    // Сцена канала
     if (inputIsChannel && item.target) {
       const channelId = ensureChannelId(item.target);
       if (channelId && G.has(channelId)) {
@@ -1232,19 +1232,19 @@ export function buildUserPromptSnapshot(input: SnapshotInput): UserPromptSnapsho
       return ChatTarget.from("channel", false, undefined);
     }
 
-    // 群聊场景
+    // Сцена группового чата
     if (inputIsGroup) {
       return ChatTarget.from("group", false, undefined);
     }
 
-    // 私聊场景：判断是人还是 Bot
+    // Сцена приватного чата: определяем, человек или бот
     let isBot = false;
     if (item.target) {
       const contactId = ensureContactId(item.target);
       if (contactId && G.has(contactId) && G.getContact(contactId).is_bot === true) {
         isBot = true;
       } else {
-        // 从 channel ID 反推 contact ID
+        // Обратный вывод contact ID из channel ID
         const numId = extractNumericId(item.target);
         if (numId != null) {
           const altContactId = ensureContactId(String(Math.abs(numId)));
@@ -1257,31 +1257,31 @@ export function buildUserPromptSnapshot(input: SnapshotInput): UserPromptSnapsho
     return ChatTarget.from("private", isBot, undefined);
   })();
 
-  // 从 ChatTarget 派生的布尔属性（替代 input 的 isGroup/isChannel）
+  // Булевы атрибуты, производные от ChatTarget (заменяют isGroup/isChannel из input)
   const isGroup = chatTarget.isGroup;
   const isChannel = chatTarget.isChannel;
 
-  // 导出 type 给 snapshot（渲染器仍需要）
+  // Экспортируем type в snapshot (рендерерам всё ещё нужен)
   const chatTargetType = chatTarget.type;
 
-  // ── 目标 EntityRef ──
+  // ── Целевой EntityRef ──
   const target = item.target ? (buildTargetRef(G, item.target) ?? undefined) : undefined;
 
   // ── ADR-268: self affect natural projection ──
   const emotionProjection = renderEmotionProjection(readEmotionState(G, nowMs)) ?? undefined;
   const emotionStyleHint = renderEmotionStyleHint(G, nowMs);
 
-  // ── 内心低语 ──
+  // ── Внутренний шёпот ──
   const whisper = getFacetWhisper(item.facetId, item.action, isGroup);
 
-  // ── 策略 D: Peripheral Vision（仅私聊）──
+  // ── Стратегия D: Peripheral Vision (только приватный чат) ──
   const peripheralConfig =
     !isGroup && !isChannel && item.target
       ? buildPeripheralConfig(G, item.target, input.peripheralConfig)
       : null;
 
-  // ── 时间线 ──
-  // BT 反馈闭环：频道场景注入 forwardRegistry，让 timeline 标注已转发的消息
+  // ── Временная шкала ──
+  // Замкнутый контур обратной связи BT: в сцене канала инжектируется forwardRegistry, чтобы timeline помечал пересланные сообщения
   const fwdRegistry: ForwardRegistry | undefined =
     isChannel && item.target ? readForwardRegistry(G, item.target) : undefined;
   const timeline = buildTimelineSlot(
@@ -1294,57 +1294,57 @@ export function buildUserPromptSnapshot(input: SnapshotInput): UserPromptSnapsho
     input.timezoneOffset,
   );
 
-  // ─��� 线程 ──
+  // ─── Треды ──
   const threads = isChannel ? [] : buildThreads(board.contextVars);
 
   // ── ADR-262 social case replay ──
   const socialCaseLines = input.socialCaseLines ?? [];
 
-  // ── 频道社交全景 ──
+  // ── Социальная панорама канала ──
   const contacts = isChannel ? buildContactPanorama(G, nowMs, input.contactProfiles) : [];
   const groups = isChannel ? buildGroupPanorama(G) : [];
-  // ADR-237: Alice 的频道（作为转发目标或发帖场景）
+  // ADR-237: Каналы Alice (как цели пересылки или сцены публикации)
   const ownedChannels = isChannel ? buildOwnedChannels(G) : [];
 
-  // ── 对话状态（非频道）──
+  // ── Состояние диалога (не-канал) ──
   const presence = isChannel ? undefined : buildPresence(messages, nowMs);
 
-  // ── 群组元信息 ──
+  // ── Метаинформация группы ──
   const groupMeta = isGroup && item.target ? buildGroupMeta(G, item.target) : undefined;
 
-  // ── 轮次感知 ──
+  // ── Осведомлённость о раунде ──
   const roundHint = buildRoundHint(round, board.maxSteps);
-  // ADR-232: TC episode 提示（host 触发 block 续轮时）
+  // ADR-232: Подсказка TC episode (когда host инициирует продолжение block)
   const episodeHint = buildEpisodeHint(episodeRound);
 
-  // ── 关系描述（私聊）──
+  // ── Описание отношений (приватный чат) ──
   const relationshipDesc =
     chatTarget.isPrivate && item.target ? buildRelationshipDesc(G, item.target) : undefined;
 
-  // ── 行动反馈（observations 中的跨聊天内容由 timeline source 处理）──
+  // ── Обратная связь по действиям (кросс-чатовые данные из observations обрабатываются timeline source) ──
   const feedback: UserPromptSnapshot["feedback"] = (input.feedbackEntries ?? []).map((text) => ({
     text,
   }));
 
-  // ── 层① 对话回顾 ──
+  // ── Уровень① Ретроспектива диалога ──
   const conversationRecap = isChannel ? [] : buildConversationRecap(item.target ?? null, nowMs);
 
-  // ── 层② 联系人画像（仅私聊）──
+  // ── Уровень② Профиль контакта (только приватный чат) ──
   const contactProfile =
     chatTarget.isPrivate && item.target
       ? buildContactProfile(item.target, input.contactProfiles)
       : undefined;
 
-  // ── 层② 联系人心情 ──
+  // ── Уровень② Настроение контакта ──
   const contactMood = !isChannel && item.target ? buildContactMood(G, item.target) : undefined;
 
-  // ── 层② 群组黑话 ──
+  // ── Уровень② Жаргон группы ──
   const jargon: JargonSlot[] = input.jargonEntries ?? [];
 
-  // ── 层③ 全局感知信号 ──
+  // ── Уровень③ Глобальные сигналы осведомлённости ──
   const situationSignals = buildSituationSignals(G, item.target ?? null, nowMs, round);
 
-  // ── 层③ 当前对象节律提示 ──
+  // ── Уровень③ Сигналы ритма текущего объекта ──
   const timingSignals = buildTimingSignals(
     G,
     item.target ?? null,
@@ -1353,29 +1353,29 @@ export function buildUserPromptSnapshot(input: SnapshotInput): UserPromptSnapsho
     input.timezoneOffset,
   );
 
-  // ── 层③ 定时任务 ──
+  // ── Уровень③ Запланированные задачи ──
   const scheduledEvents = buildScheduledEvents(nowMs);
 
-  // ── 层③ 风险标记 ──
+  // ── Уровень③ Флаги риска ──
   const riskFlags = item.target ? buildRiskFlags(G, item.target) : [];
 
-  // ── 层④ 日记 ──
-  // ADR-225: diary 已移至 diary.mod.ts contribute()（唯一注入路径）。
-  // 此处不再构建 diary snapshot，消除双路注入。
+  // ── Уровень④ Дневник ──
+  // ADR-225: diary перенесён в diary.mod.ts contribute() (единственный путь инъекции).
+  // Здесь diary snapshot больше не строится, двойная инъекция устранена.
 
-  // ── 层④ 社交接收度（ADR-156）──
+  // ── Уровень④ Социальная восприимчивость (ADR-156) ──
   const socialReception =
     chatTarget.isGroup && item.target
       ? readSocialReception(G, ensureChannelId(item.target) ?? item.target) || undefined
       : undefined;
 
-  // ── 层⑤ 降级行动 ──
+  // ── Уровень⑤ Деградировавшее действие ──
   const isDegraded = item.reason?.includes("degraded_action") ?? false;
 
-  // ── 层⑤ 当前话题 ──
+  // ── Уровень⑤ Текущая тема ──
   const openTopic = item.target ? buildOpenTopic(G, item.target) : undefined;
 
-  // ── 频道 Feed 条目 ──
+  // ── Элементы ленты канала ──
   const feedItems: FeedItemSlot[] = input.feedItems ?? [];
 
   return {

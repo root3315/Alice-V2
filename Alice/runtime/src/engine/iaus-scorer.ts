@@ -1,18 +1,18 @@
 /**
- * IAUS (Infinite Axis Utility System) 评分器 — ADR-180 Phase 2。
+ * Скорер IAUS (Infinite Axis Utility System) — ADR-180 Phase 2.
  *
- * 替代 V-maximizer 的加法 NSV 评分：
- * - 旧：NSV = ΔP - λ·C_social（加法，声部先选→目标后选，两步决策）
- * - 新：V = CF(∏ U_k)（乘法 Considerations，action_type × target 一步选出）
+ * Заменяет аддитивное NSV-оценивание V-maximizer:
+ * - старое: NSV = ΔP - λ·C_social (аддитивно, голос выбирается сначала → цель потом, два шага)
+ * - новое: V = CF(∏ U_k) (мультипликативные Considerations, action_type × target выбираются за один шаг)
  *
- * 每个 Consideration 是纯函数 (input, curve) → [ε, 1]。
- * 所有 Considerations 乘积经 Compensation Factor 校正后通过 Boltzmann softmax 选择。
+ * Каждый Consideration — чистая функция (input, curve) → [ε, 1].
+ * Произведение всех Considerations корректируется Compensation Factor и выбирается через Boltzmann softmax.
  *
- * Caution 不再是独立 action_type。R_Caution 作为 U_conflict_avoidance
- * 共享 Consideration 参与所有 action_type 的乘法评分。
+ * Caution больше не является независимым action_type. R_Caution как U_conflict_avoidance —
+ * общий Consideration, участвующий в мультипликативном оценивании всех action_type.
  *
  * @see docs/adr/180-iaus-migration/README.md
- * @see paper/ §3: 六维压力场
+ * @see paper/ §3: шестимерное поле давления
  */
 
 import type { BeliefStore } from "../belief/store.js";
@@ -44,81 +44,81 @@ import { type Desire, findTopDesireForTarget } from "./desire.js";
 import { classifyChatType, gateClosingConversation, resolveIsBot } from "./gates.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 常量
+// Константы
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 最小 Consideration 值——禁止绝对否决。 */
+/** Минимальное значение Consideration — абсолютное вето запрещено. */
 const EPSILON = 0.01;
 
-/** ADR-185 §1: Desire boost 默认系数。 */
+/** ADR-185 §1: Коэффициент буста Desire по умолчанию. */
 const DEFAULT_DESIRE_BOOST = 0.15;
-/** ADR-182 D1: Momentum bonus 默认系数。 */
+/** ADR-182 D1: Коэффициент Momentum bonus по умолчанию. */
 const DEFAULT_MOMENTUM_BONUS = 0.2;
-/** ADR-182 D1: Momentum 衰减超时（ms）。 */
+/** ADR-182 D1: Таймаут затухания Momentum (мс). */
 const DEFAULT_MOMENTUM_DECAY_MS = 300_000;
-/** ADR-251 Wave 1: 无回应 private proactive 短 burst 软恢复窗口。 */
+/** ADR-251 Wave 1: Окно мягкого восстановления после короткой серии без ответа на private proactive. */
 const PROACTIVE_PACING_MIN_INTERVAL_MS = 60_000;
-/** ADR-251 Wave 1: 最近主动外展的软阻尼下限。硬限制只用于 100% 确定的语义门。 */
+/** ADR-251 Wave 1: Нижний предел мягкого демпфирования недавнего проактивного контакта. Жёсткий лимит — только для семантических ворот со 100% уверенностью. */
 const PROACTIVE_PACING_RECENT_MIN = 0.2;
-/** ADR-251 Wave 1: 单方连续输出阻尼斜率。 */
+/** ADR-251 Wave 1: Наклон демпфирования одностороннего непрерывного вывода. */
 const PROACTIVE_PACING_CONSECUTIVE_GAIN = 2.5;
 /** ADR-268: lonely connection pull must not amplify repeated unsolicited outreach. */
 const EMOTION_PROACTIVE_CAP_MIN = 0.2;
 /** ADR-268: active affect gently modulates non-obligatory action tendency. */
 const EMOTION_ACTION_UTILITY_MIN = 0.55;
 const EMOTION_ACTION_UTILITY_MAX = 1.08;
-/** 久未收到私聊 incoming 后，主动外展开始软降权。 */
+/** После долгого отсутствия входящих в личке начинается мягкое снижение веса проактивного контакта. */
 const INACTIVITY_STALE_GRACE_MS = 24 * 3600_000;
-/** 久未收到私聊 incoming 的软降权完整展开窗口。 */
+/** Полное окно мягкого снижения веса при отсутствии входящих. */
 const INACTIVITY_STALE_FULL_MS = 7 * 24 * 3600_000;
-/** stale 不是不可达证明，所以只软降权，不清零。 */
+/** Stale — не доказательство недостижимости, поэтому только мягкое снижение, без обнуления. */
 const INACTIVITY_STALE_MIN = 0.15;
 /** ADR-273/274: class cadence is soft self-pacing, not target eligibility. */
 const CLASS_PACING_MIN = 0.05;
 
 /**
- * ADR-218 Phase 2: U_fairness — CFS-inspired 服务比例公平 Consideration。
+ * ADR-218 Phase 2: U_fairness — Consideration пропорциональной справедливости обслуживания по принципу CFS.
  *
- * 幂律映射：U_fairness = clamp(ratio^(-α), ε, U_MAX)
+ * Степенное отображение: U_fairness = clamp(ratio^(-α), ε, U_MAX)
  *   ratio = actual_share / expected_share
  *   actual_share = service(target, window) / total_service
  *   expected_share = V_raw(target) / Σ V_raw
  *
- * ratio < 1 (欠服务) → boost > 1.0（underserved 目标加成）
- * ratio = 1 (公平)   → 1.0（中性）
- * ratio > 1 (过服务) → penalty < 1.0（overserved 目标惩罚）
+ * ratio < 1 (недообслужен) → boost > 1.0 (бонус для underserved цели)
+ * ratio = 1 (справедливо) → 1.0 (нейтрально)
+ * ratio > 1 (переобслужен) → penalty < 1.0 (штраф для overserved цели)
  *
- * 统一替代 Phase 1 的三个离散机制（URGENCY_BOOST、URGENCY_BUDGET、U_coverage）。
- * 连续衰减，无离散跳变。
+ * Единый заменитель трёх дискретных механизмов Phase 1 (URGENCY_BOOST, URGENCY_BUDGET, U_coverage).
+ * Непрерывное затухание, без дискретных скачков.
  *
  * @see docs/adr/218-attention-fairness-rank-gate-starvation.md §A4 Phase 2
- * @see Linux CFS: vruntime += delta/weight → 选 min(vruntime)
+ * @see Linux CFS: vruntime += delta/weight → выбирается min(vruntime)
  * @see Shreedhar & Varghese 1995 (DRR deficit counter)
  */
 const FAIRNESS_ALPHA = 2.0;
-/** U_fairness 上界：防止 ratio→0 时无穷大。4.0 = 最多 4 倍加成。 */
+/** Верхняя граница U_fairness: предотвращает бесконечность при ratio→0. 4.0 = максимум 4-кратный бонус. */
 const U_FAIRNESS_MAX = 4.0;
-/** 服务数据不足（冷启动）时不启用公平性。 */
+/** При недостатке данных об обслуживании (холодный старт) справедливость не применяется. */
 const FAIRNESS_MIN_TOTAL_SERVICE = 5;
 
 /**
- * ADR-151: 观测噪声方差（Kalman 信息比率分母常数）。
- * @see docs/adr/151-algorithm-audit/ #1 VoI 信息增益项
+ * ADR-151: дисперсия наблюдательного шума (константа знаменателя информационного отношения Калмана).
+ * @see docs/adr/151-algorithm-audit/ #1 член информационного выигрыша VoI
  */
 const SIGMA2_OBS = 0.1;
 
-/** 群组沉默衰减下限，防止死亡螺旋。@see ADR-116 */
+/** Нижняя граница демпфирования группового молчания, предотвращает нисходящую спираль. @see ADR-116 */
 const GROUP_SILENCE_DAMPING_FLOOR = 0.3;
 
-/** IAUS 候选的 3 种行动类型（Caution 已折叠为 U_conflict_avoidance）。 */
+/** 3 типа действий в кандидатах IAUS (Caution свёрнут в U_conflict_avoidance). */
 const IAUS_ACTIONS: readonly VoiceAction[] = ["diligence", "curiosity", "sociability"] as const;
 
-/** Mood 调制系数。@see loudness.ts PSI */
+/** Коэффициент модуляции настроения. @see loudness.ts PSI */
 const MOOD_DELTA = 0.3;
 
-/** ADR-183: 等权人格中性点（π_v = 0.25 时曲线不变）。 */
+/** ADR-183: нейтральная точка равновесной личности (π_v = 0.25 → кривая не меняется). */
 const PERSONALITY_NEUTRAL = 0.25;
-/** ADR-183: 默认曲线调制强度。 */
+/** ADR-183: сила модуляции кривой по умолчанию. */
 const DEFAULT_CURVE_MODULATION_STRENGTH = 0.5;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -129,25 +129,25 @@ type CurveType = "sigmoid" | "inv_sigmoid" | "linear" | "linear_dec" | "log" | "
 
 export interface ResponseCurve {
   type: CurveType;
-  /** sigmoid 中点 / linear 范围起点。 */
+  /** Середина sigmoid / начало диапазона linear. */
   midpoint: number;
-  /** sigmoid 斜率 / linear 全程宽度。 */
+  /** Наклон sigmoid / полная ширина linear. */
   slope: number;
-  /** 输出下限 (≥ ε)。 */
+  /** Нижняя граница вывода (≥ ε). */
   min: number;
-  /** 输出上限 (≤ 1.0)。 */
+  /** Верхняя граница вывода (≤ 1.0). */
   max: number;
 }
 
 /**
- * 评估 Response Curve。输出 clamp 到 [curve.min, curve.max]。
+ * Вычисляет Response Curve. Вывод зажимается в [curve.min, curve.max].
  *
- * - sigmoid: S 曲线，从 min 到 max，中心 x=midpoint
- * - inv_sigmoid: 反向 S 曲线，从 max 到 min
- * - linear: 线性递增（x=midpoint → min，x=midpoint+slope → max）
- * - linear_dec: 线性递减（x=midpoint → max，x=midpoint+slope → min）
- * - log: 对数增长
- * - exp_recovery: 指数恢复（1 - exp(-...)）
+ * - sigmoid: S-образная кривая, от min до max, центр x=midpoint
+ * - inv_sigmoid: обратная S-кривая, от max до min
+ * - linear: линейно возрастающая (x=midpoint → min, x=midpoint+slope → max)
+ * - linear_dec: линейно убывающая (x=midpoint → max, x=midpoint+slope → min)
+ * - log: логарифмический рост
+ * - exp_recovery: экспоненциальное восстановление (1 - exp(-...))
  */
 export function evalCurve(curve: ResponseCurve, x: number): number {
   let t: number;
@@ -185,15 +185,15 @@ function clamp01(x: number): number {
 }
 
 /**
- * ADR-183 Direction A: 人格驱动曲线调制。
+ * ADR-183 Direction A: модуляция кривой, управляемая личностью.
  *
- * 高 π_v → 更低 midpoint（更早激活） + 更陡 slope（更尖锐响应）。
- * 低 π_v → 更高 midpoint（更晚激活） + 更平 slope（更迟钝响应）。
- * 等权人格（π_v = 0.25）= 零调制（基准不变）。
+ * Высокий π_v → меньший midpoint (более раннее срабатывание) + более крутой slope (более резкая реакция).
+ * Низкий π_v → больший midpoint (позднее срабатывание) + более пологий slope (более медленная реакция).
+ * Равновесная личность (π_v = 0.25) = нулевая модуляция (базовая кривая без изменений).
  *
- * 稳定性保证：在 π_v ∈ [0.05, 0.5]、strength ∈ [0, 1] 范围内，
- * midpoint 乘子 ∈ [0.50, 1.40]，slope 乘子 ∈ [0.60, 1.50]——永不为负。
- * （默认 strength=0.5 时：midpoint ∈ [0.75, 1.20]，slope ∈ [0.80, 1.25]）
+ * Гарантия стабильности: при π_v ∈ [0.05, 0.5] и strength ∈ [0, 1]
+ * множитель midpoint ∈ [0.50, 1.40], множитель slope ∈ [0.60, 1.50] — никогда не отрицателен.
+ * (при strength=0.5 по умолчанию: midpoint ∈ [0.75, 1.20], slope ∈ [0.80, 1.25])
  *
  * @see docs/adr/183-iaus-motive-layer-curve-modulation.md §3
  * @see Game AI Pro Ch.9 — "traits modify the shape of consideration curves"
@@ -213,8 +213,8 @@ export function modulateCurve(base: ResponseCurve, piV: number, strength: number
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 当压力维度的图实体不存在时（τ₄=0 无线程、τ₅=0 无回应义务），
- * 返回 1.0（中性），不是 ε（否决）。
+ * Когда граф-сущность измерения давления отсутствует (τ₄=0 — нет потоков, τ₅=0 — нет обязательства ответа),
+ * возвращает 1.0 (нейтрально), а не ε (вето).
  */
 function dormantNeutral(rawInput: number, hasEntity: boolean, curve: ResponseCurve): number {
   if (!hasEntity && rawInput === 0) return 1.0;
@@ -222,11 +222,11 @@ function dormantNeutral(rawInput: number, hasEntity: boolean, curve: ResponseCur
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 类型
+// Типы
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * IAUS 候选上下文：bypassGates 推导 + Hawkes/Goldilocks 闭包。
+ * Контекст кандидата IAUS: вывод bypassGates + замыкания Hawkes/Goldilocks.
  */
 export interface CandidateContext {
   G: WorldModel;
@@ -236,7 +236,7 @@ export interface CandidateContext {
   getRhythmTimingProfile?: (target: string, chatType?: string) => RhythmTimingProfile | null;
 }
 
-/** gates.ts 及 idle gate 构建候选时的最小接口。 */
+/** Минимальный интерфейс для построения кандидата в gates.ts и idle gate. */
 export interface ActionCandidate {
   action: VoiceAction;
   target: string | null;
@@ -247,13 +247,13 @@ export interface ActionCandidate {
   degraded?: boolean;
 }
 
-/** IAUS 评分器产生的完整候选（扩展 ActionCandidate）。 */
+/** Полный кандидат, создаваемый скорером IAUS (расширяет ActionCandidate). */
 export interface IAUSCandidate extends ActionCandidate {
-  /** 逐项 Consideration 得分（调试用）。 */
+  /** Оценки каждого Consideration по отдельности (для отладки). */
   considerations: Record<string, number>;
-  /** 不参与评分的 shadow 诊断。 */
+  /** Shadow-диагностика, не участвующая в оценивании. */
   diagnostics?: IAUSCandidateDiagnostics;
-  /** 是否绕过门控。 */
+  /** Обходит ли gate-контроль. */
   bypassGates: boolean;
 }
 
@@ -343,43 +343,43 @@ export interface IAUSConfig {
   voiceLastWon: Record<VoiceAction, number>;
   nowMs: number;
   excludeTargets?: ReadonlySet<string>;
-  /** 候选目标白名单。设置后仅这些 target 进入 IAUS 候选池。 */
+  /** Белый список целевых кандидатов. Если задан — в пул IAUS попадают только эти target. */
   targetWhitelist?: ReadonlySet<string> | null;
-  /** 测试用：禁用 Boltzmann 随机选择，改用 argmax（确定性）。 */
+  /** Для тестов: отключает случайный выбор Boltzmann, используется argmax (детерминированно). */
   deterministic?: boolean;
-  /** ADR-182 D1: 上一 tick 胜出的 (action, target)。 */
+  /** ADR-182 D1: победитель предыдущего tick (action, target). */
   lastWinner?: { action: VoiceAction; target: string } | null;
-  /** ADR-182 D1: 上次行动的墙钟时间戳（ms）。 */
+  /** ADR-182 D1: временная метка последнего действия (мс). */
   lastActionMs?: number;
-  /** ADR-182 D1: Momentum bonus 系数（默认 0.2）。 */
+  /** ADR-182 D1: коэффициент Momentum bonus (по умолчанию 0.2). */
   momentumBonus?: number;
-  /** ADR-182 D1: Momentum 衰减超时（ms，默认 300_000）。 */
+  /** ADR-182 D1: таймаут затухания Momentum (мс, по умолчанию 300_000). */
   momentumDecayMs?: number;
-  /** ADR-183: 曲线调制强度（0 = 无调制，1 = 最大调制）。 */
+  /** ADR-183: сила модуляции кривой (0 = нет модуляции, 1 = максимальная). */
   curveModulationStrength?: number;
-  /** ADR-185 §1: 当前 tick 派生的 Desire 列表。 */
+  /** ADR-185 §1: список Desire, выведенных в текущем tick. */
   desires?: readonly Desire[];
-  /** ADR-185 §1: Desire boost 系数（默认 0.15）。 */
+  /** ADR-185 §1: коэффициент буста Desire (по умолчанию 0.15). */
   desireBoost?: number;
-  // ADR-218 Phase 2: attentionDebtMap/attentionDebtConfig 已移除。
-  // U_coverage 被 U_fairness 取代（post-scoring pass，不依赖外部 debt 数据）。
+  // ADR-218 Phase 2: attentionDebtMap/attentionDebtConfig удалены.
+  // U_coverage заменён U_fairness (post-scoring pass, не зависит от внешних данных долга).
 
-  // ── ADR-189: Gate 内化到 IAUS per-candidate pre-filter ──
-  /** 危机频道列表（消息洪水安全阀）。 */
+  // ── ADR-189: Gate перенесён в IAUS per-candidate pre-filter ──
+  /** Список кризисных каналов (предохранитель от флуда). */
   crisisChannels?: readonly string[];
-  /** chat-type-aware 行动频率硬上限。 */
+  /** Жёсткий лимит частоты действий с учётом chat-type. */
   classRateCaps?: Record<ChannelClass, number>;
-  /** 窗口内按 class 分类的行动数。 */
+  /** Количество действий в окне по категориям class. */
   classActionCounts?: Record<ChannelClass, number>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 辅助函数（从 v-maximizer.ts 迁移）
+// Вспомогательные функции (перенесены из v-maximizer.ts)
 // ═══════════════════════════════════════════════════════════════════════════
 
 function silenceDamping(actSilences: number, chatType: string): number {
   const raw = 1 / (1 + actSilences);
-  // ADR-206: channel 不是 group——频道是信息流实体，不参与社交成本计算
+  // ADR-206: channel — не group; канал — сущность информационного потока, не участвует в расчёте социальной стоимости
   return ChatTarget.isGroupChat(chatType) ? Math.max(GROUP_SILENCE_DAMPING_FLOOR, raw) : raw;
 }
 
@@ -398,13 +398,13 @@ function gaussianRandom(): number {
 }
 
 /**
- * 为单个候选计算 bypassGates。从 v-maximizer.ts 的 computeCandidateLambda 提取。
+ * Вычисляет bypassGates для отдельного кандидата. Выделено из computeCandidateLambda в v-maximizer.ts.
  *
- * 优先级：
- * 1. permanent failure → 不 bypass（最高优先级排除）
- * 2. ADR-186: 原始 pending_directed > 0 → 无条件 bypass（不经衰减/折扣）
- * 3. directed（effectiveObligation > θ_Ω）→ bypass（覆盖非 @ 义务场景）
- * 4. conversation continuation（alice_turn）→ bypass
+ * Приоритет:
+ * 1. permanent failure → без bypass (исключение с высшим приоритетом)
+ * 2. ADR-186: raw pending_directed > 0 → безусловный bypass (без затухания/дисконта)
+ * 3. directed (effectiveObligation > θ_Ω) → bypass (покрывает не-@ обязательства)
+ * 4. continuation разговора (alice_turn) → bypass
  */
 export function computeCandidateBypass(ctx: CandidateContext, target: string): boolean {
   const { G, nowMs } = ctx;
@@ -412,18 +412,18 @@ export function computeCandidateBypass(ctx: CandidateContext, target: string): b
     G.has(target) && G.getChannel(target).failure_type === "permanent";
   if (isPermanentlyUnreachable) return false;
 
-  // ADR-186: 原始 pending_directed > 0 → 无条件 bypass（不经衰减/折扣）。
-  // 有人叫 Alice 的名字，不论在哪里，都应被注意到。
+  // ADR-186: raw pending_directed > 0 → безусловный bypass (без затухания/дисконта).
+  // Кто-то назвал имя Алисы — где бы то ни было — это должно быть замечено.
   if (G.has(target)) {
     const rawDirected = Number(G.getChannel(target).pending_directed ?? 0);
     if (rawDirected > 0) return true;
   }
 
-  // 衰减后的义务仍可触发 bypass（覆盖非 @ 义务场景）
+  // Затухшее обязательство всё ещё может триггерить bypass (покрывает не-@ обязательства)
   const obligation = G.has(target) ? effectiveObligation(G, target, nowMs) : 0;
   const targetHasDirected = obligation > OBLIGATION_THRESHOLDS.bypassGates;
 
-  // 对话延续也可 bypass
+  // Continuation разговора тоже даёт bypass
   const isContinuation = !targetHasDirected && isConversationContinuation(G, target, nowMs);
 
   return targetHasDirected || isContinuation;
@@ -441,16 +441,16 @@ export function computeCandidateStrongObligation(ctx: CandidateContext, target: 
 }
 
 /**
- * ADR-251: 热聊安全的主动性阻尼。
+ * ADR-251: демпфирование проактивности, безопасное для горячих чатов.
  *
- * 这不是普通 pre-CF consideration，也不是硬 gate。CF 会把单个极低项用几何均值抬高，
- * 所以该 utility 在 CF 之后相乘；它仍记录到 considerations 供 bottleneck 审计。
+ * Это не обычный pre-CF consideration и не жёсткий gate. CF подтягивает единственный экстремально низкий элемент через геометрическое среднее,
+ * поэтому данная утилита умножается после CF; она всё равно записывается в considerations для аудита узкого места.
  *
- * 不变量：
- * - directed / obligation / conversation continuation 不阻尼；
- * - group/channel 不阻尼；
- * - private 中只要对方在 Alice 上次发言后又说话（hot chat），不阻尼；
- * - 只软压无人回应的 unsolicited private proactive。
+ * Инварианты:
+ * - directed / obligation / continuation разговора не демпфируются;
+ * - group/channel не демпфируются;
+ * - в private, если собеседник снова написал после последнего слова Алисы (горячий чат) — не демпфируется;
+ * - мягко давит только unsolicited private proactive без ответа.
  *
  * @see docs/adr/251-hot-chat-safe-proactive-damping.md
  */
@@ -587,10 +587,10 @@ export function computeClassPacingUtility(opts: {
 }
 
 /**
- * ADR-261 Wave 3: rhythm profile timing utility, shadow-only.
+ * ADR-261 Wave 3: timing utility по ритмическому профилю, только в режиме shadow.
  *
- * 这个函数只产出诊断值，不参与当前 IAUS 乘法评分。未来 Wave 4 若启用，
- * 也只能作用于非 bypass 的 unsolicited private/channel proactive。
+ * Функция производит только диагностические значения, не участвует в текущем мультипликативном оценивании IAUS. В будущем Wave 4, если будет включена,
+ * сможет действовать только на non-bypass unsolicited private/channel proactive.
  */
 export function computeTimingShadowUtility(opts: {
   chatType: string | undefined;
@@ -652,11 +652,11 @@ export function computeTimingShadowUtility(opts: {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Consideration Curves（默认参数，Phase 1 实验校准）
+// Кривые Consideration (параметры по умолчанию, откалиброваны в Phase 1 экспериментально)
 // ═══════════════════════════════════════════════════════════════════════════
 
 const CURVES = {
-  // 共享
+  // Общие
   conflict_avoidance: {
     type: "inv_sigmoid",
     midpoint: 0.6,
@@ -666,13 +666,13 @@ const CURVES = {
   } as ResponseCurve,
   freshness: { type: "linear_dec", midpoint: 0, slope: 1, min: EPSILON, max: 1 } as ResponseCurve,
   reciprocity: { type: "linear_dec", midpoint: 0, slope: 3, min: 0.05, max: 1 } as ResponseCurve,
-  // Diligence
+  // Усердие (Diligence)
   obligation: { type: "sigmoid", midpoint: 0.3, slope: 8, min: EPSILON, max: 1 } as ResponseCurve,
   attention: { type: "sigmoid", midpoint: 0.2, slope: 6, min: EPSILON, max: 1 } as ResponseCurve,
   thread_age: { type: "log", midpoint: 1, slope: 0.5, min: EPSILON, max: 1 } as ResponseCurve,
   deltaP: { type: "sigmoid", midpoint: 0.3, slope: 4, min: EPSILON, max: 1 } as ResponseCurve,
   prospect: { type: "sigmoid", midpoint: 0.1, slope: 6, min: EPSILON, max: 1 } as ResponseCurve,
-  // Sociability
+  // Общительность (Sociability)
   cooling: { type: "sigmoid", midpoint: 0.3, slope: 5, min: EPSILON, max: 1 } as ResponseCurve,
   social_bond: { type: "sigmoid", midpoint: 0.2, slope: 4, min: EPSILON, max: 1 } as ResponseCurve,
   social_safety: {
@@ -700,9 +700,9 @@ const CURVES = {
   exploration: { type: "log", midpoint: 0.1, slope: 0.8, min: EPSILON, max: 1 } as ResponseCurve,
   // ADR-178: Attraction
   attraction: { type: "sigmoid", midpoint: 0.15, slope: 6, min: EPSILON, max: 1 } as ResponseCurve,
-  // ADR-219 D1: Voice Affinity — 跨声部压力主导度
-  // midpoint=1/3（三 voice 均分时中性），slope=6（适中陡峭度）
-  // share=0.6 → U≈0.83, share=0.1 → U≈0.12, 乘法区分度 ~7x
+  // ADR-219 D1: Voice Affinity — доминирование давления среди голосов
+  // midpoint=1/3 (нейтрально при равном разделении трёх голосов), slope=6 (умеренная крутизна)
+  // share=0.6 → U≈0.83, share=0.1 → U≈0.12, мультипликативная различимость ~7x
   voice_affinity: {
     type: "sigmoid",
     midpoint: 0.33,
@@ -716,12 +716,12 @@ const CURVES = {
 // Compensation Factor
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Phase 1 校准的 CF 值。 */
+/** Значение CF, откалиброванное в Phase 1. */
 const CF = 0.4;
 
 /**
- * 补偿乘法评分的"考虑越多、得分越低"问题。
- * rawScore = ∏ U_k → geomMean = rawScore^(1/n) → 校正输出。
+ * Компенсирует проблему "чем больше Considerations, тем ниже оценка" в мультипликативном оценивании.
+ * rawScore = ∏ U_k → geomMean = rawScore^(1/n) → скорректированный вывод.
  */
 export function compensate(rawScore: number, n: number, cf: number): number {
   if (n <= 1 || rawScore <= 0) return rawScore;
@@ -730,21 +730,21 @@ export function compensate(rawScore: number, n: number, cf: number): number {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Voice Affinity（ADR-219 D1: 跨声部压力主导度）
+// Voice Affinity (ADR-219 D1: доминирование давления среди голосов)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * ADR-219 D1: 计算声部亲和力——该 voice 的主要压力维度在 target 上的相对主导度。
+ * ADR-219 D1: вычисляет аффинность голоса — относительное доминирование основного измерения давления этого voice на данном target.
  *
- * 每个 voice 关联特定压力维度（κ-归一化后可比较）：
- *   Diligence:    P5(义务) + P1(注意力)
- *   Sociability:  P3(关系冷却)
- *   Curiosity:    P6(好奇) + P2(信息)
+ * Каждый voice связан с определёнными измерениями давления (после κ-нормализации сопоставимы):
+ *   Diligence:    P5 (обязательство) + P1 (внимание)
+ *   Sociability:  P3 (охлаждение отношений)
+ *   Curiosity:    P6 (любопытство) + P2 (информация)
  *
  * share = mySignal / totalSignal → sigmoid(midpoint=1/3) → [ε, 1]
  *
- * 恢复了 IAUS 统一选择中丢失的 cross-voice inhibition（旧 loudness 竞争的功能），
- * 但作为乘法 consideration 参与——其他 considerations 可 override。
+ * Восстанавливает cross-voice inhibition, утраченный при унификации IAUS (функция старой конкуренции loudness),
+ * но участвует как мультипликативный consideration — другие considerations могут его переопределить.
  *
  * @see docs/adr/219-pressure-field-evolution-directions.md §D1
  */
@@ -753,7 +753,7 @@ function computeVoiceAffinity(
   actionType: VoiceAction,
   kappa: PressureDims,
 ): number {
-  // κ-归一化的 per-voice 主要压力信号
+  // Основной сигнал давления на голос после κ-нормализации
   const k1 = Math.max(kappa[0], 1e-6);
   const k2 = Math.max(kappa[1], 1e-6);
   const k3 = Math.max(kappa[2], 1e-6);
@@ -765,7 +765,7 @@ function computeVoiceAffinity(
   const cSignal = tension.tau6 / k6 + tension.tau2 / k2;
 
   const total = dSignal + sSignal + cSignal;
-  if (total < 1e-6) return 1.0; // 无压力信号 → 中性（不参与 voice 竞争）
+  if (total < 1e-6) return 1.0; // нет сигнала давления → нейтрально (не участвует в конкуренции голосов)
 
   const mySignal =
     actionType === "diligence" ? dSignal : actionType === "sociability" ? sSignal : cSignal;
@@ -775,7 +775,7 @@ function computeVoiceAffinity(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Consideration 计算
+// Вычисление Consideration
 // ═══════════════════════════════════════════════════════════════════════════
 
 interface SharedInputs {
@@ -789,8 +789,8 @@ interface SharedInputs {
 }
 
 /**
- * 计算共享 Considerations（所有 action_type 都乘）。
- * ADR-218 Phase 2: U_coverage 移除（被 U_fairness 取代，在 post-scoring pass 中计算）。
+ * Вычисляет общие Considerations (умножаются для всех action_type).
+ * ADR-218 Phase 2: U_coverage удалён (заменён U_fairness, вычисляется в post-scoring pass).
  */
 function computeSharedConsiderations(
   inputs: SharedInputs,
@@ -811,10 +811,10 @@ function computeSharedConsiderations(
   // U_reciprocity: consecutive_outgoing → linear_dec
   const U_reciprocity = evalCurve(CURVES.reciprocity, consecutiveOutgoing);
 
-  // U_reachable: 二值 {ε, 1}
+  // U_reachable: бинарный {ε, 1}
   const U_reachable = reachabilityScore > 0.5 ? 1.0 : EPSILON;
 
-  // U_fatigue: voiceFatigue → 直传 [0, 1]
+  // U_fatigue: voiceFatigue → прямая передача [0, 1]
   const lastWonMs = config.voiceLastWon[actionType];
   const U_fatigue = Math.max(
     EPSILON,
@@ -822,7 +822,7 @@ function computeSharedConsiderations(
   );
 
   // U_mood: ψ_v(selfMood)
-  // diligence/curiosity: 1.0（无 mood 效应），sociability: 1 ± 0.3 × mood
+  // diligence/curiosity: 1.0 (нет эффекта настроения), sociability: 1 ± 0.3 × mood
   let U_mood: number;
   if (actionType === "sociability") {
     U_mood = Math.max(EPSILON, 1 + MOOD_DELTA * selfMood);
@@ -830,16 +830,16 @@ function computeSharedConsiderations(
     U_mood = 1.0;
   }
 
-  // ADR-183: U_personality 移除——其效果通过 modulateCurve() 编码到专属 Consideration 曲线中。
-  // 常数乘子 + 曲线调制 = double-counting。曲线调制产生输入依赖的灵敏度曲面（质变），
-  // 常数乘子只产生均匀缩放（量变）。
+  // ADR-183: U_personality удалён — его эффект кодируется в специализированных кривых Consideration через modulateCurve().
+  // Константный множитель + модуляция кривой = double-counting. Модуляция кривой создаёт входозависимую поверхность чувствительности (качественное изменение),
+  // константный множитель — только равномерное масштабирование (количественное изменение).
 
   // U_silence_damping: 1/(1+n) with group floor
   const U_silence_damping = Math.max(EPSILON, silenceDamping(effSilences, chatType));
 
-  // ADR-219 D1: U_voice_affinity — 跨声部压力主导度。
-  // 恢复 IAUS 统一选择中丢失的 cross-voice inhibition。
-  // 基于 tension pattern（非 personality）→ 默认等权人格下仍有区分度。
+  // ADR-219 D1: U_voice_affinity — доминирование давления среди голосов.
+  // Восстанавливает cross-voice inhibition, утраченный при унификации IAUS.
+  // Основан на паттерне tension (не personality) → различимость сохраняется и при равновесной личности по умолчанию.
   const U_voice_affinity = computeVoiceAffinity(tension, actionType, config.kappa);
 
   return {
@@ -855,8 +855,8 @@ function computeSharedConsiderations(
 }
 
 /**
- * Diligence 专属 Considerations（5 个）。
- * ADR-183: 所有曲线经 π_D 调制——高 Diligence 人格更早响应义务信号。
+ * Специфические Considerations для Diligence (5 шт.).
+ * ADR-183: все кривые модулируются через π_D — высокая Diligence-личность реагирует на сигнал обязательства раньше.
  */
 function computeDiligenceConsiderations(
   tension: TensionVector,
@@ -868,7 +868,7 @@ function computeDiligenceConsiderations(
   const piD = config.personality.weights[VOICE_INDEX.diligence];
   const cms = config.curveModulationStrength ?? DEFAULT_CURVE_MODULATION_STRENGTH;
 
-  // U_obligation: effectiveObligation → sigmoid（人格调制）
+  // U_obligation: effectiveObligation → sigmoid (с модуляцией личности)
   const obligationRaw = G.has(target) ? effectiveObligation(G, target, nowMs) : 0;
   const hasEntity = G.has(target);
   const U_obligation = dormantNeutral(
@@ -877,10 +877,10 @@ function computeDiligenceConsiderations(
     modulateCurve(CURVES.obligation, piD, cms),
   );
 
-  // U_attention: τ₁ → sigmoid（人格调制）
+  // U_attention: τ₁ → sigmoid (с модуляцией личности)
   const U_attention = evalCurve(modulateCurve(CURVES.attention, piD, cms), tension.tau1);
 
-  // U_thread_age: τ₄ → log（entity-gated: τ₄=0 且无线程 → 1.0）（人格调制）
+  // U_thread_age: τ₄ → log (entity-gated: τ₄=0 и нет потоков → 1.0) (с модуляцией личности)
   const hasThreads = tension.tau4 > 0;
   const U_thread_age = dormantNeutral(
     tension.tau4,
@@ -888,11 +888,11 @@ function computeDiligenceConsiderations(
     modulateCurve(CURVES.thread_age, piD, cms),
   );
 
-  // U_deltaP: estimateDeltaP → sigmoid（人格调制）
+  // U_deltaP: estimateDeltaP → sigmoid (с модуляцией личности)
   const rawDeltaP = estimateDeltaP(contributions, target, kappa);
   const U_deltaP = evalCurve(modulateCurve(CURVES.deltaP, piD, cms), rawDeltaP);
 
-  // U_prospect: τ_P → sigmoid（entity-gated: τ_P=0 → 1.0）（人格调制）
+  // U_prospect: τ_P → sigmoid (entity-gated: τ_P=0 → 1.0) (с модуляцией личности)
   const hasProspect = tension.tauP > 0;
   const U_prospect = dormantNeutral(
     tension.tauP,
@@ -904,9 +904,9 @@ function computeDiligenceConsiderations(
 }
 
 /**
- * Sociability 专属 Considerations（6 个）。
- * ADR-183: evalCurve 曲线经 π_S 调制——高 Sociability 人格更早响应关系冷却。
- * U_goldilocks 和 U_hawkes 是直传值，不使用 ResponseCurve，不被调制。
+ * Специфические Considerations для Sociability (6 шт.).
+ * ADR-183: кривые evalCurve модулируются через π_S — высокая Sociability-личность реагирует на охлаждение отношений раньше.
+ * U_goldilocks и U_hawkes — прямо передаваемые значения, не используют ResponseCurve, не модулируются.
  */
 function computeSociabilityConsiderations(
   tension: TensionVector,
@@ -922,10 +922,10 @@ function computeSociabilityConsiderations(
   const piS = config.personality.weights[VOICE_INDEX.sociability];
   const cms = config.curveModulationStrength ?? DEFAULT_CURVE_MODULATION_STRENGTH;
 
-  // U_cooling: τ₃ → sigmoid（人格调制）
+  // U_cooling: τ₃ → sigmoid (с модуляцией личности)
   const U_cooling = evalCurve(modulateCurve(CURVES.cooling, piS, cms), tension.tau3);
 
-  // U_social_bond: τ₅ × 0.6 → sigmoid（entity-gated: τ₅=0 且非 directed → 1.0）（人格调制）
+  // U_social_bond: τ₅ × 0.6 → sigmoid (entity-gated: τ₅=0 и не directed → 1.0) (с модуляцией личности)
   const bondInput = tension.tau5 * 0.6;
   const hasBond = tension.tau5 > 0 || bypassGates;
   const U_social_bond = dormantNeutral(
@@ -934,10 +934,10 @@ function computeSociabilityConsiderations(
     modulateCurve(CURVES.social_bond, piS, cms),
   );
 
-  // U_social_safety: computeSocialCost → inv_sigmoid（人格调制）
-  // 观察项：高 π_S → midpoint 降低 → 安全刹车更早激活（对社交成本更敏感）。
-  // 当前诠释：高社交意识 = 高边界敏感度。如运行时数据不符合预期，
-  // 可对 inv_sigmoid 单独翻转调制方向。@see ADR-183 审查报告 P2
+  // U_social_safety: computeSocialCost → inv_sigmoid (с модуляцией личности)
+  // Наблюдение: высокий π_S → снижение midpoint → аварийный стоп по безопасности срабатывает раньше (выше чувствительность к социальной стоимости).
+  // Текущая интерпретация: высокая социальная осознанность = высокая чувствительность к границам. При несоответствии с данными из прод-среды
+  // можно независимо перевернуть направление модуляции для inv_sigmoid. @see отчёт ADR-183 P2
   const rawSocialCost = computeSocialCost(
     G,
     target,
@@ -950,18 +950,18 @@ function computeSociabilityConsiderations(
   );
   const U_social_safety = evalCurve(modulateCurve(CURVES.social_safety, piS, cms), rawSocialCost);
 
-  // U_goldilocks: 直传 [ε, 1]（bypassGates=true → 1.0）— 不使用 ResponseCurve，不被人格调制
+  // U_goldilocks: прямая передача [ε, 1] (bypassGates=true → 1.0) — не использует ResponseCurve, не модулируется личностью
   const goldilocksRaw =
     !bypassGates && candidateCtx.getGoldilocksUtility
       ? candidateCtx.getGoldilocksUtility(target)
       : 1.0;
   const U_goldilocks = Math.max(EPSILON, goldilocksRaw);
 
-  // U_hawkes: Hawkes λ discount 直传 [ε, 1] — 不使用 ResponseCurve，不被人格调制
+  // U_hawkes: Hawkes λ discount — прямая передача [ε, 1], не использует ResponseCurve, не модулируется личностью
   const hawkesRaw = candidateCtx.getHawkesDiscount?.(target) ?? 1.0;
   const U_hawkes = Math.max(EPSILON, hawkesRaw);
 
-  // U_attraction: τ_attraction → sigmoid（ADR-178）（人格调制）
+  // U_attraction: τ_attraction → sigmoid (ADR-178) (с модуляцией личности)
   const U_attraction = evalCurve(
     modulateCurve(CURVES.attraction, piS, cms),
     tension.tauAttraction ?? 0,
@@ -971,9 +971,9 @@ function computeSociabilityConsiderations(
 }
 
 /**
- * Curiosity 专属 Considerations（3 个）。
- * ADR-183/P6 audit: 所有曲线经 π_C 调制。
- * τ₆ 是未满足的 curiosity pressure；不要把它命名为 novelty satisfaction。
+ * Специфические Considerations для Curiosity (3 шт.).
+ * ADR-183/аудит P6: все кривые модулируются через π_C.
+ * τ₆ — неудовлетворённое давление любопытства; не называть novelty satisfaction.
  */
 function computeCuriosityConsiderations(
   tension: TensionVector,
@@ -983,16 +983,16 @@ function computeCuriosityConsiderations(
   const piC = config.personality.weights[VOICE_INDEX.curiosity];
   const cms = config.curveModulationStrength ?? DEFAULT_CURVE_MODULATION_STRENGTH;
 
-  // U_curiosity_pressure: τ₆ → sigmoid（人格调制）
+  // U_curiosity_pressure: τ₆ → sigmoid (с модуляцией личности)
   const U_curiosity_pressure = evalCurve(
     modulateCurve(CURVES.curiosity_pressure, piC, cms),
     tension.tau6,
   );
 
-  // U_info_pressure: τ₂ → sigmoid（人格调制）
+  // U_info_pressure: τ₂ → sigmoid (с модуляцией личности)
   const U_info_pressure = evalCurve(modulateCurve(CURVES.info_pressure, piC, cms), tension.tau2);
 
-  // U_exploration: VoI (Kalman σ²) → log（人格调制）
+  // U_exploration: VoI (Kalman σ²) → log (с модуляцией личности)
   const isPermanent =
     config.candidateCtx.G.has(target) &&
     config.candidateCtx.G.getChannel(target).failure_type === "permanent";
@@ -1003,13 +1003,13 @@ function computeCuriosityConsiderations(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 主评分管线
+// Главный конвейер оценивания
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 在所有 channel × 3 action_types 上执行 IAUS 评分。
+ * Выполняет IAUS-оценивание по всем channel × 3 action_types.
  *
- * @returns IAUSResult 或 null（所有候选得分 ≤ ε）。
+ * @returns IAUSResult или null (все кандидаты набрали ≤ ε).
  */
 export function scoreAllCandidates(
   tensionMap: Map<string, TensionVector>,
@@ -1061,13 +1061,13 @@ export function scoreAllCandidatesDetailed(
       continue;
     }
 
-    // Pre-filter: permanent 不可达 target 不评分
+    // Pre-filter: permanent-недостижимые target не оцениваются
     if (G.has(target) && G.getChannel(target).failure_type === "permanent") {
       noteFiltered("permanent_failure");
       continue;
     }
 
-    // 每个 target 只计算一次的共享输入
+    // Общие входные данные, вычисляемые для каждого target один раз
     const tension = tensionMap.get(target) ?? ZERO_TENSION;
     const chatType = G.has(target) ? G.getChannel(target).chat_type : "private";
     const rawReach = G.has(target) ? G.getChannel(target).reachability_score : undefined;
@@ -1085,9 +1085,9 @@ export function scoreAllCandidatesDetailed(
     const bypass = computeCandidateBypass(candidateCtx, target);
     const strongObligation = computeCandidateStrongObligation(candidateCtx, target);
 
-    // Pre-filter: consecutive_outgoing >= cap 且无义务 → 跳过（防垃圾轰炸）
-    // 在 V-max 中此逻辑通过 C_sat σ_out 使 V ≤ 0 实现；IAUS 乘法不支持绝对否决，
-    // 因此改为硬门控。义务信号（bypassGates）绕过此限制。
+    // Pre-filter: consecutive_outgoing >= cap и нет обязательства → пропустить (защита от спама)
+    // В V-max эта логика реализовалась через C_sat σ_out → V ≤ 0; мультипликативный IAUS не поддерживает абсолютное вето,
+    // поэтому используется жёсткий gate. Сигнал обязательства (bypassGates) обходит это ограничение.
     const isGroupChat = ChatTarget.isGroupChat(chatType);
     const outgoingCap = isGroupChat ? satConfig.outgoingCapGroup : satConfig.outgoingCapPrivate;
     if (!strongObligation && consecutiveOutgoing >= outgoingCap) {
@@ -1100,15 +1100,15 @@ export function scoreAllCandidatesDetailed(
       strongObligation || perTargetCap <= 0 ? 0 : targetActionsInWindow / perTargetCap;
     const channelClass = classifyChatType(chatType, resolveIsBot(G, target));
 
-    // ── ADR-189: 4 个 gate 内化到 IAUS per-candidate pre-filter ──
+    // ── ADR-189: 4 gate внутренне перенесены в IAUS per-candidate pre-filter ──
 
-    // 1. Closing conversation — leave() 承诺封锁（无条件，bypass 不穿透告别承诺）
+    // 1. Closing conversation — обещание leave() заблокировано (безусловно, bypass не проходит сквозь прощание)
     if (gateClosingConversation(G, target).type === "silent") {
       noteFiltered("closing_conversation");
       continue;
     }
 
-    // 2. Crisis mode — 危机频道无义务时封锁
+    // 2. Crisis mode — кризисный канал блокируется при отсутствии обязательства
     if (!bypass && config.crisisChannels?.includes(target)) {
       noteFiltered("crisis_mode");
       continue;
@@ -1161,10 +1161,10 @@ export function scoreAllCandidatesDetailed(
       bypassGates: bypass,
     };
 
-    // 遍历 3 个 action types
+    // Итерация по 3 типам действий
     for (const actionType of IAUS_ACTIONS) {
-      // ADR-206: 频道只能被 curiosity 选中（信息流实体，非社交对等体）。
-      // diligence 在 W7 频道发布实现后可放开（admin/owner 限定）。
+      // ADR-206: channel может быть выбран только curiosity (сущность информационного потока, не социальный партнёр).
+      // diligence можно разблокировать после реализации публикации в канале W7 (только для admin/owner).
       if (chatType === "channel" && actionType !== "curiosity") {
         noteFiltered("channel_action_scope");
         continue;
@@ -1199,7 +1199,7 @@ export function scoreAllCandidatesDetailed(
           continue;
       }
 
-      // 乘积 ∏ U_k。ADR-251 的 U_proactive_pacing 在 CF 后应用，避免被几何均值补偿稀释。
+      // Произведение ∏ U_k. U_proactive_pacing из ADR-251 применяется после CF, чтобы не разбавлялось компенсацией геометрического среднего.
       const preCFConsiderations = { ...shared, ...specific };
       let rawScore = 1;
       for (const v of Object.values(preCFConsiderations)) {
@@ -1209,8 +1209,8 @@ export function scoreAllCandidatesDetailed(
       // Compensation Factor
       let compensatedScore = compensate(rawScore, n, CF);
 
-      // ADR-251: private proactive pacing — post-CF utility。
-      // 只压无人回应的 unsolicited private proactive；directed/hot-chat/group/channel 均为 1.0。
+      // ADR-251: private proactive pacing — post-CF utility.
+      // Давит только unsolicited private proactive без ответа; directed/hot-chat/group/channel = 1.0.
       compensatedScore *= classPacingUtility;
       compensatedScore *= proactivePacingUtility;
       compensatedScore *= emotionProactiveCapUtility;
@@ -1231,14 +1231,14 @@ export function scoreAllCandidatesDetailed(
         U_emotion_action: emotionActionUtility,
       };
 
-      // ADR-217: Aversion — 社交回避乘性调制。
-      // V_eff = V × (1 - aversion)。bypass 不穿透回避（Alice 主动选择，义务不覆盖）。
+      // ADR-217: Aversion — мультипликативная модуляция социального избегания.
+      // V_eff = V × (1 - aversion). bypass не проходит сквозь aversion (активный выбор Алисы, обязательство не переопределяет).
       const aversion = effectiveAversion(G, target, nowMs);
       if (aversion > 0) {
         compensatedScore *= 1 - Math.min(aversion, 1);
       }
 
-      // ADR-182 D1: Momentum Bonus — 上一 tick 赢家获得乘法加成
+      // ADR-182 D1: Momentum Bonus — победитель предыдущего tick получает мультипликативный бонус
       const mBonus = config.momentumBonus ?? DEFAULT_MOMENTUM_BONUS;
       const mDecayMs = config.momentumDecayMs ?? DEFAULT_MOMENTUM_DECAY_MS;
       const lastWinner = config.lastWinner;
@@ -1253,7 +1253,7 @@ export function scoreAllCandidatesDetailed(
         compensatedScore *= 1 + mBonus;
       }
 
-      // ADR-185 §1: Desire Boost — 匹配 desire 的 target 获得乘法加成
+      // ADR-185 §1: Desire Boost — target, соответствующий desire, получает мультипликативный бонус
       const dBoost = config.desireBoost ?? DEFAULT_DESIRE_BOOST;
       if (dBoost > 0 && config.desires?.length) {
         const topDesire = findTopDesireForTarget(config.desires, target);
@@ -1262,13 +1262,13 @@ export function scoreAllCandidatesDetailed(
         }
       }
 
-      // ε 过滤
+      // Фильтрация по ε
       if (compensatedScore <= EPSILON) {
         noteFiltered("below_epsilon");
         continue;
       }
 
-      // deltaP 和 socialCost 用于审计
+      // deltaP и socialCost — для аудита
       const rawDeltaP = estimateDeltaP(config.contributions, target, config.kappa);
       const rawSocialCost = computeSocialCost(
         G,
@@ -1301,30 +1301,30 @@ export function scoreAllCandidatesDetailed(
 
   if (scored.length === 0) return { result: null, filterStats };
 
-  // ── ADR-218 Phase 2: U_fairness — CFS-inspired 服务比例公平 ────────
+  // ── ADR-218 Phase 2: U_fairness — пропорциональная справедливость по принципу CFS ────────
   //
-  // 统一替代 Phase 1 的三个离散机制：
-  //   URGENCY_BOOST   → 未服务目标自然获得 ratio^(-α) > 1.0 加成
-  //   URGENCY_BUDGET  → 过服务目标自然获得 ratio^(-α) < 1.0 惩罚（连续衰减，无跳变）
-  //   U_coverage      → 长期欠服务的 ratio 持续低 → 持续加成（替代 attention debt bonus）
+  // Единый заменитель трёх дискретных механизмов Phase 1:
+  //   URGENCY_BOOST   → необслуженная цель естественно получает ratio^(-α) > 1.0 бонус
+  //   URGENCY_BUDGET  → переобслуженная цель естественно получает ratio^(-α) < 1.0 штраф (непрерывное затухание, без скачков)
+  //   U_coverage      → длительно недообслуженный ratio остаётся низким → бонус сохраняется (замена attention debt bonus)
   //
-  // 数学公式：
-  //   expected_share(i) = V_raw(i) / Σ V_raw     （效用比例期望份额）
-  //   actual_share(i)   = service(i) / total       （窗口内实际服务份额）
+  // Формулы:
+  //   expected_share(i) = V_raw(i) / Σ V_raw     (ожидаемая доля по пропорции utility)
+  //   actual_share(i)   = service(i) / total       (фактическая доля обслуживания в окне)
   //   ratio(i)          = actual / expected
   //   U_fairness(i)     = clamp(ratio^(-α), ε, U_MAX)
   //
-  // 不变量保证：
-  //   I1 比例公平 — 过服务惩罚 + 欠服务加成 → 长期 service ∝ V_raw
-  //   I2 有界响应 — 新义务 ratio≈0 → U_fairness=U_MAX → 近确定性胜出
-  //   I3 无饥饿   — 长期欠服务 → ratio持续低 → U_fairness持续高 → 终必被选
-  //   I5 自修正   — 选中后 ratio↑ → U_fairness↓ → 自动让位
+  // Гарантии инвариантов:
+  //   I1 пропорциональная справедливость — штраф перегруженных + бонус недогруженных → долгосрочно service ∝ V_raw
+  //   I2 ограниченный отклик — новое обязательство ratio≈0 → U_fairness=U_MAX → почти гарантированная победа
+  //   I3 нет голодания — долгое недообслуживание → ratio стабильно низкий → U_fairness стабильно высокий → в итоге будет выбрано
+  //   I5 самокоррекция — после выбора ratio↑ → U_fairness↓ → автоматически уступает место
   //
   // @see docs/adr/218-attention-fairness-rank-gate-starvation.md §A4
-  // @see Linux CFS: vruntime += delta/weight → 选 min(vruntime)
-  const pool = scored; // 统一池
+  // @see Linux CFS: vruntime += delta/weight → выбирается min(vruntime)
+  const pool = scored; // единый пул
 
-  // 计算窗口内 per-target 服务次数
+  // Подсчёт обслуживания per-target в окне
   const serviceInWindow = new Map<string, number>();
   let totalService = 0;
   for (const a of recentActions) {
@@ -1334,10 +1334,10 @@ export function scoreAllCandidatesDetailed(
     }
   }
 
-  // 计算 Σ V_raw（用于 expected_share）
+  // Вычисляем Σ V_raw (для expected_share)
   const sumVRaw = pool.reduce((s, e) => s + e.V, 0);
 
-  // 应用 U_fairness：第二遍 pass
+  // Применяем U_fairness: второй проход
   if (totalService >= FAIRNESS_MIN_TOTAL_SERVICE && sumVRaw > 0) {
     for (const entry of pool) {
       const target = entry.candidate.target;
@@ -1346,11 +1346,11 @@ export function scoreAllCandidatesDetailed(
       const expectedShare = entry.V / sumVRaw;
       const actualShare = (serviceInWindow.get(target) ?? 0) / totalService;
 
-      // ratio = actual / expected. ratio < 1 = 欠服务, ratio > 1 = 过服务
+      // ratio = actual / expected. ratio < 1 = недообслужен, ratio > 1 = переобслужен
       const ratio = actualShare / Math.max(1e-6, expectedShare);
 
-      // 幂律映射：ratio^(-α)
-      // ratio=0.5 → 4.0（强加成），ratio=1 → 1.0，ratio=2 → 0.25（强惩罚）
+      // Степенное отображение: ratio^(-α)
+      // ratio=0.5 → 4.0 (сильный бонус), ratio=1 → 1.0, ratio=2 → 0.25 (сильный штраф)
       const rawFairness = Math.max(ratio, 1e-6) ** -FAIRNESS_ALPHA;
       const U_fairness = Math.max(EPSILON, Math.min(U_FAIRNESS_MAX, rawFairness));
 
@@ -1372,7 +1372,7 @@ export function scoreAllCandidatesDetailed(
     };
   }
 
-  // ── Thompson Sampling 噪声叠加 ──────────────────────────────────────
+  // ── Наложение шума Thompson Sampling ──────────────────────────────────────
   const eta = config.thompsonEta;
   let softmaxValues: number[];
   if (eta > 0 && pool.length > 1) {
@@ -1390,9 +1390,9 @@ export function scoreAllCandidatesDetailed(
     softmaxValues = pool.map((s) => s.V);
   }
 
-  // ── 自适应温度 Boltzmann softmax 选择 ─────────────────────────────
+  // ── Выбор Boltzmann softmax с адаптивной температурой ─────────────────────────────
   const vValues = pool.map((s) => s.V);
-  const spread = std(scored.map((s) => s.V)); // spread 仍基于全部 scored（审计一致性）
+  const spread = std(scored.map((s) => s.V)); // spread по-прежнему на основе всего scored (согласованность аудита)
   const tau = 0.05 + 0.2 / (1.0 + spread * 5.0);
 
   const maxV = Math.max(...softmaxValues);
@@ -1402,7 +1402,7 @@ export function scoreAllCandidatesDetailed(
 
   let winnerIdx: number;
   if (config.deterministic) {
-    // 确定性 argmax——测试用，避免 Boltzmann 随机性
+    // Детерминированный argmax — для тестов, избегает случайности Boltzmann
     winnerIdx = softmaxValues.indexOf(Math.max(...softmaxValues));
   } else {
     const r = Math.random();
@@ -1425,7 +1425,7 @@ export function scoreAllCandidatesDetailed(
     winnerBypassGates: pool[winnerIdx].bypassGates,
     spread,
     filterStats,
-    // D5: scored 返回全部候选（审计完整性），保留反事实所需的结构化字段。
+    // D5: scored возвращает все кандидаты (полнота аудита), сохраняются структурированные поля для контрфактического анализа.
     scored: scored.map((s) => ({
       action: s.candidate.action,
       target: s.candidate.target,
@@ -1446,7 +1446,7 @@ export function scoreAllCandidatesDetailed(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Reason 组装（从 v-maximizer.ts 迁移）
+// Сборка Reason (перенесена из v-maximizer.ts)
 // ═══════════════════════════════════════════════════════════════════════════
 
 function magnitudeLabel(value: number, thresholds: [number, number] = [0.3, 1.0]): string {
@@ -1454,9 +1454,9 @@ function magnitudeLabel(value: number, thresholds: [number, number] = [0.3, 1.0]
 }
 
 /**
- * 将 IAUSCandidate 翻译为机器生成的结构化理由。
+ * Переводит IAUSCandidate в машинно-генерируемое структурированное обоснование.
  *
- * ADR-185 §1: 有匹配 desire 时，reason 首项显示 desire 标签和 urgency 级别。
+ * ADR-185 §1: при наличии совпадающего desire первым элементом reason отображается метка desire и уровень urgency.
  */
 export function assembleIAUSReason(
   candidate: IAUSCandidate,
@@ -1467,7 +1467,7 @@ export function assembleIAUSReason(
 ): string {
   const parts: string[] = [];
 
-  // ADR-185 §1: desire 首项
+  // ADR-185 §1: desire первым элементом
   if (desire) {
     parts.push(`desire: ${desire.label} (urgency=${magnitudeLabel(desire.urgency)})`);
   }

@@ -1,9 +1,9 @@
 /**
- * Engine API 中间件 — 请求日志 + capability 验证。
+ * Middleware Engine API — логирование запросов + проверка capability.
  *
- * 两种模式：
- * - lenient（默认）：无 X-Alice-Skill header 时允许所有请求。
- * - strict：无 header → 403，未知 skill → 403，无 capability → 403。
+ * Два режима:
+ * - lenient (по умолчанию): разрешает все запросы при отсутствии заголовка X-Alice-Skill.
+ * - strict: нет заголовка → 403, неизвестный skill → 403, нет capability → 403.
  *
  * @see docs/adr/202-engine-api.md
  */
@@ -14,17 +14,17 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("engine-api");
 
-/** 路径 → 所需 capability 的映射。 */
+/** Таблица соответствия пути → требуемой capability. */
 const ROUTE_CAPABILITIES: Array<{
   test: (method: string, path: string) => boolean;
   required: SkillCapability;
 }> = [
-  // config 敏感 key（API Key 类）
+  // config — чувствительные ключи (API Key и подобные)
   {
     test: (m, p) => m === "GET" && /^\/config\/(exaApiKey|musicApiBaseUrl|youtubeApiKey)$/.test(p),
     required: "config.secrets",
   },
-  // config 非敏感 key
+  // config — нечувствительные ключи
   {
     test: (m, p) => m === "GET" && p.startsWith("/config/"),
     required: "config.read",
@@ -34,7 +34,7 @@ const ROUTE_CAPABILITIES: Array<{
     test: (m, p) => m === "POST" && p === "/engine/selfcheck",
     required: "engine.selfcheck",
   },
-  // engine 读（tick 等）
+  // engine — чтение (tick и т.д.)
   {
     test: (m, p) => m === "GET" && p.startsWith("/engine/"),
     required: "config.read",
@@ -49,12 +49,12 @@ const ROUTE_CAPABILITIES: Array<{
     test: (m, p) => m === "POST" && p === "/llm/summarize",
     required: "llm.summarize",
   },
-  // graph 写
+  // graph — запись
   {
     test: (m, p) => m === "POST" && p.startsWith("/graph/"),
     required: "graph.write",
   },
-  // graph 读
+  // graph — чтение
   {
     test: (m, p) => m === "GET" && p.startsWith("/graph/"),
     required: "graph.read",
@@ -141,7 +141,7 @@ const ROUTE_CAPABILITIES: Array<{
 ];
 
 /**
- * 根据请求路径确定所需的 capability。
+ * Определяет требуемую capability по пути запроса.
  */
 export function requiredCapability(method: string, pathname: string): SkillCapability | null {
   for (const rule of ROUTE_CAPABILITIES) {
@@ -153,10 +153,10 @@ export function requiredCapability(method: string, pathname: string): SkillCapab
 export type CapabilityMode = "lenient" | "strict";
 
 /**
- * 检查 Skill 是否拥有请求所需的 capability。
+ * Проверяет, имеет ли Skill требуемую для запроса capability.
  *
- * - lenient：无 header 或 registry 未提供时返回 true。
- * - strict：无 header → 403，未知 skill → 403，无 capability → 403。
+ * - lenient: возвращает true при отсутствии заголовка или registry.
+ * - strict: нет заголовка → 403, неизвестный skill → 403, нет capability → 403.
  */
 export function checkCapability(
   req: IncomingMessage,
@@ -167,44 +167,44 @@ export function checkCapability(
   const pathname = (req.url ?? "/").split("?")[0];
   const needed = requiredCapability(method, pathname);
 
-  // 不需要 capability 的路由（如 404 路径）→ 放行
+  // Маршруты, не требующие capability (например, 404) → пропускаем
   if (!needed) return { allowed: true };
 
   const skillName = req.headers["x-alice-skill"] as string | undefined;
 
   if (mode === "strict") {
-    // strict: 无 header → 403
+    // strict: нет заголовка → 403
     if (!skillName) {
       return { allowed: false, skill: "(no header)", needed };
     }
-    // strict: registry 未提供视为配置错误，拒绝
+    // strict: отсутствие registry считается ошибкой конфигурации, отклоняем
     if (!registry) {
       return { allowed: false, skill: skillName, needed };
     }
     const entry = registry[skillName];
-    // strict: 未注册的 skill → 403
+    // strict: незарегистрированный skill → 403
     if (!entry) {
       log.warn(`unknown skill "${skillName}" accessing ${method} ${pathname} (strict mode)`);
       return { allowed: false, skill: skillName, needed };
     }
-    // 检查 capability
+    // Проверяем capability
     if (entry.capabilities.includes(needed)) {
       return { allowed: true };
     }
     return { allowed: false, skill: skillName, needed };
   }
 
-  // lenient: 无 header 时允许所有
+  // lenient: при отсутствии заголовка разрешаем всё
   if (!skillName || !registry) return { allowed: true };
 
   const entry = registry[skillName];
   if (!entry) {
-    // 未注册的 Skill — lenient 仍然放行（log warning）
+    // Незарегистрированный Skill — в режиме lenient пропускаем (с предупреждением в лог)
     log.warn(`unknown skill "${skillName}" accessing ${method} ${pathname}`);
     return { allowed: true };
   }
 
-  // 检查 capability
+  // Проверяем capability
   if (entry.capabilities.includes(needed)) {
     return { allowed: true };
   }
@@ -213,8 +213,8 @@ export function checkCapability(
 }
 
 /**
- * 包装 handler，在请求前后打印简洁日志。
- * 格式：`METHOD /path → STATUS (duration ms)`
+ * Оборачивает handler, печатая краткий лог до и после запроса.
+ * Формат: `METHOD /path → STATUS (duration ms)`
  */
 export function withRequestLog(
   handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>,
@@ -227,7 +227,7 @@ export function withRequestLog(
       const tag = skill ? ` [${skill}]` : "";
       log.info(`${req.method} ${req.url}${tag} → ${res.statusCode} (${duration}ms)`);
     });
-    // handler 可能返回 Promise（async）或同步 throw. Async-reject ловился и раньше (ниже);
+    // handler может вернуть Promise (async) или бросить синхронный throw. Async-reject ловился и раньше (ниже);
     // новый try/catch добавляет обработку СИНХРОННОГО throw — именно он ронял процесс (C1).
     const fail = (err: unknown) => {
       log.error("unhandled error in request handler", err);

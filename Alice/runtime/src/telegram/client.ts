@@ -1,5 +1,5 @@
 /**
- * mtcute Telegram 客户端初始化。
+ * Инициализация Telegram-клиента mtcute.
  */
 
 import { Dispatcher } from "@mtcute/dispatcher";
@@ -10,8 +10,8 @@ let _client: TelegramClient | null = null;
 let _dispatcher: Dispatcher | null = null;
 
 /**
- * 创建并返回 TelegramClient 实例。
- * session 文件默认存储为 SQLite (mtcute 内置)。
+ * Создаёт и возвращает экземпляр TelegramClient.
+ * Файл сессии по умолчанию хранится как SQLite (встроено в mtcute).
  */
 export function createClient(config: Config): TelegramClient {
   if (_client) return _client;
@@ -20,8 +20,8 @@ export function createClient(config: Config): TelegramClient {
     apiId: config.telegramApiId,
     apiHash: config.telegramApiHash,
     storage: "alice.session",
-    // mtcute 默认注册 SIGINT/SIGTERM exit hook，会和 Alice 自己的异步 shutdown
-    // 竞争关闭 session DB。由 runtime/src/index.ts 统一调用 destroyClient()。
+    // mtcute по умолчанию регистрирует exit hook для SIGINT/SIGTERM, что конкурирует
+    // с асинхронным shutdown Алисы при закрытии session DB. Единый вызов destroyClient() — в runtime/src/index.ts.
     storageOptions: { cleanup: false },
   });
 
@@ -29,7 +29,7 @@ export function createClient(config: Config): TelegramClient {
 }
 
 /**
- * 获取当前 client 实例（必须先 createClient）。
+ * Возвращает текущий экземпляр client (необходимо предварительно вызвать createClient).
  */
 export function getClient(): TelegramClient {
   if (!_client) throw new Error("TelegramClient not initialized. Call createClient() first.");
@@ -37,7 +37,7 @@ export function getClient(): TelegramClient {
 }
 
 /**
- * 创建并绑定 Dispatcher 到 client。
+ * Создаёт и привязывает Dispatcher к client.
  */
 export function createDispatcher(client: TelegramClient): Dispatcher {
   if (_dispatcher) return _dispatcher;
@@ -46,7 +46,7 @@ export function createDispatcher(client: TelegramClient): Dispatcher {
 }
 
 /**
- * 获取当前 Dispatcher 实例。
+ * Возвращает текущий экземпляр Dispatcher.
  */
 export function getDispatcher(): Dispatcher {
   if (!_dispatcher) throw new Error("Dispatcher not initialized. Call createDispatcher() first.");
@@ -54,7 +54,7 @@ export function getDispatcher(): Dispatcher {
 }
 
 /**
- * 启动客户端（登录 / 恢复 session）。
+ * Запускает клиент (вход / восстановление сессии).
  */
 export async function startClient(client: TelegramClient, phone: string): Promise<void> {
   await client.start({
@@ -65,8 +65,8 @@ export async function startClient(client: TelegramClient, phone: string): Promis
 }
 
 /**
- * 优雅关闭。
- * try/catch: shutdown 路径上不值得因为 client 清理失败而阻塞退出。
+ * Корректное завершение работы.
+ * try/catch: при shutdown не стоит блокировать выход из-за ошибки очистки client.
  */
 export async function destroyClient(): Promise<void> {
   try {
@@ -76,7 +76,7 @@ export async function destroyClient(): Promise<void> {
       _dispatcher = null;
     }
   } catch {
-    /* shutdown — 静默 */
+    /* shutdown — тихо */
   }
   try {
     if (_client) {
@@ -84,6 +84,6 @@ export async function destroyClient(): Promise<void> {
       _client = null;
     }
   } catch {
-    /* shutdown — 静默 */
+    /* shutdown — тихо */
   }
 }

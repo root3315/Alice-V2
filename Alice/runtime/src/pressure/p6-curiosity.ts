@@ -1,16 +1,16 @@
 /**
- * P6 好奇心 (Curiosity) — 未满足的 epistemic pressure。
+ * P6 Curiosity (Любопытство) — неудовлетворённое epistemic pressure.
  *
- * 论文里的减性 novelty-deficit 公式用于表达“信息满足后好奇心下降”的理想性质；
- * 运行时不能把 prediction error / hunger 当成已经满足的 novelty 再放进
- * `η - mean(novelty)`。这些信号在工程语义上是未满足的好奇心压力：
- * 越 surprise、越 hunger，P6 越应该上升。
+ * Вычитающая формула novelty-deficit из статьи выражает идеальное свойство “любопытство снижается после получения информации”;
+ * в рантайме нельзя подставлять prediction error / hunger как уже удовлетворённый novelty в
+ * `η - mean(novelty)`. Эти сигналы в инженерном смысле — неудовлетворённое давление любопытства:
+ * чем больше surprise и hunger, тем выше должен быть P6.
  *
- * 线上实现：
+ * Онлайн-реализация:
  *   curiositySignal = mean(topK(per-contact surprise, per-channel hunger))
  *   P6 = max(eta * tanh(curiositySignal), ambientCuriosity) ∈ [0, eta]
  *
- * contributions 保留 per-contact/per-channel 粒度用于 IAUS 路由。
+ * contributions сохраняют гранулярность per-contact/per-channel для маршрутизации IAUS.
  *
  * @see paper/ Definition 3.3 (Curiosity)
  * @see paper/ Remark "Per-Contact Surprise as Novelty Realization"
@@ -25,103 +25,103 @@ import type { WorldModel } from "../graph/world-model.js";
 import { elapsedS, readNodeMs } from "./clock.js";
 import type { PressureResult } from "./p1-attention.js";
 
-// -- ADR-206 W4: 频道好奇心常量 -----------------------------------------------
+// -- ADR-206 W4: константы любопытства к каналу -----------------------------------------------
 
 /**
- * 频道信息饥渴时间常数 τ（秒）：hunger = 1 - exp(-t/τ)。
- * τ=21600s (6h) 时，6h 不看 → ~63% 饥渴恢复，12h → ~86%。
+ * Временная константа τ (секунды) информационного голода канала: hunger = 1 - exp(-t/τ).
+ * При τ=21600s (6ч): 6ч без просмотра → ~63% восстановления голода, 12ч → ~86%.
  * @see docs/adr/206-channel-information-flow/206-channel-information-flow.md §5
  */
 const CHANNEL_HUNGER_TAU_S = 21_600; // 6h
 
 /**
- * 频道好奇心权重：相对于联系人好奇心的基础系数。
- * 频道是信息源不是社交对等体，好奇心贡献低于联系人。
+ * Вес любопытства к каналу: базовый коэффициент относительно любопытства к контакту.
+ * Канал — источник информации, а не социальный партнёр; вклад в любопытство ниже, чем от контакта.
  */
 const CHANNEL_CURIOSITY_WEIGHT = 0.3;
 
 /**
- * P6 只用最强的少数 curiosity sources 聚合。
- * 好奇心是注意力线索，不应随 500+ 弱联系人线性累加成常量满格。
+ * P6 агрегирует только наиболее сильные источники curiosity.
+ * Любопытство — это указатель внимания; оно не должно линейно накапливаться от 500+ слабых контактов до постоянного максимума.
  */
 const CURIOSITY_TOP_K = 8;
 
-// -- 常量 -------------------------------------------------------------------
+// -- Константы -------------------------------------------------------------------
 
-/** 信息增益折扣时间常数（秒）：最近交互过的联系人好奇心打折。 */
+/** Временная константа скидки информационного прироста (секунды): снижает любопытство к недавно активным контактам. */
 export const TAU_CURIOSITY = 3000;
 
-/** 最大 tier 权重（用于归一化 w_tier ∈ (0, 1]）。 */
+/** Максимальный вес tier (для нормализации w_tier ∈ (0, 1]). */
 const MAX_TIER_WEIGHT = Math.max(...Object.values(DUNBAR_TIER_WEIGHT));
 
 /**
- * 冷启动 σ_prediction：新联系人的预测不确定性。
- * 随 interaction_count 递减：σ = 1 / (1 + interaction_count / SIGMA_HALF_LIFE)
- * 10 次交互后 σ ≈ 0.5。
+ * Холодный старт σ_prediction: неопределённость предсказания для нового контакта.
+ * Убывает с ростом interaction_count: σ = 1 / (1 + interaction_count / SIGMA_HALF_LIFE)
+ * После 10 взаимодействий σ ≈ 0.5.
  */
 const SIGMA_HALF_LIFE = 10;
 
-/** Dunbar 150 常量（ambient curiosity 归一化用）。 */
+/** Константа Данбара 150 (для нормализации ambient curiosity). */
 const DUNBAR_150 = 150;
 
-/** 环境熟悉度时间窗口（天）：7 天达到完全熟悉。 */
+/** Временное окно окружающей знакомости (дни): полная знакомость достигается за 7 дней. */
 const FAMILIARITY_DAYS = 7;
 
 /**
- * Tier → 期望沉默间隔（秒）。
+ * Tier → ожидаемый интервал тишины (секунды).
  *
- * 为**线上即时通讯**场景标定（非面对面社交）。
+ * Калибровано для сценария **онлайн-мессенджера** (не очного общения).
  * @see Dunbar (2016) "Do online social media cut through the constraints
  *      that limit the size of offline social networks?"
  */
 const TIER_EXPECTED_SILENCE_S: Record<DunbarTier, number> = {
-  5: 14_400, // 4 小时
-  15: 86_400, // 1 天
-  50: 259_200, // 3 天
-  150: 1_209_600, // 14 天
-  500: 5_184_000, // 60 天
+  5: 14_400, // 4 часа
+  15: 86_400, // 1 день
+  50: 259_200, // 3 дня
+  150: 1_209_600, // 14 дней
+  500: 5_184_000, // 60 дней
 };
 
 /**
- * Tier → 期望每日消息率。
- * 与 TIER_EXPECTED_SILENCE_S 互为倒数，用于活跃率偏差计算。
+ * Tier → ожидаемая суточная частота сообщений.
+ * Обратная величина к TIER_EXPECTED_SILENCE_S; используется для расчёта отклонения активности.
  */
 const TIER_EXPECTED_DAILY_RATE: Record<DunbarTier, number> = {
-  5: 6.0, // ~6 条/天
-  15: 1.0, // ~1 条/天
-  50: 0.33, // ~1 条/3 天
-  150: 0.07, // ~1 条/2 周
-  500: 0.016, // ~1 条/2 月
+  5: 6.0, // ~6 сообщений/день
+  15: 1.0, // ~1 сообщение/день
+  50: 0.33, // ~1 сообщение/3 дня
+  150: 0.07, // ~1 сообщение/2 недели
+  500: 0.016, // ~1 сообщение/2 месяца
 };
 
 // -- Curiosity history buffer ------------------------------------------------
-// 追踪最近 k 个 tick 的 aggregate curiosity pressure，用于轻度平滑。
-// 生产路径由 EvolveState 持有该 buffer，避免模块级共享状态污染多实例/测试。
+// Отслеживает aggregate curiosity pressure за последние k тиков для лёгкого сглаживания.
+// В продакшне буфер хранится в EvolveState — это исключает загрязнение общим состоянием модуля при нескольких экземплярах/тестах.
 
 export type CuriosityHistory = number[];
 
-/** 创建空 curiosity 历史实例。 */
+/** Создать пустой экземпляр истории curiosity. */
 export function createCuriosityHistory(): CuriosityHistory {
   return [];
 }
 
 /**
- * 旧测试辅助保留为 no-op：P6 不再使用模块级 history。
- * 新测试请传入显式 history。
+ * Старая тестовая вспомогательная функция оставлена как no-op: P6 больше не использует историю на уровне модуля.
+ * В новых тестах передавайте явный history.
  */
 export function resetNoveltyHistory(): void {
   // no-op
 }
 
-// -- Surprise 信号 -----------------------------------------------------------
+// -- Сигнал surprise -----------------------------------------------------------
 
-/** σ_prediction: 预测不确定性。 */
+/** σ_prediction: неопределённость предсказания. */
 function sigmaPrediction(interactionCount: number): number {
   return 1.0 / (1.0 + interactionCount / SIGMA_HALF_LIFE);
 }
 
 /**
- * 信号 1: 沉默偏差（时间维度）。
+ * Сигнал 1: отклонение тишины (временное измерение).
  * @see Dunbar (2010) "How Many Friends Does One Person Need?"
  */
 function silenceDeviation(attrs: ContactAttrs, nowMs: number): number {
@@ -135,7 +135,7 @@ function silenceDeviation(attrs: ContactAttrs, nowMs: number): number {
 }
 
 /**
- * 信号 2: 活跃率偏差（量级维度，Weber-Fechner 对数律）。
+ * Сигнал 2: отклонение частоты активности (размерность величины, логарифмический закон Вебера–Фехнера).
  * @see Weber-Fechner law
  */
 function activityRateDeviation(attrs: ContactAttrs, graphAgeDays: number): number {
@@ -150,7 +150,7 @@ function activityRateDeviation(attrs: ContactAttrs, graphAgeDays: number): numbe
 }
 
 /**
- * 综合 surprise 值（有界 ∈ [0, 1]）。
+ * Итоговое значение surprise (ограничено ∈ [0, 1]).
  *
  * surprise = σ + (1 - σ) × tanh(signalMean)
  *
@@ -167,18 +167,18 @@ function computeSurprise(attrs: ContactAttrs, nowMs: number, graphAgeDays: numbe
   return sigma + (1 - sigma) * Math.tanh(signalMean);
 }
 
-// -- P6 主函数 ---------------------------------------------------------------
+// -- Главная функция P6 ---------------------------------------------------------------
 
 /**
- * P6 好奇心压力（线上 pressure-field 版）。
+ * Давление любопытства P6 (онлайн-версия pressure-field).
  *
- * per-contact prediction error 与 per-channel hunger 作为未满足的 curiosity pressure。
- * 总量用 tanh 映射到 [0, η]，保证 mature graph 不会因实体数量过多而饱和失控。
+ * per-contact prediction error и per-channel hunger — неудовлетворённое curiosity pressure.
+ * Итог отображается через tanh в [0, η], гарантируя, что зрелый граф не насытится из-за большого числа сущностей.
  *
- * @param G - 伴侣图
- * @param nowMs - 当前墙钟时间（毫秒）
- * @param eta - 环境好奇心基线（config.eta，默认 0.6）
- * @param k - curiosity smoothing window（config.k，默认 20）
+ * @param G - граф-компаньон
+ * @param nowMs - текущее время стены (миллисекунды)
+ * @param eta - базовый уровень ambient curiosity (config.eta, по умолчанию 0.6)
+ * @param k - окно сглаживания curiosity (config.k, по умолчанию 20)
  */
 export function p6Curiosity(G: WorldModel, nowMs: number, eta = 0.6, k = 20): PressureResult {
   return p6CuriosityWithHistory(G, nowMs, eta, k);
@@ -195,7 +195,7 @@ export function p6CuriosityWithHistory(
   const contactCount = contacts.length;
   const graphAgeDays = G.getGraphAgeMs(nowMs) / 86_400_000;
 
-  // ── 计算 per-contact surprise（论文 Remark: novelty 的具体化）──────
+  // ── Вычисление per-contact surprise (Remark из статьи: конкретизация novelty) ──────
 
   const contributions: Record<string, number> = {};
 
@@ -205,9 +205,9 @@ export function p6CuriosityWithHistory(
     const wTier = DUNBAR_TIER_WEIGHT[attrs.tier] / MAX_TIER_WEIGHT;
     const surprise = computeSurprise(attrs, nowMs, graphAgeDays);
 
-    // γ: 信息增益折扣（最近交互过的联系人打折）
+    // γ: скидка информационного прироста (снижение для недавно активных контактов)
     const lastActiveMs = readNodeMs(G, cid, "last_active_ms");
-    if (lastActiveMs <= 0) continue; // 从未交互 → 跳过
+    if (lastActiveMs <= 0) continue; // никогда не взаимодействовали → пропустить
     const timeSinceLastS = elapsedS(nowMs, lastActiveMs);
     const gamma = 1 - Math.exp(-timeSinceLastS / TAU_CURIOSITY);
 
@@ -217,7 +217,7 @@ export function p6CuriosityWithHistory(
     }
   }
 
-  // ── ADR-206 W4: 频道好奇心（信息饥渴）──────────────────────────
+  // ── ADR-206 W4: любопытство к каналу (информационный голод) ──────────────────────────
   for (const chId of G.getEntitiesByType("channel")) {
     const attrs = G.getChannel(chId);
     if (attrs.chat_type !== "channel") continue;
@@ -241,7 +241,7 @@ export function p6CuriosityWithHistory(
   }
 
   // ── Aggregate pressure: bounded, source-count safe ──────────────────────
-  // 先取 Top-K，再用均值聚合：这样 P6 反映“有没有强好奇线索”，而不是图规模。
+  // Сначала берём Top-K, затем агрегируем по среднему: так P6 отражает “есть ли сильный источник любопытства”, а не размер графа.
   const strongestSources = Object.entries(contributions)
     .sort(([, a], [, b]) => b - a)
     .slice(0, CURIOSITY_TOP_K);
@@ -259,7 +259,7 @@ export function p6CuriosityWithHistory(
 
   const smoothedCuriosity = activeHistory.reduce((a, b) => a + b, 0) / activeHistory.length;
 
-  // D2: Ambient Curiosity 兜底（冷启动时 curiosityHistory 为空，P6=η）
+  // D2: страховка Ambient Curiosity (при холодном старте curiosityHistory пуст, P6=η)
   const contactFamiliarity = Math.min(1, contactCount / DUNBAR_150);
   const timeFamiliarity = Math.min(1, graphAgeDays / FAMILIARITY_DAYS);
   const familiarity = contactFamiliarity * timeFamiliarity;
@@ -267,7 +267,7 @@ export function p6CuriosityWithHistory(
 
   const finalTotal = Math.max(smoothedCuriosity, ambientCuriosity);
 
-  // 缩放 Top-K contributions 使其总和 = finalTotal（IAUS 路由用）
+  // Масштабируем Top-K contributions так, чтобы их сумма = finalTotal (для маршрутизации IAUS)
   const routedContributions = Object.fromEntries(strongestSources);
   const rawContribSum = Object.values(routedContributions).reduce((a, b) => a + b, 0);
   if (rawContribSum > 0 && finalTotal > 0) {
@@ -276,7 +276,7 @@ export function p6CuriosityWithHistory(
       routedContributions[key] *= scale;
     }
   } else if (rawContribSum > 0 && finalTotal === 0) {
-    // P6=0 时清空 contributions（好奇心满足，不需要路由）
+    // При P6=0 очищаем contributions (любопытство удовлетворено, маршрутизация не нужна)
     for (const key of Object.keys(routedContributions)) {
       routedContributions[key] = 0;
     }

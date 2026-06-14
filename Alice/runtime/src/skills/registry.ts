@@ -1,5 +1,5 @@
 /**
- * Skill 注册表 — 已安装 Skill 的索引（registry.json CRUD）。
+ * Skill реестр — индекс установленных Skill (CRUD для registry.json).
  *
  * @see docs/adr/201-os-for-llm.md
  */
@@ -18,10 +18,10 @@ import {
 import { delimiter, dirname, resolve } from "node:path";
 import { compileSkillExecutable, getAliceStoreRoot, wrapSkillExecutable } from "./store.js";
 
-// 重新导出供其他模块使用
+// Реэкспорт для использования в других модулях
 export { getAliceStoreRoot } from "./store.js";
 
-/** 默认注册表路径。 */
+/** Путь к реестру по умолчанию. */
 const DEFAULT_REGISTRY_PATH = resolve(import.meta.dirname ?? ".", "../../skills/registry.json");
 /**
  * Runtime command-space roots.
@@ -35,28 +35,28 @@ const DEFAULT_SYSTEM_BIN = process.env.ALICE_SYSTEM_BIN_DIR
   : resolve(import.meta.dirname ?? ".", "../../dist/bin");
 const CONTAINER_SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
-/** 注册表条目。 */
+/** Запись реестра. */
 export interface RegistryEntry {
   name: string;
   version: string;
   hash: string;
-  /** 已安装命令目录。默认 = skills/store/{hash}。 */
+  /** Каталог установленных команд. По умолчанию = skills/store/{hash}. */
   storePath?: string;
-  /** 已安装命令入口。默认 = {storePath}/{name}。 */
+  /** Точка входа установленной команды. По умолчанию = {storePath}/{name}. */
   commandPath?: string;
-  /** 上一个版本的 hash（用于回滚）。 */
+  /** Хеш предыдущей версии (для отката). */
   previousHash?: string;
   installedAt: string;
-  /** 导出的动作名列表。 */
+  /** Список экспортированных имён действий. */
   actions: string[];
-  /** 注册的 ToolCategory 列表。 */
+  /** Список зарегистрированных ToolCategory. */
   categories: string[];
-  /** 申请的 Engine API 能力列表。 */
+  /** Список запрошенных возможностей Engine API. */
   capabilities: string[];
   backend: "http" | "shell" | "mcp";
 }
 
-/** 注册表内存结构。 */
+/** Структура реестра в памяти. */
 export type Registry = Record<string, RegistryEntry>;
 
 const BUILTIN_SYSTEM_REGISTRY: Registry = {
@@ -102,7 +102,7 @@ export function mergeRegistryWithBuiltIns(registry: Registry = loadRegistry()): 
 }
 
 /**
- * 加载注册表。不存在时返回空对象。
+ * Загрузить реестр. Если не существует — вернуть пустой объект.
  */
 export function loadRegistry(registryPath: string = DEFAULT_REGISTRY_PATH): Registry {
   if (!existsSync(registryPath)) return {};
@@ -110,7 +110,7 @@ export function loadRegistry(registryPath: string = DEFAULT_REGISTRY_PATH): Regi
     const raw = readFileSync(registryPath, "utf-8");
     return JSON.parse(raw) as Registry;
   } catch (e) {
-    // 注册表损坏——返回空但不静默丢失
+    // Реестр повреждён — возвращаем пустой, но не молча теряем данные
     console.warn(
       `[skills/registry] Failed to parse ${registryPath}, treating as empty:`,
       e instanceof Error ? e.message : String(e),
@@ -120,7 +120,7 @@ export function loadRegistry(registryPath: string = DEFAULT_REGISTRY_PATH): Regi
 }
 
 /**
- * 保存注册表。
+ * Сохранить реестр.
  */
 export function saveRegistry(
   entries: Registry,
@@ -134,7 +134,7 @@ export function saveRegistry(
 }
 
 /**
- * 获取单个条目。
+ * Получить одну запись.
  */
 export function getEntry(name: string, registryPath?: string): RegistryEntry | undefined {
   const registry = mergeRegistryWithBuiltIns(loadRegistry(registryPath));
@@ -142,7 +142,7 @@ export function getEntry(name: string, registryPath?: string): RegistryEntry | u
 }
 
 /**
- * 设置单个条目（upsert）。
+ * Установить одну запись (upsert).
  */
 export function setEntry(name: string, entry: RegistryEntry, registryPath?: string): void {
   const registry = loadRegistry(registryPath);
@@ -151,7 +151,7 @@ export function setEntry(name: string, entry: RegistryEntry, registryPath?: stri
 }
 
 /**
- * 删除单个条目。
+ * Удалить одну запись.
  */
 export function removeEntry(name: string, registryPath?: string): void {
   const registry = loadRegistry(registryPath);
@@ -160,23 +160,23 @@ export function removeEntry(name: string, registryPath?: string): void {
 }
 
 /**
- * 解析已安装 Skill 的目录。
+ * Разрешить каталог установленного Skill.
  */
 export function resolveInstalledSkillDir(entry: RegistryEntry): string {
   return entry.storePath ?? resolve(getAliceStoreRoot(), entry.hash);
 }
 
 /**
- * 解析已安装 Skill 的命令入口。
+ * Разрешить точку входа команды установленного Skill.
  */
 export function resolveInstalledSkillCommand(entry: RegistryEntry): string {
   return entry.commandPath ?? resolve(resolveInstalledSkillDir(entry), entry.name);
 }
 
 /**
- * Alice 内置系统程序目录。
+ * Каталог встроенных системных программ Alice.
  *
- * 语义上相当于 AI OS 的系统命令层，与用户安装的 Skill 并列。
+ * Семантически соответствует слою системных команд AI OS, наряду с пользовательскими Skill.
  */
 export function getAliceSystemBinDir(): string {
   return DEFAULT_SYSTEM_BIN;
@@ -188,11 +188,12 @@ export function getAliceBinDir(): string {
 }
 
 /**
- * 枚举 Alice 内置系统命令。
+ * Перечислить встроенные системные команды Alice.
  *
- * 注意：系统可见 bin 根目录同时也是已安装 skill 的公开导出前缀，
- * 因此这里不能直接扫描目录，否则会把 skill 误判为系统命令。
- * 真正的系统命令集合以 builtin registry 为准，再用文件存在性校验。
+ * Примечание: корневой каталог видимого системой bin одновременно является публичным
+ * префиксом экспорта установленных skill, поэтому прямое сканирование каталога недопустимо —
+ * оно ошибочно причислит skill к системным командам.
+ * Истинный набор системных команд определяется builtin registry с проверкой наличия файлов.
  */
 export function listAliceSystemCommands(systemBinDir: string = DEFAULT_SYSTEM_BIN): string[] {
   if (!existsSync(systemBinDir)) return [];
@@ -209,7 +210,7 @@ export function listAliceSystemCommands(systemBinDir: string = DEFAULT_SYSTEM_BI
     .sort();
 }
 
-/** 检查命令名是否为 Alice 内置系统命令。 */
+/** Проверить, является ли имя команды встроенной системной командой Alice. */
 export function isAliceSystemCommand(
   name: string,
   systemBinDir: string = DEFAULT_SYSTEM_BIN,
@@ -217,7 +218,7 @@ export function isAliceSystemCommand(
   return listAliceSystemCommands(systemBinDir).includes(name);
 }
 
-/** 解析 Alice 内置系统命令入口。 */
+/** Разрешить точку входа встроенной системной команды Alice. */
 export function resolveAliceSystemCommand(
   name: string,
   systemBinDir: string = DEFAULT_SYSTEM_BIN,
@@ -226,11 +227,11 @@ export function resolveAliceSystemCommand(
 }
 
 /**
- * 构建 Alice 命令空间的 PATH 前缀。
+ * Сформировать PATH-префикс пространства команд Alice.
  *
- * 顺序：
- * 1. 系统程序目录（alice-* + exported skills）
- * 2. 原宿主 PATH
+ * Порядок:
+ * 1. Каталог системных программ (alice-* + exported skills)
+ * 2. Исходный PATH хоста
  */
 export function buildAliceCommandPath(): string {
   const pathParts = [getAliceBinDir(), process.env.PATH].filter(Boolean);
@@ -246,7 +247,7 @@ export function buildAliceContainerCommandPath(binDir: string = getAliceBinDir()
 }
 
 /**
- * 为 Skill 进程构建运行时环境。
+ * Сформировать среду выполнения для процесса Skill.
  *
  * - PATH: prepend Alice command space (system commands + installed skills)
  * - ALICE_SKILL: optional process identity
@@ -323,7 +324,7 @@ export function exportInstalledSkillArtifacts(
 }
 
 /**
- * 启动时确保所有已安装 skill 的可执行文件存在于 bin 目录。
+ * При запуске убедиться, что исполняемые файлы всех установленных skill присутствуют в каталоге bin.
  */
 export function ensureAllArtifacts(options?: {
   registryPath?: string;
@@ -342,7 +343,7 @@ export function ensureAllArtifacts(options?: {
   for (const entry of Object.values(registry)) {
     const target = resolve(binDir, entry.name);
 
-    // 检查可执行包装器是否存在；旧 symlink / 旧 ELF / 不可执行文件都重导出。
+    // Проверить наличие исполняемой обёртки; старые symlink / ELF / неисполняемые файлы — переэкспортировать.
     const needsExport =
       !isExecutableFile(target) || isSymbolicLink(target) || !isSkillWrapper(target, entry.name);
     if (needsExport) {

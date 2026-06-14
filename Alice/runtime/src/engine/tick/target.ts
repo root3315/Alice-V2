@@ -1,9 +1,9 @@
 /**
- * 目标解析 + 上下文变量构建 — 从 act/prompt.ts 迁移。
+ * Разрешение цели + построение контекстных переменных — перенесено из act/prompt.ts.
  *
- * 被多个管线共享的叶子函数：
- * - resolveTarget — 从图中解析目标的社交上下文
- * - buildContextVars — 构建 脚本执行所需的上下文变量
+ * Листовые функции, разделяемые несколькими конвейерами:
+ * - resolveTarget — разрешить социальный контекст цели из графа
+ * - buildContextVars — построить контекстные переменные для выполнения скрипта
  *
  * @see docs/adr/142-action-space-architecture/README.md
  */
@@ -20,13 +20,13 @@ import type { ActionQueueItem } from "../action-queue.js";
 import type { ActContext } from "../react/orchestrator.js";
 
 /**
- * ADR-155: 沙箱上下文变量的具体接口（替代 Record<string, unknown>）。
+ * ADR-155: Конкретный интерфейс контекстных переменных песочницы (заменяет Record<string, unknown>).
  * @see docs/adr/155-branded-graph-id.md
  */
 export interface ContextVars {
   [key: string]: unknown;
   TARGET_CHAT?: TelegramId;
-  /** 内部使用：deriveParams 自动注入 contactId。不渲染到 prompt。 */
+  /** Только для внутреннего использования: deriveParams автоматически инжектирует contactId. В prompt не рендерится. */
   TARGET_CONTACT?: ContactNodeId;
   CHAT_NAME?: string;
   CONTACT_NAME?: string;
@@ -34,15 +34,15 @@ export interface ContextVars {
 }
 
 /**
- * ADR-172: 清理线程标题中的 raw graph ID。
- * 将 `anomaly_channel:-100xxx` / `evaluate_channel:-100xxx` 中的 graph ID 替换为泛称。
+ * ADR-172: Очистка raw graph ID из заголовков тредов.
+ * Заменяет graph ID вида `anomaly_channel:-100xxx` / `evaluate_channel:-100xxx` на обобщённое обозначение.
  */
 function sanitizeThreadTitle(title: string): string {
-  // 替换 channel:xxx 和 contact:xxx 格式的 ID
+  // Заменяем ID формата channel:xxx и contact:xxx
   return title.replace(/(?:channel|contact):[+-]?\d+/g, "(chat)");
 }
 
-/** 从图中解析目标的社交上下文（合并 resolveDisplayName + buildActionFooter 的共享查找）。 */
+/** Разрешить социальный контекст цели из графа (объединяет общий поиск resolveDisplayName + buildActionFooter). */
 export interface ResolvedTarget {
   displayName: string;
   contactId: ContactNodeId | null;
@@ -83,17 +83,17 @@ export function resolveTarget(G: WorldModel, target: string): ResolvedTarget {
 }
 
 /**
- * ADR-70 P0.3: 构建完整上下文变量。
- * 所有 ID 通过此函数注入，LLM 不需要猜。
- * @see docs/adr/155-branded-graph-id.md — ContextVars 接口
+ * ADR-70 P0.3: Построить полный набор контекстных переменных.
+ * Все ID инжектируются через эту функцию — LLM не должен их угадывать.
+ * @see docs/adr/155-branded-graph-id.md — интерфейс ContextVars
  */
 export function buildContextVars(
   ctx: ActContext,
   item: ActionQueueItem,
   resolved: ResolvedTarget,
 ): ContextVars {
-  // ADR-152: TARGET_CHAT 使用 Telegram 原生数字 ID（TelegramId），
-  // graph ID 前缀系统保持为纯内部实现细节。
+  // ADR-152: TARGET_CHAT использует нативный числовой ID Telegram (TelegramId),
+  // система префиксов graph ID остаётся сугубо внутренней деталью реализации.
   const targetChat = item.target != null ? (extractNumericId(item.target) ?? undefined) : undefined;
 
   const vars: ContextVars = {
@@ -104,9 +104,9 @@ export function buildContextVars(
     ACTIVE_THREADS: undefined,
   };
 
-  // 活跃线程（供 self_topic_advance() 调用使用）
-  // ADR-172: 过滤标题中残留的 raw graph ID（channel:xxx / contact:xxx）
-  // ADR-190: 过滤 system thread，防止 anomaly/evaluate 占满 ACTIVE_THREADS 槽位
+  // Активные треды (используются вызовами self_topic_advance())
+  // ADR-172: фильтруем оставшиеся raw graph ID в заголовках (channel:xxx / contact:xxx)
+  // ADR-190: фильтруем системные треды, чтобы anomaly/evaluate не заняли все слоты ACTIVE_THREADS
   const threads = typedQuery(ctx.dispatcher, "open_topics");
   if (threads && threads.length > 0) {
     vars.ACTIVE_THREADS = threads

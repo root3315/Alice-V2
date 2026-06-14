@@ -1,14 +1,14 @@
 /**
- * 远程 Skill Store 客户端。
+ * Клиент удалённого Skill Store.
  *
- * 通过 HTTP API 搜索、下载和发布 Skill 包。
- * Store URL 通过 ALICE_STORE_URL 环境变量配置。
+ * Поиск, загрузка и публикация пакетов Skill через HTTP API.
+ * URL Store задаётся переменной окружения ALICE_STORE_URL.
  *
- * 协议：
- *   GET  /api/v1/skills?query=...    搜索/列出
- *   GET  /api/v1/skills/:name        获取 manifest + 元信息
- *   GET  /api/v1/skills/:name/archive  下载 tarball
- *   POST /api/v1/skills              发布（需要 ALICE_STORE_TOKEN）
+ * Протокол:
+ *   GET  /api/v1/skills?query=...    поиск/список
+ *   GET  /api/v1/skills/:name        получить manifest + метаинформацию
+ *   GET  /api/v1/skills/:name/archive  скачать tarball
+ *   POST /api/v1/skills              публикация (требует ALICE_STORE_TOKEN)
  *
  * @see docs/adr/201-os-for-llm.md
  */
@@ -22,7 +22,7 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("remote-store");
 
-/** 远程 Store 的 Skill 摘要。 */
+/** Краткая информация о Skill в удалённом Store. */
 export interface RemoteSkillSummary {
   name: string;
   version: string;
@@ -31,7 +31,7 @@ export interface RemoteSkillSummary {
   hash: string;
 }
 
-/** 远程 Store 的 Skill 详情。 */
+/** Подробная информация о Skill в удалённом Store. */
 export interface RemoteSkillInfo {
   name: string;
   version: string;
@@ -40,22 +40,22 @@ export interface RemoteSkillInfo {
   manifest: Record<string, unknown>;
 }
 
-/** 获取远程 Store URL（null = 未配置）。 */
+/** Получить URL удалённого Store (null = не настроен). */
 export function getRemoteStoreUrl(): string | null {
   const url = process.env.ALICE_STORE_URL?.trim();
   return url || null;
 }
 
-/** 获取远程 Store 认证 token（发布用）。 */
+/** Получить токен аутентификации удалённого Store (для публикации). */
 export function getRemoteStoreToken(): string | null {
   const token = process.env.ALICE_STORE_TOKEN?.trim();
   return token || null;
 }
 
 /**
- * 搜索远程 Skill Store。
+ * Поиск в удалённом Skill Store.
  *
- * @returns 匹配的 Skill 列表，或 null（Store 不可用）
+ * @returns Список подходящих Skill или null (Store недоступен)
  */
 export async function searchRemoteStore(query?: string): Promise<RemoteSkillSummary[] | null> {
   const storeUrl = getRemoteStoreUrl();
@@ -84,7 +84,7 @@ export async function searchRemoteStore(query?: string): Promise<RemoteSkillSumm
 }
 
 /**
- * 获取远程 Skill 详情。
+ * Получить подробную информацию об удалённом Skill.
  */
 export async function getRemoteSkillInfo(name: string): Promise<RemoteSkillInfo | null> {
   const storeUrl = getRemoteStoreUrl();
@@ -105,14 +105,14 @@ export async function getRemoteSkillInfo(name: string): Promise<RemoteSkillInfo 
 }
 
 /**
- * 从远程 Store 下载 Skill 包到本地目录。
+ * Загрузить пакет Skill из удалённого Store в локальный каталог.
  *
- * 下载后校验 SHA256 hash。校验失败则删除下载文件并抛错。
+ * После загрузки проверяет SHA256 hash. При несоответствии — удаляет файл и бросает ошибку.
  *
- * @param name Skill 名称
- * @param targetDir 下载目标目录
- * @param expectedHash 预期 hash（来自搜索结果的 hash 字段）
- * @returns 下载的 tarball 路径
+ * @param name Имя Skill
+ * @param targetDir Целевой каталог загрузки
+ * @param expectedHash Ожидаемый hash (поле hash из результатов поиска)
+ * @returns Путь к загруженному tarball
  */
 export async function downloadSkillArchive(
   name: string,
@@ -141,10 +141,10 @@ export async function downloadSkillArchive(
   const fileStream = createWriteStream(archivePath);
   const hasher = createHash("sha256");
 
-  // Web ReadableStream → Node Readable（fetch().body 是 Web API 的 ReadableStream）
+  // Web ReadableStream → Node Readable (fetch().body является Web API ReadableStream)
   const nodeStream = Readable.fromWeb(resp.body as import("node:stream/web").ReadableStream);
 
-  // pipeline 自动处理背压和错误传播
+  // pipeline автоматически обрабатывает обратное давление и распространение ошибок
   await pipeline(
     nodeStream,
     async function* (source) {
@@ -157,7 +157,7 @@ export async function downloadSkillArchive(
     fileStream,
   );
 
-  // 校验 hash
+  // Проверить hash
   const actualHash = hasher.digest("hex").slice(0, 16);
   if (expectedHash && actualHash !== expectedHash) {
     rmSync(archivePath, { force: true });
@@ -169,11 +169,11 @@ export async function downloadSkillArchive(
 }
 
 /**
- * 发布 Skill 到远程 Store。
+ * Опубликовать Skill в удалённом Store.
  *
- * @param archivePath tarball 路径
- * @param manifest Skill manifest 数据
- * @returns 发布的 hash
+ * @param archivePath Путь к tarball
+ * @param manifest Данные manifest Skill
+ * @returns Hash опубликованного пакета
  */
 export async function publishToRemoteStore(
   archivePath: string,
@@ -212,20 +212,20 @@ export async function publishToRemoteStore(
 }
 
 /**
- * 从远程 Store 下载 Skill 并解压到本地 skills/ 目录。
+ * Загрузить Skill из удалённого Store и распаковать в локальный каталог skills/.
  *
- * 返回解压后的 manifest.yaml 路径，可直接传给 installSkill()。
- * 下载失败或 hash 校验失败时抛错。
+ * Возвращает путь к распакованному manifest.yaml, который можно сразу передать в installSkill().
+ * При ошибке загрузки или несоответствии hash — бросает ошибку.
  *
- * @param name Skill 名称
- * @param skillsRoot 本地 skills/ 根目录
- * @returns manifest.yaml 的绝对路径
+ * @param name Имя Skill
+ * @param skillsRoot Локальный корневой каталог skills/
+ * @returns Абсолютный путь к manifest.yaml
  */
 export async function downloadAndExtractRemoteSkill(
   name: string,
   skillsRoot: string,
 ): Promise<string> {
-  // 先查远程信息获取 hash
+  // Сначала запросить удалённую информацию для получения hash
   const info = await getRemoteSkillInfo(name);
   if (!info) {
     throw new Error(`Skill "${name}" not found in remote Store`);
@@ -238,10 +238,10 @@ export async function downloadAndExtractRemoteSkill(
   mkdirSync(tmpDir, { recursive: true });
 
   try {
-    // 下载 tarball（带 hash 校验）
+    // Скачать tarball (с проверкой hash)
     const archivePath = await downloadSkillArchive(name, tmpDir, info.hash);
 
-    // 解压到 skills/<name>/
+    // Распаковать в skills/<name>/
     const extractDir = resolve(skillsRoot, name);
     mkdirSync(extractDir, { recursive: true });
     execFileSync("tar", ["-xzf", archivePath, "-C", extractDir], { timeout: 30_000 });
@@ -254,7 +254,7 @@ export async function downloadAndExtractRemoteSkill(
     log.info("Downloaded and extracted remote skill", { name, hash: info.hash });
     return manifestPath;
   } finally {
-    // 清理临时下载目录
+    // Очистить временный каталог загрузки
     rmSync(tmpDir, { recursive: true, force: true });
   }
 }

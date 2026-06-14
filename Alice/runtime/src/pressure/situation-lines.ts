@@ -1,20 +1,20 @@
 /**
- * 压力语义化：数字 → 自然语言情境描述。
+ * Семантизация давления: числа → описание контекста на естественном языке.
  *
- * 压力数字是代码内部的排序依据，不是给 LLM 看的。
- * LLM 需要的是情境事实——"你已经 3 天没和 Carol 说话了"，
- * 而不是 "relationship cooling (P3=2.1)"。
+ * Числа давления — внутренний критерий сортировки кода, а не данные для LLM.
+ * LLM нужны контекстные факты — "ты не разговаривала с Carol уже 3 дня",
+ * а не "relationship cooling (P3=2.1)".
  *
- * per-entity 数据已经在 AllPressures.contributions 中，
- * 只需关联图属性生成自然语言。
+ * Данные per-entity уже есть в AllPressures.contributions;
+ * нужно лишь связать их с атрибутами графа для генерации естественного языка.
  *
- * D2 管线统一（Wave 5）：
- * - SemanticTriple: 论文 Def 3.5 ⟨F,T,S⟩ 的结构化表示
- * - generateSemanticTriples(): 生成全量三元组（供 VoI 等外部消费者使用）
- * - buildSituationBriefing(): 支持焦点集驱动渲染 + belief hedging
+ * Унификация конвейера D2 (Wave 5):
+ * - SemanticTriple: структурированное представление Def 3.5 ⟨F,T,S⟩ из статьи
+ * - generateSemanticTriples(): генерирует полный набор тройок (для внешних потребителей вроде VoI)
+ * - buildSituationBriefing(): поддерживает рендеринг на основе фокусного набора + belief hedging
  *
- * ADR-194: 双语态渲染（Two-voice rendering）。
- * 当前 target 用行动语态（obligation），非当前 target 用环境语态（ambient）。
+ * ADR-194: двухголосый рендеринг (Two-voice rendering).
+ * Текущий target — активный залог (obligation); остальные target — окружающий залог (ambient).
  * @see docs/adr/194-situation-briefing-inbox-anxiety.md
  *
  * @see docs/adr/57-social-cognition-architecture.md §9
@@ -29,24 +29,24 @@ import { elapsedS, readNodeMs } from "./clock.js";
 import { effectiveObligation, effectiveOutgoing, effectiveUnread } from "./signal-decay.js";
 import { DEFAULT_SATURATION_COST_CONFIG } from "./social-cost.js";
 
-/** 一天的秒数。 */
+/** Секунд в сутках. */
 const SECONDS_PER_DAY = 86_400;
 
-/** 最多输出的实体行数。 */
+/** Максимальное число строк сущностей в выводе. */
 const MAX_ENTITY_LINES = 6;
 
-/** 压力维度 key。 */
+/** Ключи измерений давления. */
 const PRESSURE_KEYS = ["P1", "P2", "P3", "P4", "P5", "P6"] as const;
 export type PressureKey = (typeof PRESSURE_KEYS)[number];
 
-// -- D2 Trend: 压力时间导数方向（论文 Def 3.5 Semantic Triple ⟨F,T,S⟩） -------
+// -- D2 Trend: направление временной производной давления (Def 3.5 Semantic Triple ⟨F,T,S⟩ из статьи) -------
 
 export type Trend = "rising" | "steady" | "falling";
 
 /**
- * 计算压力时间导数方向。
- * 比较当前值与历史均值，判断压力维度的趋势。
- * 历史不足 3 ticks 时默认 steady（数据不足以判断趋势）。
+ * Вычислить направление временной производной давления.
+ * Сравниваем текущее значение со средним по истории, определяя тенденцию измерения давления.
+ * При истории менее 3 тиков по умолчанию steady (данных недостаточно для суждения о тренде).
  */
 export function computeTrend(history: number[], currentValue: number): Trend {
   if (history.length < 3) return "steady";
@@ -57,8 +57,8 @@ export function computeTrend(history: number[], currentValue: number): Trend {
   return "steady";
 }
 
-/** Trend 修饰后缀：嵌入 Signal 文本，让 LLM 感知变化方向。
- * ADR-196 F11: 使用自然语言替代技术术语 */
+/** Суффикс-модификатор Trend: встраивается в текст Signal, чтобы LLM воспринимал направление изменения.
+ * ADR-196 F11: использовать естественный язык вместо технических терминов */
 function trendSuffix(trend: Trend): string {
   if (trend === "rising") return " — and picking up";
   if (trend === "falling") return " — and calming down";
@@ -66,9 +66,9 @@ function trendSuffix(trend: Trend): string {
 }
 
 /**
- * 包装生成器：在原始 Signal 后附加 Trend 修饰。
- * 避免逐函数修改，保持各 lineP* 函数的纯净性。
- * ADR-194: 新增 ambient 参数透传。
+ * Обёртка генератора: добавляет модификатор Trend после исходного Signal.
+ * Избегает поштучного изменения функций, сохраняя чистоту каждой lineP*.
+ * ADR-194: добавлен проброс параметра ambient.
  */
 function withTrend(
   fn: (eid: string, intensity: Intensity, G: WorldModel, nowMs: number, ambient: boolean) => string,
@@ -84,64 +84,64 @@ function withTrend(
     fn(eid, intensity, G, nowMs, ambient) + trendSuffix(trend);
 }
 
-// -- 实体名字解析 ---------------------------------------------------------------
+// -- Разрешение имён сущностей ---------------------------------------------------------------
 
-/** ADR-172: 委托给 safeDisplayName — 永不返回 raw graph ID。 */
+/** ADR-172: делегируем safeDisplayName — никогда не возвращает сырой graph ID. */
 function entityDisplayName(eid: string, G: WorldModel): string {
   return safeDisplayName(G, eid);
 }
 
-// -- 强度分级（维度内百分位） -----------------------------------------------------
+// -- Градации интенсивности (процентиль внутри измерения) -----------------------------------------------------
 
 export type Intensity = "low" | "mid" | "high";
 
-// -- D2 Semantic Triple（论文 Def 3.5 ⟨F,T,S⟩ 的结构化表示） -----------------
+// -- D2 Semantic Triple (структурированное представление Def 3.5 ⟨F,T,S⟩ из статьи) -----------------
 
 /**
- * 语义三元组——压力维度的结构化描述。
+ * Семантическая тройка — структурированное описание измерения давления.
  *
- * 每个三元组包含：
- * - Factor (F): 哪个压力维度（P1-P6）
- * - Trend (T): 时间导数方向（rising/steady/falling）
- * - Signal (S): 自然语言描述
+ * Каждая тройка содержит:
+ * - Factor (F): какое измерение давления (P1-P6)
+ * - Trend (T): направление временной производной (rising/steady/falling)
+ * - Signal (S): описание на естественном языке
  *
- * 额外字段用于排序和 VoI 计算。
+ * Дополнительные поля используются для сортировки и расчёта VoI.
  *
  * @see paper-five-dim/ Def 3.5: Semantic Triple ⟨F,T,S⟩
  */
 export interface SemanticTriple {
-  /** Factor: 哪个压力维度。 */
+  /** Factor: какое измерение давления. */
   factor: PressureKey;
-  /** Trend: 时间导数方向。 */
+  /** Trend: направление временной производной. */
   trend: Trend;
-  /** Signal: 自然语言描述。 */
+  /** Signal: описание на естественном языке. */
   signal: string;
-  /** 关联实体 ID。 */
+  /** ID связанной сущности. */
   entityId: string;
-  /** 原始压力强度分级。 */
+  /** Исходная градация интенсивности давления. */
   intensity: Intensity;
-  /** 信念不确定性（来自 BeliefStore，可选）。越高越不确定。 */
+  /** Неопределённость убеждения (из BeliefStore, опционально). Чем выше — тем неопределённее. */
   confidence?: number;
 }
 
 /**
- * 在同一维度的所有贡献值中，按百分位判断强度。
- * 单实体时 ≥ 阈值即 high；多实体时按排名。
+ * Определить интенсивность по процентилю среди всех вкладов в одном измерении.
+ * При одной сущности: ≥ порога → high; при нескольких — по рангу.
  */
 function intensityInDimension(value: number, allValues: number[]): Intensity {
   if (allValues.length <= 1) return value > 0 ? "high" : "low";
   const sorted = [...allValues].sort((a, b) => b - a);
-  // M1 修复: indexOf 对浮点重复值不稳定（-1 导致 percentile > 1）。
-  // 改用 findIndex + <= 比较，避免浮点精度问题和重复值歧义。
+  // M1 fix: indexOf нестабилен для повторяющихся значений с плавающей точкой (-1 даёт percentile > 1).
+  // Используем findIndex + <= сравнение, избегая проблем точности и неоднозначности дублей.
   const rank = sorted.findIndex((v) => v <= value);
-  if (rank < 0) return "high"; // 防御：值未找到（理论不可能）
+  if (rank < 0) return "high"; // защита: значение не найдено (теоретически невозможно)
   const percentile = 1 - rank / (sorted.length - 1);
   if (percentile >= 0.75) return "high";
   if (percentile >= 0.35) return "mid";
   return "low";
 }
 
-// -- 按维度生成自然语言 -----------------------------------------------------------
+// -- Генерация естественного языка по измерениям -----------------------------------------------------------
 
 function lineP5(
   eid: string,
@@ -154,7 +154,7 @@ function lineP5(
   if (!G.has(eid)) {
     return ambient ? `${name} sent you something.` : `${name} is waiting for your reply.`;
   }
-  // ADR-194: 环境语态——中性通知，不暗示行动义务
+  // ADR-194: окружающий залог — нейтральное уведомление, без намёка на обязательство действовать
   if (ambient) {
     switch (intensity) {
       case "low":
@@ -166,11 +166,11 @@ function lineP5(
     }
   }
   const attrs = G.getChannel(eid);
-  // ADR-124: 使用 effectiveObligation 替代 pending_directed
+  // ADR-124: использовать effectiveObligation вместо pending_directed
   // @see docs/adr/126-obligation-field-decay.md §D6
   const pending = effectiveObligation(G, eid, nowMs);
   const directedText = String(attrs.last_directed_text ?? "");
-  // CA 邻接对：引用对方的消息让 LLM 知道"在等什么回复"
+  // Смежная пара CA: цитируем сообщение собеседника, чтобы LLM знал, "на какой ответ ждут"
   const quote = directedText ? `${name} said "${directedText}"` : "";
   switch (intensity) {
     case "low":
@@ -200,9 +200,9 @@ function lineP1(
 ): string {
   const name = entityDisplayName(eid, G);
   if (!G.has(eid)) return `A few new messages in ${name}.`;
-  // ADR-134 D5: 使用 effectiveUnread 保持与 P1 计算一致
+  // ADR-134 D5: использовать effectiveUnread для согласованности с расчётом P1
   const unread = Math.round(effectiveUnread(G, eid, nowMs));
-  // ADR-194: 环境语态——中性事实，不触发清理冲动
+  // ADR-194: окружающий залог — нейтральный факт, не провоцирует порыв "разобрать"
   if (ambient) {
     switch (intensity) {
       case "low":
@@ -224,8 +224,8 @@ function lineP1(
 }
 
 /**
- * 从 contact 实体找到对应私聊 channel 上的 last_outgoing_text。
- * 命名规则：contact:telegram:X → channel:telegram:X（私聊共享 native ID）。
+ * Найти last_outgoing_text из приватного channel, соответствующего сущности contact.
+ * Правило именования: contact:telegram:X → channel:telegram:X (приватный чат разделяет native ID).
  */
 function findLastOutgoingText(eid: string, G: WorldModel): string {
   // contact:telegram:123 → channel:telegram:123
@@ -244,17 +244,17 @@ function lineP3(
   const name = entityDisplayName(eid, G);
   if (!G.has(eid)) return `It's been a while since you talked to ${name}.`;
 
-  // ADR-104: P3 contributions 包含 contact（私聊冷却）和 channel（群组缺席）两种实体。
+  // ADR-104: P3 contributions содержат сущности двух типов — contact (охлаждение приватного чата) и channel (отсутствие в группе).
   const nodeType = G.getNodeType(eid);
   if (nodeType === "channel") {
     return lineP3Group(eid, name, intensity, G, nowMs, ambient);
   }
 
   const lastActiveMs = readNodeMs(G, eid, "last_active_ms");
-  // 防护：last_active_ms=0 意味着"从未交互"，不应算出 epoch 以来的天数
+  // Защита: last_active_ms=0 означает "никогда не взаимодействовали" — не должны вычислять дни с эпохи
   if (lastActiveMs <= 0) return `You haven't talked to ${name} yet.`;
   const days = Math.floor(elapsedS(nowMs, lastActiveMs) / SECONDS_PER_DAY);
-  // 支柱 ④: 引用 Alice 上次说的话，让 LLM 知道对话断在哪
+  // Опора ④: цитируем последнее сказанное Алисой, чтобы LLM знал, на чём прервался диалог
   const lastSaid = findLastOutgoingText(eid, G);
   const suffix = lastSaid ? ` Last time, you said "${lastSaid}"` : "";
   switch (intensity) {
@@ -271,7 +271,7 @@ function lineP3(
   }
 }
 
-/** P3 群组缺席子维度：Alice 多久没在群里说话了。 */
+/** Суб-измерение P3 отсутствия в группе: как давно Алиса не говорила в группе. */
 function lineP3Group(
   eid: string,
   name: string,
@@ -283,7 +283,7 @@ function lineP3Group(
   const lastAliceMs = readNodeMs(G, eid, "last_alice_action_ms");
   if (lastAliceMs <= 0) return `You haven't spoken in ${name} yet.`;
   const days = Math.floor(elapsedS(nowMs, lastAliceMs) / SECONDS_PER_DAY);
-  // ADR-194: 环境语态——不制造缺席愧疚
+  // ADR-194: окружающий залог — не создаём чувство вины за отсутствие
   if (ambient) {
     switch (intensity) {
       case "low":
@@ -333,7 +333,7 @@ function lineP6(
     case "mid":
       return `Something new happening around ${name}.`;
     case "high":
-      // ADR-194: 环境语态——去掉 "worth checking out" 行动建议
+      // ADR-194: окружающий залог — убрать призыв к действию "worth checking out"
       return ambient
         ? `A lot going on around ${name} lately.`
         : `A lot of fresh activity around ${name} \u2014 worth checking out.`;
@@ -354,7 +354,7 @@ function lineP2(
     case "mid":
       return `There's new information about ${name}.`;
     case "high":
-      // ADR-194: 环境语态——去掉 "you haven't processed" 任务帧措辞
+      // ADR-194: окружающий залог — убрать формулировку задания "you haven't processed"
       return ambient
         ? `There's been new information about ${name}.`
         : `Important new information about ${name} that you haven't processed.`;
@@ -380,9 +380,9 @@ const LINE_GENERATORS: Record<
   P2: withTrend(lineP2),
 };
 
-// -- 定性总况 -------------------------------------------------------------------
+// -- Качественный обзор -------------------------------------------------------------------
 
-// ADR-194: 定性总况从过载帧改为环境帧——"世界在转"而非"你超负荷"
+// ADR-194: качественный обзор переведён из кадра перегрузки в окружающий кадр — "мир крутится", а не "ты перегружена"
 function qualitativeOverall(api: number): string {
   if (api < 0.5) return "Everything is calm right now.";
   if (api < 1.5) return "A few things on your mind.";
@@ -391,7 +391,7 @@ function qualitativeOverall(api: number): string {
   return "The world's been busy while you're here.";
 }
 
-// -- 核心函数 -------------------------------------------------------------------
+// -- Основные функции -------------------------------------------------------------------
 
 interface EntityPressureEntry {
   entityId: string;
@@ -399,33 +399,33 @@ interface EntityPressureEntry {
   dominantValue: number;
 }
 
-/** D2 焦点集 + belief 选项（Wave 5 新增，向后兼容）。 */
+/** Опции D2 фокусного набора + belief (добавлены в Wave 5, обратно совместимы). */
 export interface SituationBriefingOptions {
-  /** 焦点实体 ID 集合。焦点实体优先渲染（即使压力值不是最高）。 */
+  /** Набор ID фокусных сущностей. Фокусные сущности рендерятся приоритетно (даже если значение давления не самое высокое). */
   focalEntities?: string[];
-  /** BeliefStore。sigma^2 高时追加 hedging language（模糊修饰）。 */
+  /** BeliefStore. При высоком sigma^2 добавляется hedging language (размытые формулировки). */
   beliefs?: BeliefStore;
   /**
-   * 当前 action scope 的 target（channel entity ID）。
-   * ADR-194: 非此 target 的 entity 使用环境语态（ambient=true），
-   * 避免 obligation 措辞制造收件箱焦虑。
+   * Target текущего action scope (channel entity ID).
+   * ADR-194: сущности, отличные от этого target, используют окружающий залог (ambient=true),
+   * чтобы формулировки obligation не создавали тревогу входящих.
    */
   actionTarget?: string;
 }
 
-// -- D2 hedging language（信念不确定性 → 模糊修饰） --------------------------
+// -- D2 hedging language (неопределённость убеждения → размытые формулировки) --------------------------
 
-/** sigma^2 阈值：高于此值认为"高不确定性"。 */
+/** Порог sigma^2: выше этого значения считается "высокой неопределённостью". */
 const SIGMA2_HIGH = 0.5;
-/** sigma^2 阈值：低于此值认为"高确信度"。 */
+/** Порог sigma^2: ниже этого значения считается "высокой уверенностью". */
 const SIGMA2_LOW = 0.15;
 
 /**
- * 根据 belief 的 sigma^2 为信号文本添加 hedging 修饰。
+ * Добавить hedging-модификатор к тексту сигнала на основе sigma^2 убеждения.
  *
- * - 高 sigma^2 (> 0.5): "You vaguely recall..." 前缀
- * - 低 sigma^2 (< 0.15): "You're pretty sure — " 前缀
- * - 中间: 原文不变
+ * - Высокий sigma^2 (> 0.5): префикс "You vaguely recall..."
+ * - Низкий sigma^2 (< 0.15): префикс "You're pretty sure — "
+ * - Промежуточный: текст без изменений
  *
  * @see paper-pomdp/ §3: Belief Uncertainty
  */
@@ -440,8 +440,8 @@ function applyHedging(signal: string, sigma2: number): string {
 }
 
 /**
- * 从 BeliefStore 获取实体的综合 sigma^2（取 tier 和 mood 中的较大值）。
- * 取较大值是因为任一维度的高不确定性都应触发 hedging。
+ * Получить суммарный sigma^2 сущности из BeliefStore (берём максимум из tier и mood).
+ * Берём максимум, так как высокая неопределённость в любом измерении должна запускать hedging.
  */
 function entitySigma2(eid: string, beliefs: BeliefStore | undefined): number | undefined {
   if (!beliefs) return undefined;
@@ -450,9 +450,9 @@ function entitySigma2(eid: string, beliefs: BeliefStore | undefined): number | u
   return Math.max(bTier.sigma2, bMood.sigma2);
 }
 
-// -- 收集逻辑（从 buildSituationBriefing 提取，供 generateSemanticTriples 共用）
+// -- Логика сбора (вынесена из buildSituationBriefing для совместного использования с generateSemanticTriples)
 
-/** 收集所有 (entity, pressureKey, value) 和维度值映射。 */
+/** Собрать все (entity, pressureKey, value) и отображение значений измерений. */
 function collectEntityPressures(p: AllPressures): {
   entityMap: Map<string, { key: PressureKey; value: number }[]>;
   dimensionValues: Record<PressureKey, number[]>;
@@ -485,16 +485,16 @@ function collectEntityPressures(p: AllPressures): {
   return { entityMap, dimensionValues };
 }
 
-/** 构建维度总量映射（用于 trend 计算）。 */
+/** Построить отображение суммарных значений измерений (используется для расчёта trend). */
 function dimTotalsFrom(p: AllPressures): Record<PressureKey, number> {
   return { P1: p.P1, P2: p.P2, P3: p.P3, P4: p.P4, P5: p.P5, P6: p.P6 };
 }
 
 /**
- * 生成全量语义三元组。
+ * Сгенерировать полный набор семантических тройок.
  *
- * 将六维压力场的 per-entity 贡献转化为结构化三元组 ⟨F,T,S⟩。
- * 供内部渲染和外部消费者（如 D5 VoI 计算）使用。
+ * Преобразует per-entity вклады шестимерного поля давления в структурированные тройки ⟨F,T,S⟩.
+ * Используется для внутреннего рендеринга и внешними потребителями (например, расчёт VoI в D5).
  *
  * @see paper-five-dim/ Def 3.5: Semantic Triple ⟨F,T,S⟩
  */
@@ -509,14 +509,14 @@ export function generateSemanticTriples(
   const dimTotals = dimTotalsFrom(p);
   const triples: SemanticTriple[] = [];
 
-  // 为每个实体的每个有贡献维度生成三元组
+  // Для каждой сущности генерируем тройку по каждому измерению с ненулевым вкладом
   for (const [eid, contribs] of entityMap) {
     for (const { key: pk, value } of contribs) {
       const intensity = intensityInDimension(value, dimensionValues[pk]);
       const dimHistory = p.pressureHistory?.[pk] ?? [];
       const trend = computeTrend(dimHistory, dimTotals[pk]);
       const generator = LINE_GENERATORS[pk];
-      // ADR-194: 三元组用于 VoI 计算，始终使用行动语态（ambient=false）
+      // ADR-194: тройки используются для расчёта VoI, всегда применяем активный залог (ambient=false)
       const signal = generator(eid, intensity, G, nowMs, trend, false);
       const sigma2 = entitySigma2(eid, beliefs);
 
@@ -535,23 +535,23 @@ export function generateSemanticTriples(
 }
 
 /**
- * 将六维压力场转化为 per-entity 自然语言情境描述。
+ * Преобразовать шестимерное поле давления в per-entity описание контекста на естественном языке.
  *
- * 逻辑：
- * 1. 从 contributions 收集 (entityId, pressureKey, value) 三元组
- * 2. 按 entity 分组——每个 entity 取最大贡献维度作为"主调"
- * 3. 按最大贡献值降序排列（最紧迫的排最前）
- *    - D2 Wave 5: focalEntities 优先（即使压力值不是最高）
- * 4. 取 top-6 实体，每个生成一句自然语言
- *    - D2 Wave 5: belief sigma^2 高时追加 hedging language
- * 5. 末尾追加定性总况
+ * Логика:
+ * 1. Из contributions собираем тройки (entityId, pressureKey, value)
+ * 2. Группируем по entity — для каждой entity берём измерение с максимальным вкладом как "доминирующее"
+ * 3. Сортируем по убыванию максимального вклада (наиболее срочное — первым)
+ *    - D2 Wave 5: focalEntities идут первыми (даже если значение давления не максимальное)
+ * 4. Берём top-6 сущностей, для каждой генерируем одно предложение на естественном языке
+ *    - D2 Wave 5: при высоком belief sigma^2 добавляем hedging language
+ * 5. В конце добавляем качественный обзор
  *
- * 数字的唯一作用：排序和语气强度。不出现在输出文本中。
+ * Единственная роль чисел: сортировка и интенсивность тона. В выходной текст не попадают.
  *
- * @param p 六维压力结果
- * @param G 伴侣图
- * @param tick 当前 tick
- * @param options D2 焦点集 + belief 选项（可选，向后兼容）
+ * @param p шестимерный результат давления
+ * @param G граф-компаньон
+ * @param tick текущий тик
+ * @param options опции D2 фокусного набора + belief (опционально, обратно совместимо)
  *
  * @see paper-five-dim/ Def 3.5: Semantic Triple ⟨F,T,S⟩
  * @see paper-five-dim/ Definition 7.1: Context Assembly
@@ -565,14 +565,14 @@ export function buildSituationBriefing(
 ): string[] {
   const focalSet = options?.focalEntities ? new Set(options.focalEntities) : null;
   const beliefs = options?.beliefs;
-  // ADR-187 D1: 视野裁剪 — 预计算 actionTarget 的 numeric ID
+  // ADR-187 D1: обрезка обзора — предварительно вычисляем numeric ID actionTarget
   const actionTarget = options?.actionTarget ?? null;
   const actionTargetNum = actionTarget ? extractNumericId(actionTarget) : null;
 
-  // 1. 收集所有 (entity, key, value)
+  // 1. Собираем все (entity, key, value)
   const { entityMap, dimensionValues } = collectEntityPressures(p);
 
-  // 2. 按 entity 分组，取最大贡献维度
+  // 2. Группируем по entity, берём измерение с максимальным вкладом
   const entries: EntityPressureEntry[] = [];
   for (const [eid, contribs] of entityMap) {
     let best = contribs[0];
@@ -582,7 +582,7 @@ export function buildSituationBriefing(
     entries.push({ entityId: eid, dominantKey: best.key, dominantValue: best.value });
   }
 
-  // 3. 排序：focal 实体优先（保持内部压力降序），然后非 focal 按压力降序
+  // 3. Сортировка: focal-сущности приоритетны (сохраняем внутреннюю сортировку по убыванию давления), затем non-focal по убыванию давления
   if (focalSet && focalSet.size > 0) {
     const focalEntries: EntityPressureEntry[] = [];
     const nonFocalEntries: EntityPressureEntry[] = [];
@@ -593,27 +593,27 @@ export function buildSituationBriefing(
         nonFocalEntries.push(e);
       }
     }
-    // 各自按压力降序
+    // Каждая группа по убыванию давления
     focalEntries.sort((a, b) => b.dominantValue - a.dominantValue);
     nonFocalEntries.sort((a, b) => b.dominantValue - a.dominantValue);
-    // focal 在前
+    // focal — первыми
     entries.length = 0;
     entries.push(...focalEntries, ...nonFocalEntries);
   } else {
-    // 无焦点集：原有逻辑，纯压力降序
+    // Нет фокусного набора: исходная логика, чистая сортировка по убыванию давления
     entries.sort((a, b) => b.dominantValue - a.dominantValue);
   }
 
-  // 4. 取 top-N，生成自然语言（D2 Trend: 嵌入 ⟨F,T,S⟩ 的 T）
+  // 4. Берём top-N, генерируем естественный язык (D2 Trend: встраиваем T из ⟨F,T,S⟩)
   const lines: string[] = [];
   const topN = entries.slice(0, MAX_ENTITY_LINES);
   const dimTotals = dimTotalsFrom(p);
 
-  // ADR-196 F6: 匿名实体（无 display_name/title）合并为计数摘要，节省 token
+  // ADR-196 F6: анонимные сущности (без display_name/title) объединяются в суммарную строку, экономя токены
   let anonymousCount = 0;
 
   for (const entry of topN) {
-    // ADR-196 F6: 跳过匿名实体，累计计数
+    // ADR-196 F6: пропускаем анонимные сущности, накапливаем счётчик
     if (G.has(entry.entityId)) {
       const dn = G.getDynamic(entry.entityId, "display_name");
       const title = G.getDynamic(entry.entityId, "title");
@@ -623,12 +623,12 @@ export function buildSituationBriefing(
       }
     }
 
-    // ADR-194: 判断是否为当前 action target — 决定使用行动语态还是环境语态。
-    // 当前 target 用 obligation 措辞（可行动），非当前 target 用 ambient 措辞（只感知）。
+    // ADR-194: определяем, является ли сущность текущим action target — это решает, какой залог использовать.
+    // Текущий target — залог obligation (действенный), остальные — ambient (только восприятие).
     let ambient = false;
     if (actionTarget && entry.entityId !== actionTarget) {
       const entityNum = extractNumericId(entry.entityId);
-      // 私聊: channel:X 和 contact:X 共享 numeric ID → 视为同一 target
+      // Приватный чат: channel:X и contact:X разделяют numeric ID → считаем одним target
       const isCurrentTarget =
         actionTargetNum != null && entityNum != null && actionTargetNum === entityNum;
       ambient = !isCurrentTarget;
@@ -640,7 +640,7 @@ export function buildSituationBriefing(
     const trend = computeTrend(dimHistory, dimTotals[entry.dominantKey]);
     let line = generator(entry.entityId, intensity, G, nowMs, trend, ambient);
 
-    // D2 Wave 5: belief hedging — sigma^2 驱动的模糊修饰
+    // D2 Wave 5: belief hedging — размытые формулировки, управляемые sigma^2
     const sigma2 = entitySigma2(entry.entityId, beliefs);
     if (sigma2 !== undefined) {
       line = applyHedging(line, sigma2);
@@ -649,22 +649,22 @@ export function buildSituationBriefing(
     lines.push(line);
   }
 
-  // ADR-196 F6: 匿名实体合并为一行摘要
+  // ADR-196 F6: анонимные сущности объединяются в одну суммарную строку
   if (anonymousCount > 0) {
     lines.push(
       `${anonymousCount} other chat${anonymousCount !== 1 ? "s" : ""} ${anonymousCount !== 1 ? "are" : "is"} also active.`,
     );
   }
 
-  // 5. 支柱 ④: anti-bombing 检测（turn-taking 理论：连发无回复 = 独白轰炸）
-  // ADR-113 修正：群聊 5+ 条仍属刷屏，阈值从 8 降到 5
-  // ADR-157: 从 saturation cost 的 outgoing cap 派生——bombing = 超过上限
+  // 5. Опора ④: обнаружение anti-bombing (теория смены очередей: серия без ответа = монологовая бомбардировка)
+  // ADR-113 правка: 5+ сообщений в группе по-прежнему считается флудом, порог снижен с 8 до 5
+  // ADR-157: выводится из outgoing cap в saturation cost — bombing = превышение лимита
   // @see runtime/src/pressure/social-cost.ts SaturationCostConfigSchema
   const BOMBING_THRESHOLD_PRIVATE = DEFAULT_SATURATION_COST_CONFIG.outgoingCapPrivate + 1;
   const BOMBING_THRESHOLD_GROUP = DEFAULT_SATURATION_COST_CONFIG.outgoingCapGroup + 1;
   for (const chId of G.getEntitiesByType("channel")) {
     const chAttrs = G.getChannel(chId);
-    // ADR-126: 使用 effectiveOutgoing（24h 半衰期衰减）
+    // ADR-126: использовать effectiveOutgoing (затухание с полупериодом 24ч)
     const consecutive = effectiveOutgoing(G, chId, nowMs);
     const chChatType = chAttrs.chat_type;
     const threshold =
@@ -677,7 +677,7 @@ export function buildSituationBriefing(
     }
   }
 
-  // 6. 定性总况
+  // 6. Качественный обзор
   lines.push(qualitativeOverall(p.API));
 
   return lines;

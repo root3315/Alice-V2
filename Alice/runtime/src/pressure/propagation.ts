@@ -1,12 +1,12 @@
 /**
- * 矩阵 Laplacian 传播 (Paper §3.4 eq 8)。
+ * Матричное распространение Лапласиана (Paper §3.4 eq 8).
  *
  * p_eff = p + μ · A_ω^T · p
  *
  * A_ω[u][v] = ω(category(u,v)) · addressedDecay(u,v,tick)
  *
- * 使用 CSR (Compressed Sparse Row) 格式执行 SpMV。
- * 复杂度 O(|V| + |E|)，语义完全忠实于论文矩阵定义。
+ * SpMV выполняется в формате CSR (Compressed Sparse Row).
+ * Сложность O(|V| + |E|), семантика полностью соответствует матричному определению из статьи.
  *
  * @see paper/ §3.4 "Pressure Propagation via Weighted Laplacian"
  */
@@ -17,28 +17,28 @@ import { ChatTarget } from "../prompt/types.js";
 import { decayFactor } from "../utils/math.js";
 import { elapsedS, readNodeMs } from "./clock.js";
 
-// -- Per-node susceptibility (FJ 模型) ----------------------------------------
+// -- Per-node susceptibility (модель FJ) ----------------------------------------
 
 /**
- * 传播配置。
+ * Конфигурация распространения.
  * @see docs/adr/151-algorithm-audit/ #5 Per-node susceptibility
  */
 export interface PropagationConfig {
-  /** entity_type → λ_v 映射。特殊键 "group_channel" 用于 group/supergroup 频道 */
+  /** Отображение entity_type → λ_v. Специальный ключ "group_channel" для group/supergroup каналов */
   susceptibility?: Record<string, number>;
-  /** APPNP 迭代次数。未设置时使用 legacy one-hop 传播。 */
+  /** Число итераций APPNP. Если не задано, используется legacy one-hop распространение. */
   K?: number;
-  /** APPNP teleport 概率 ∈ [0,1]。默认 0.15。alpha=1 时完全 teleport（无传播）。 */
+  /** Вероятность teleport для APPNP ∈ [0,1]. По умолчанию 0.15. При alpha=1 полный teleport (без распространения). */
   alpha?: number;
 }
 
 /**
- * 默认 susceptibility 表。
- * - agent (self): 0 — Alice 自身压力由内部状态驱动，不被邻居"感染"
- * - contact: 1.0 — 完全接收传播（与旧行为一致）
- * - channel: 0.6 — private channel 适度接收
- * - group_channel: 0.3 — 群聊压力主要由内部消息驱动
- * - broadcast_channel: 0.1 — ADR-206: 广播频道低易感性（信息流不是社交义务）
+ * Таблица susceptibility по умолчанию.
+ * - agent (self): 0 — давление Алисы определяется внутренним состоянием, соседи не "заражают"
+ * - contact: 1.0 — полное принятие распространения (соответствует старому поведению)
+ * - channel: 0.6 — умеренное принятие для приватного канала
+ * - group_channel: 0.3 — давление в групповом чате в основном определяется внутренними сообщениями
+ * - broadcast_channel: 0.1 — ADR-206: низкая восприимчивость для вещательного канала (информационный поток — не социальное обязательство)
  */
 export const DEFAULT_SUSCEPTIBILITY: Record<string, number> = {
   agent: 0,
@@ -49,8 +49,8 @@ export const DEFAULT_SUSCEPTIBILITY: Record<string, number> = {
 };
 
 /**
- * 解析节点的 susceptibility λ_v。
- * 按 entity_type 查表，channel 节点额外区分 group/supergroup。
+ * Определить susceptibility λ_v узла.
+ * Поиск по таблице entity_type; для channel-узлов дополнительно различается group/supergroup.
  */
 function resolveSusceptibility(G: WorldModel, eid: string, map: Record<string, number>): number {
   const nodeType = G.getNodeType(eid);
@@ -61,7 +61,7 @@ function resolveSusceptibility(G: WorldModel, eid: string, map: Record<string, n
     if (ChatTarget.isGroupChat(chatType)) {
       return map.group_channel ?? map.channel ?? 1.0;
     }
-    // ADR-206: Telegram channel 类型用 broadcast_channel 易感性
+    // ADR-206: для типа Telegram channel используется susceptibility broadcast_channel
     if (ChatTarget.isChannelChat(chatType)) {
       return map.broadcast_channel ?? map.channel ?? 1.0;
     }
@@ -71,10 +71,10 @@ function resolveSusceptibility(G: WorldModel, eid: string, map: Record<string, n
   return map[nodeType] ?? 1.0;
 }
 
-// -- CSR 稀疏矩阵 -----------------------------------------------------------
+// -- Разреженная матрица CSR -----------------------------------------------------------
 
 export interface SparseMatrix {
-  /** 矩阵维度 (n×n) */
+  /** Размерность матрицы (n×n) */
   n: number;
   /** CSR row pointers (length n+1) */
   rowPtr: number[];
@@ -85,19 +85,19 @@ export interface SparseMatrix {
 }
 
 /**
- * 构建加权邻接矩阵的 **转置** A_ω^T（CSR 格式）。
+ * Построение **транспонированной** взвешенной матрицы смежности A_ω^T (формат CSR).
  *
- * 原始边 u→v 在 A_ω 中为 A[u][v]，转置后 A^T[v][u]。
- * 因为传播公式是 A_ω^T · p：对每个 v，p_eff[v] += Σ_u A_ω[u][v] · p[u]
- * 即 A^T[v][u] = ω(cat(u,v)) × addressedDecay(u,v,nowMs)。
+ * Исходное ребро u→v в A_ω равно A[u][v]; после транспонирования A^T[v][u].
+ * Так как формула распространения A_ω^T · p: для каждого v, p_eff[v] += Σ_u A_ω[u][v] · p[u]
+ * т.е. A^T[v][u] = ω(cat(u,v)) × addressedDecay(u,v,nowMs).
  *
- * 直接构建 A^T 避免事后转置。
+ * Прямое построение A^T избавляет от последующего транспонирования.
  */
 export function buildWeightedAdjacency(
   G: WorldModel,
   nowMs: number = 0,
 ): { matrix: SparseMatrix; entityIndex: Map<string, number> } {
-  // 建立节点 → 索引映射
+  // Построить отображение узел → индекс
   const allIds = G.allNodeIds();
   const n = allIds.length;
   const entityIndex = new Map<string, number>();
@@ -105,8 +105,8 @@ export function buildWeightedAdjacency(
     entityIndex.set(allIds[i], i);
   }
 
-  // 收集 A^T 的非零元素：triplet (row, col, value)
-  // A^T[v][u] = ω(cat) × addressedDecay，原始边 u→v
+  // Собираем ненулевые элементы A^T: triplet (row, col, value)
+  // A^T[v][u] = ω(cat) × addressedDecay, исходное ребро u→v
   const triplets: Array<{ row: number; col: number; value: number }> = [];
 
   for (const [u, v, data] of G.allEdges()) {
@@ -117,7 +117,7 @@ export function buildWeightedAdjacency(
     const cat = data.category;
     const omega = PROPAGATION_WEIGHT[cat] ?? 0.5;
 
-    // addressed decay — 墙钟秒衰减（halfLife 10 ticks × 60 = 600s）
+    // addressed decay — затухание по секундам стенного времени (halfLife 10 тиков × 60 = 600s)
     let addressedFactor = 1.0;
     if (nowMs > 0) {
       for (const node of [u, v]) {
@@ -134,14 +134,14 @@ export function buildWeightedAdjacency(
     const weight = omega * addressedFactor;
     if (Math.abs(weight) < 1e-15) continue;
 
-    // A^T[v][u] = weight（原始边 u→v 在转置中变为行 v 列 u）
+    // A^T[v][u] = weight (исходное ребро u→v в транспонированной матрице становится строкой v, столбцом u)
     triplets.push({ row: idxV, col: idxU, value: weight });
   }
 
-  // 按 (row, col) 排序，合并同位置元素
+  // Сортировка по (row, col), объединение элементов на одной позиции
   triplets.sort((a, b) => a.row - b.row || a.col - b.col);
 
-  // 构建 CSR
+  // Построение CSR
   const rowPtr = new Array<number>(n + 1).fill(0);
   const colIdx: number[] = [];
   const values: number[] = [];
@@ -150,7 +150,7 @@ export function buildWeightedAdjacency(
   let prevCol = -1;
 
   for (const t of triplets) {
-    // 合并同位置
+    // Объединение на одной позиции
     if (t.row === prev && t.col === prevCol) {
       values[values.length - 1] += t.value;
     } else {
@@ -162,7 +162,7 @@ export function buildWeightedAdjacency(
     }
   }
 
-  // rowPtr 前缀和
+  // Префиксная сумма rowPtr
   for (let i = 1; i <= n; i++) {
     rowPtr[i] += rowPtr[i - 1];
   }
@@ -171,9 +171,9 @@ export function buildWeightedAdjacency(
 }
 
 /**
- * 行归一化：每行除以行和，使每行元素之和为 1。
- * 用于 APPNP 迭代前将加权邻接矩阵转为转移概率矩阵。
- * 空行（孤立节点）保持零。
+ * Нормализация строк: делим каждую строку на её сумму, чтобы сумма элементов каждой строки равнялась 1.
+ * Применяется перед итерациями APPNP для преобразования взвешенной матрицы смежности в матрицу переходных вероятностей.
+ * Пустые строки (изолированные узлы) остаются нулевыми.
  */
 export function normalizeRows(A: SparseMatrix): SparseMatrix {
   const values = new Array<number>(A.values.length);
@@ -196,8 +196,8 @@ export function normalizeRows(A: SparseMatrix): SparseMatrix {
 }
 
 /**
- * CSR 稀疏矩阵向量乘法: y = A · x。
- * 复杂度 O(nnz)。
+ * Умножение разреженной матрицы CSR на вектор: y = A · x.
+ * Сложность O(nnz).
  */
 export function sparseMV(A: SparseMatrix, x: number[]): number[] {
   const y = new Array<number>(A.n).fill(0);
@@ -212,11 +212,11 @@ export function sparseMV(A: SparseMatrix, x: number[]): number[] {
 }
 
 /**
- * 矩阵 Laplacian 传播（主函数）。
+ * Матричное распространение Лапласиана (главная функция).
  *
  * p_eff(v) = p_local(v) + λ_v · μ · [A_ω^T · p](v)
  *
- * λ_v: per-node susceptibility（FJ 模型启发），按 entity_type 查表。
+ * λ_v: per-node susceptibility (вдохновлено моделью FJ), поиск по таблице entity_type.
  * @see docs/adr/151-algorithm-audit/ #5 Per-node susceptibility
  * @see paper/ §3.4 "Pressure Propagation via Weighted Laplacian"
  */
@@ -233,7 +233,7 @@ export function propagatePressuresMatrix(
   const { matrix, entityIndex } = buildWeightedAdjacency(G, nowMs);
   const n = matrix.n;
 
-  // 构建本地压力向量 p（按 entityIndex 排列）
+  // Построение вектора локального давления p (упорядочен по entityIndex)
   const p = new Array<number>(n).fill(0);
   for (const [eid, val] of Object.entries(localPressures)) {
     const idx = entityIndex.get(eid);
@@ -241,16 +241,16 @@ export function propagatePressuresMatrix(
   }
 
   // p_eff(v) = p_local(v) + λ_v · μ · propagated(v)
-  // 注意：localPressures 的键可能不在图中，原样保留
+  // Примечание: ключи localPressures могут отсутствовать в графе — сохраняем их как есть
   const pEff: Record<string, number> = { ...localPressures };
 
-  // 确保所有边目标节点都有 entry（与 legacy 行为一致：遍历边时 pEff[v] ??= 0）
+  // Убедиться, что все целевые узлы рёбер имеют запись (соответствует legacy-поведению: при обходе рёбер pEff[v] ??= 0)
   for (const [, v] of G.allEdges()) {
     if (!(v in pEff)) pEff[v] = 0;
   }
 
   if (K !== undefined && K >= 1) {
-    // ── APPNP K-step teleport 传播 ──
+    // ── Распространение APPNP K-шагов с teleport ──
     // p^(0) = p_local
     // p^(k) = (1-alpha) * A_norm * p^(k-1) + alpha * p_local
     // p_eff[v] = p_local[v] + λ_v * μ * (p^(K)[v] - p_local[v])
@@ -266,7 +266,7 @@ export function propagatePressuresMatrix(
     }
 
     for (const [eid, idx] of entityIndex) {
-      // 孤立节点（无入边）跳过：空行导致 APPNP 把压力拉向 alpha*p_local，不是预期行为
+      // Изолированные узлы (без входящих рёбер) пропускаем: пустая строка заставляет APPNP тянуть давление к alpha*p_local, что нежелательно
       if (Anorm.rowPtr[idx + 1] === Anorm.rowPtr[idx]) continue;
       const delta = pCurrent[idx] - p[idx];
       if (Math.abs(delta) > 1e-15) {
@@ -288,5 +288,5 @@ export function propagatePressuresMatrix(
   return pEff;
 }
 
-// 默认导出矩阵版本
+// По умолчанию экспортируем матричную версию
 export { propagatePressuresMatrix as propagatePressures };

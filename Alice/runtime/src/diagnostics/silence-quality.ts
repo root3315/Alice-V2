@@ -1,9 +1,9 @@
 /**
- * A3 不行动质量分析 — ADR-76 自动化行为验证。
+ * A3 Анализ качества бездействия — автоматизированная валидация поведения ADR-76.
  *
- * - 沉默原因分布（api_floor / voi_deferred / rate_cap / active_cooling / all_candidates_negative）
- * - VoI-deferred 后的行动延迟（从 silence 到后续 action 的 tick 差）→ ADR-75 冲动保留效果
- * - 连续沉默序列长度分布（与 ADR-75 silence decay 交叉验证）
+ * - Распределение причин молчания (api_floor / voi_deferred / rate_cap / active_cooling / all_candidates_negative)
+ * - Задержка действия после VoI-deferred (разница тиков от silence до следующего action) → эффект сдерживания импульсов ADR-75
+ * - Распределение длин непрерывных серий молчания (перекрёстная проверка с silence decay из ADR-75)
  *
  * @see docs/adr/76-naturalness-validation-methodology.md
  * @see docs/adr/75-deliberation-state/75-deliberation-state.md
@@ -15,46 +15,46 @@ import { getDb } from "../db/connection.js";
 import { actionLog, silenceLog } from "../db/schema.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 类型
+// Типы
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface SilenceQualityReport {
-  /** 各沉默原因的计数和占比。 */
+  /** Количество и доля каждой причины молчания. */
   reasonDistribution: Record<string, { count: number; ratio: number }>;
-  /** 沉默总数。 */
+  /** Общее число молчаний. */
   totalSilences: number;
-  /** VoI-deferred 后续行动分析。 */
+  /** Анализ последующих действий после VoI-deferred. */
   voiDeferredFollowup: VoIDeferredAnalysis;
-  /** 连续沉默序列长度分析。 */
+  /** Анализ длин непрерывных серий молчания. */
   consecutiveSilenceRuns: ConsecutiveSilenceAnalysis;
-  /** D5 五级谱分布。 */
+  /** Распределение по пятиуровневому спектру D5. */
   silenceLevelDistribution: Record<string, { count: number; ratio: number }>;
 }
 
 export interface VoIDeferredAnalysis {
-  /** VoI-deferred 沉默总数。 */
+  /** Общее число молчаний VoI-deferred. */
   count: number;
-  /** 从 VoI-deferred 到后续行动的 tick 延迟（中位数）。 */
+  /** Медианная задержка в тиках от VoI-deferred до следующего действия. */
   medianDelayToAction: number;
-  /** P90 延迟。 */
+  /** Задержка P90. */
   p90DelayToAction: number;
-  /** 延迟分布（tick → 次数）。 */
+  /** Распределение задержек (тик → количество). */
   delayHistogram: Record<number, number>;
 }
 
 export interface ConsecutiveSilenceAnalysis {
-  /** 连续沉默序列的长度分布（长度 → 次数）。 */
+  /** Распределение длин непрерывных серий молчания (длина → количество). */
   runLengthHistogram: Record<number, number>;
-  /** 最长连续沉默序列。 */
+  /** Наибольшая непрерывная серия молчания. */
   maxRunLength: number;
-  /** 平均连续沉默长度。 */
+  /** Средняя длина непрерывной серии молчания. */
   meanRunLength: number;
-  /** 序列数量。 */
+  /** Количество серий. */
   runCount: number;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 统计工具
+// Статистические утилиты
 // ═══════════════════════════════════════════════════════════════════════════
 
 function median(arr: number[]): number {
@@ -72,19 +72,19 @@ function percentile(arr: number[], p: number): number {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 分析函数
+// Функции анализа
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 分析不行动（沉默）的质量。
+ * Анализирует качество бездействия (молчания).
  *
- * 从 silence_log 读取所有沉默记录，分析原因分布、VoI-deferred 效果、
- * 连续沉默序列特征。
+ * Читает все записи молчания из silence_log, анализирует распределение причин,
+ * эффективность VoI-deferred и характеристики непрерывных серий молчания.
  */
 export function analyzeSilenceQuality(): SilenceQualityReport {
   const db = getDb();
 
-  // ── 1. 沉默原因分布 ──────────────────────────────────────────────────
+  // ── 1. Распределение причин молчания ────────────────────────────────
   const silences = db
     .select({
       tick: silenceLog.tick,
@@ -123,7 +123,7 @@ export function analyzeSilenceQuality(): SilenceQualityReport {
     };
   }
 
-  // ── 2. VoI-deferred 后续行动延迟 ────────────────────────────────────
+  // ── 2. Задержка действия после VoI-deferred ─────────────────────────
   const actionTicks = db
     .select({ tick: actionLog.tick })
     .from(actionLog)
@@ -136,7 +136,7 @@ export function analyzeSilenceQuality(): SilenceQualityReport {
   const delayHistogram: Record<number, number> = {};
 
   for (const silence of voiDeferredSilences) {
-    // 找到 silence 之后最近的行动 tick
+    // Найти ближайший тик действия после silence
     const nextActionTick = actionTicks.find((t) => t > silence.tick);
     if (nextActionTick !== undefined) {
       const delay = nextActionTick - silence.tick;
@@ -152,9 +152,9 @@ export function analyzeSilenceQuality(): SilenceQualityReport {
     delayHistogram,
   };
 
-  // ── 3. 连续沉默序列分析 ─────────────────────────────────────────────
-  // 合并 silence_log 和 action_log 的 tick，按时间排序
-  // silence = 1, action = 0 → 统计连续 1 的 run length
+  // ── 3. Анализ непрерывных серий молчания ────────────────────────────
+  // Объединить тики из silence_log и action_log, отсортировать по времени
+  // silence = 1, action = 0 → считать длину серий из 1
   const allTicks = new Set([...silences.map((s) => s.tick), ...actionTicks]);
   const sortedTicks = [...allTicks].sort((a, b) => a - b);
   const silenceTickSet = new Set(silences.map((s) => s.tick));

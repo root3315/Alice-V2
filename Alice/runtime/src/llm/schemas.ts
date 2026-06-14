@@ -1,11 +1,11 @@
 /**
- * LLM 行动 schema（Zod 定义）。
+ * Schema действий LLM (определения Zod).
  *
- * Schema 演化历史：
- * - V2 (ADR-64): message + sideEffects 分离（三字段：reasoning/message/sideEffects）— 已删除
- * - V3 (ADR-66): Script-First 收敛（单字段：script）— 已删除，合并入 TickStepSchema
- * - V4 (ADR-142): Blackboard Tick（needs + script）— 已删除
- * - V5 (§16): Script-only — shell manual 扁平可见，不再需要 JSON 层 needs 字段
+ * История эволюции schema:
+ * - V2 (ADR-64): разделение message + sideEffects (три поля: reasoning/message/sideEffects) — удалено
+ * - V3 (ADR-66): Script-First схождение (одно поле: script) — удалено, влито в TickStepSchema
+ * - V4 (ADR-142): Blackboard Tick (needs + script) — удалено
+ * - V5 (§16): Script-only — shell manual виден плоско, поле needs на уровне JSON больше не нужно
  *
  * @see docs/adr/64-runtime-theory-alignment-audit.md
  * @see docs/adr/66-runtime-practice-review.md
@@ -16,30 +16,30 @@ import { AFTERWARD_VALUES } from "./tools.js";
 
 // ── §16: Script-only Schema ────────────────────────────────────────
 //
-// JSON schema 只保留 script 字段；命令发现由 shell manual 和 `<command> --help` 承担。
-// 旧 needs/man/prepare 激活机制已退出普通路径，避免无 intent 的批量激活后门。
+// JSON schema оставляет только поле script; обнаружение команд берут на себя shell manual и `<command> --help`.
+// Старый механизм активации needs/man/prepare выведен из обычного пути, чтобы исключить бэкдор массовой активации без intent.
 
 /**
- * LLM 行动 schema — Blackboard Tick 管线使用。
+ * Schema действий LLM — используется конвейером Blackboard Tick.
  *
- * script: POSIX sh 脚本（shell-native 执行）。
- *   使用 Alice command space（irc / self / engine / app CLIs）。
+ * script: POSIX sh скрипт (нативное выполнение в shell).
+ *   Использует пространство команд Alice (irc / self / engine / app CLIs).
  *
  * @see docs/adr/163-expand-instruction-bt-native-disclosure.md §16
  */
 /**
- * 归一化 LLM 输出的脚本：
- * 1. 剥离 markdown 围栏
- * 2. 拆分单行多命令脚本（LLM 常见退化模式）
+ * Нормализация скрипта из вывода LLM:
+ * 1. Снятие markdown-ограждений
+ * 2. Разбивка однострочных многокомандных скриптов (частый деградированный паттерн LLM)
  *
- * @see preprocessScript in shell-executor.ts — 双重防线，这里做第一道
+ * @see preprocessScript in shell-executor.ts — двойная защита, здесь первый рубеж
  */
 const ALICE_COMMAND_RE = /\b(?:irc|album|self|engine|alice-pkg)\b/;
-/** 导出供 callTickLLM generateText 路径使用。 */
+/** Экспортируется для использования в пути callTickLLM generateText. */
 export function normalizeScript(raw: string): string {
   let s = raw.trim();
   if (!s) return "# no action";
-  // 剥离 markdown 围栏
+  // Снятие markdown-ограждений
   if (/^```(?:sh|bash|shell)?\n?/i.test(s)) {
     s = s.replace(/^```(?:sh|bash|shell)?\n?/i, "");
     s = s.replace(/\n?```$/, "");
@@ -51,11 +51,11 @@ export function normalizeScript(raw: string): string {
   // leading language label is transport noise, not an Alice command.
   s = s.replace(/^(?:sh|bash|shell)\s*\n/i, "").trim();
   if (!s) return "# no action";
-  // 单行脚本归一化：在 `# ` 注释边界和已知命令名前插入换行
+  // Нормализация однострочного скрипта: вставка переноса перед границами комментариев `# ` и именами известных команд
   if (!s.includes("\n") && ALICE_COMMAND_RE.test(s)) {
-    // 在 mid-line `# ` 前插入换行（拆分内心独白）
+    // Вставка переноса перед mid-line `# ` (разбивка внутреннего монолога)
     s = s.replace(/(?<=\S)\s*(?=# )/g, "\n");
-    // 在已知命令名前插入换行
+    // Вставка переноса перед именами известных команд
     s = s.replace(/(?<=['"。！？.!?\s])(?=(?:irc|album|self|engine|alice-pkg)\b)/g, "\n");
     s = s.trim();
   }
@@ -63,8 +63,8 @@ export function normalizeScript(raw: string): string {
 }
 
 /**
- * ADR-215: LLM 直接表达的认知残留。
- * 语义归 LLM——代码只提供结构，不替 LLM 做判断。
+ * ADR-215: когнитивный остаток, напрямую выражаемый LLM.
+ * Семантика принадлежит LLM — код лишь предоставляет структуру, не принимая решения вместо LLM.
  */
 export const ResidueSchema = z.object({
   feeling: z
@@ -181,8 +181,8 @@ export const TickStepSchema = z.object({
         "cooling_down: only when the current room is spammy or toxic and needs distance — " +
         "take a break (penalty: freezes this chat for ~30 min).",
     ),
-  // ADR-215: Episode residue — LLM 直接表达认知残留。
-  // Optional: 只在有未消化的感受时填写。大多数情况下不填。
+  // ADR-215: Episode residue — LLM напрямую выражает когнитивный остаток.
+  // Optional: заполняется только при наличии непереработанных ощущений. В большинстве случаев не заполняется.
   residue: z
     .preprocess(normalizeResidue, ResidueSchema.optional())
     .describe(

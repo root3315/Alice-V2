@@ -1,5 +1,5 @@
 /**
- * media 类别动作：send_media, send_voice。
+ * Действия категории media: send_media, send_voice.
  *
  * @see docs/adr/149-define-action-builder.md
  */

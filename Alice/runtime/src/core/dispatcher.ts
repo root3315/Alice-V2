@@ -1,13 +1,13 @@
 /**
- * 指令 Dispatcher — 移植自叙事引擎 core/dispatcher.ts。
+ * Dispatcher инструкций — портировано из narrative-engine core/dispatcher.ts.
  *
- * 核心职责：
- * 1. dispatch(instruction, args) — 找到拥有者 Mod → 执行 → 广播给所有 listener
- * 2. query(name, args) — 找到拥有者 Mod → 执行（不广播）
- * 3. tick 生命周期管理（startTick / endTick）
- * 4. collectContributions — 收集所有 Mod 的 contribute 结果
+ * Основные обязанности:
+ * 1. dispatch(instruction, args) — найти владеющий Mod → выполнить → разослать всем listener
+ * 2. query(name, args) — найти владеющий Mod → выполнить (без рассылки)
+ * 3. управление жизненным циклом tick (startTick / endTick)
+ * 4. collectContributions — собрать результаты contribute всех Mod
  *
- * 参考: narrative-engine/core/dispatcher.ts
+ * Ссылка: narrative-engine/core/dispatcher.ts
  */
 import { getDb, getSqlite } from "../db/connection.js";
 import { modStates as modStatesTable } from "../db/schema.js";
@@ -26,20 +26,20 @@ import type {
 const log = createLogger("dispatcher");
 
 /**
- * ADR-79 M3: 深度合并 Mod 状态 — initialState 提供新字段默认值，persisted 覆盖已有字段。
+ * ADR-79 M3: Глубокое слияние состояния Mod — initialState предоставляет значения по умолчанию для новых полей, persisted перекрывает существующие поля.
  *
- * 规则：
- * - 两边都是 plain object → 递归合并
- * - 数组 → 以 persisted 为准（不合并数组元素）
- * - 其他 → persisted 覆盖 initial
- * - persisted 中不存在的 key → 保留 initial 的默认值
+ * Правила:
+ * - оба значения — plain object → рекурсивное слияние
+ * - массивы → приоритет persisted (элементы массива не сливаются)
+ * - остальное → persisted перекрывает initial
+ * - ключ отсутствует в persisted → сохраняется значение по умолчанию из initial
  */
 export function deepMergeModState(initial: unknown, persisted: unknown): unknown {
   if (!isPlainObject(initial) || !isPlainObject(persisted)) {
     return persisted;
   }
   const merged: Record<string, unknown> = {};
-  // 从 initial 获取所有默认 key
+  // Получаем все ключи по умолчанию из initial
   for (const key of Object.keys(initial)) {
     if (key in persisted) {
       const initVal = initial[key];
@@ -50,11 +50,11 @@ export function deepMergeModState(initial: unknown, persisted: unknown): unknown
         merged[key] = persVal;
       }
     } else {
-      // persisted 中不存在 → 保留 initial 默认值（新字段迁移）
+      // отсутствует в persisted → сохраняем значение по умолчанию из initial (миграция нового поля)
       merged[key] = structuredClone(initial[key]);
     }
   }
-  // persisted 中存在但 initial 中不存在的 key 也保留（向前兼容）
+  // ключи, присутствующие в persisted, но отсутствующие в initial, тоже сохраняются (прямая совместимость)
   for (const key of Object.keys(persisted)) {
     if (!(key in initial)) {
       merged[key] = structuredClone(persisted[key]);
@@ -69,44 +69,44 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
-// -- Dispatcher 接口 ----------------------------------------------------------
+// -- Интерфейс Dispatcher ----------------------------------------------------------
 
 export interface Dispatcher {
-  /** 执行写指令 → 广播。 */
+  /** Выполнить записывающую инструкцию → разослать. */
   dispatch: (instruction: string, args: Record<string, unknown>) => unknown;
-  /** 执行只读查询。 */
+  /** Выполнить запрос только на чтение. */
   query: (name: string, args: Record<string, unknown>) => unknown;
-  /** 所有已注册的指令名。 */
+  /** Все зарегистрированные имена инструкций. */
   getInstructionNames: () => string[];
-  /** 读取指令定义（sandbox 通用注入循环使用）。 */
+  /** Получить определение инструкции (используется в общем цикле инъекций sandbox). */
   getInstructionDef: (name: string) => InstructionDefinition | undefined;
-  /** 所有已注册的查询名。 */
+  /** Все зарегистрированные имена запросов. */
   getQueryNames: () => string[];
-  /** 读取查询定义（sandbox 查询注入管线使用）。 */
+  /** Получить определение запроса (используется в pipeline инъекций запросов sandbox). */
   getQueryDef: (name: string) => QueryDefinition | undefined;
-  /** Tick 开始。ADR-110: nowMs 线程 — 同 tick 内时间一致。未提供时回退 Date.now()。 */
+  /** Начало tick. ADR-110: поток nowMs — время внутри одного tick согласовано. При отсутствии — fallback к Date.now(). */
   startTick: (tick: number, nowMs?: number) => void;
-  /** Tick 结束。 */
+  /** Конец tick. */
   endTick: (tick: number) => void;
-  /** 收集所有 Mod 的 contribute 结果。 */
+  /** Собрать результаты contribute всех Mod. */
   collectContributions: () => ContributionItem[];
-  /** 生成 LLM 可读的行动声明手册。 */
+  /** Сгенерировать читаемый LLM справочник объявленных действий. */
   generateManual: () => Promise<string>;
-  /** 注册的 Mod 列表。 */
+  /** Список зарегистрированных Mod. */
   readonly mods: readonly ModDefinition[];
-  /** ADR-31: 快照所有 Mod 状态（深拷贝）。 */
+  /** ADR-31: Снимок состояния всех Mod (глубокая копия). */
   snapshotModStates: () => Map<string, unknown>;
-  /** ADR-31: 从快照恢复所有 Mod 状态。 */
+  /** ADR-31: Восстановить состояние всех Mod из снимка. */
   restoreModStates: (snapshot: Map<string, unknown>) => void;
-  /** ADR-33: 持久化所有 Mod 状态到 DB。 */
+  /** ADR-33: Сохранить состояние всех Mod в DB. */
   saveModStatesToDb: (tick: number) => void;
-  /** ADR-33: 从 DB 恢复 Mod 状态（启动时调用）。返回是否有数据恢复。 */
+  /** ADR-33: Восстановить состояние Mod из DB (вызывается при запуске). Возвращает, были ли восстановлены данные. */
   loadModStatesFromDb: () => boolean;
-  /** 只读访问 Mod 状态（用于 prompt 管线预收集）。 */
+  /** Доступ к состоянию Mod только для чтения (для предварительного сбора в pipeline prompt). */
   readModState: <T = unknown>(name: string) => T | undefined;
 }
 
-// -- 创建 Dispatcher ----------------------------------------------------------
+// -- Создание Dispatcher ----------------------------------------------------------
 
 export interface CreateDispatcherOptions {
   graph: WorldModel;
@@ -117,24 +117,24 @@ export interface CreateDispatcherOptions {
 export function createAliceDispatcher(options: CreateDispatcherOptions): Dispatcher {
   const { graph, mods, targetWhitelist = null } = options;
 
-  // per-mod 状态存储
+  // Хранилище состояния per-mod
   const modStates = new Map<string, unknown>();
   let currentTick = 0;
-  /** ADR-110: 当前 tick 的墙钟时间（ms），startTick 时设置。 */
+  /** ADR-110: Время стенных часов текущего tick (мс), устанавливается в startTick. */
   let currentNowMs = Date.now();
   let dispatchDepth = 0;
   const MAX_DISPATCH_DEPTH = 10;
 
-  // 初始化状态
+  // Инициализация состояния
   for (const mod of mods) {
     modStates.set(mod.meta.name, structuredClone(mod.initialState));
   }
 
-  // 创建 ModContext（dispatch 引用在后面赋值，闭包安全）
+  // Создаём ModContext (ссылка на dispatch назначается ниже, замыкание безопасно)
   let dispatchFn: (instruction: string, args: Record<string, unknown>) => unknown;
   function ctx(modName: string): ModContext {
-    // 直接引用 state（递归 dispatch 时内层修改对外层可见）。
-    // 失败回滚由 dispatch() 的 snapshot-restore 保证（见 C3 修复）。
+    // Прямая ссылка на state (изменения во внутренних dispatch видны внешним).
+    // Откат при ошибке гарантируется механизмом snapshot-restore в dispatch() (см. исправление C3).
     return {
       graph,
       state: modStates.get(modName),
@@ -146,21 +146,21 @@ export function createAliceDispatcher(options: CreateDispatcherOptions): Dispatc
     };
   }
 
-  // 回写状态
+  // Запись состояния обратно
   function commitState(modName: string, c: ModContext) {
     modStates.set(modName, c.state);
   }
 
-  /** C3: 快照 state 用于失败回滚。仅对 object 类型深拷贝。 */
+  /** C3: Снимок state для отката при ошибке. Глубокое копирование только для типа object. */
   function snapshotState(modName: string): unknown {
     const s = modStates.get(modName);
     return typeof s === "object" && s !== null ? structuredClone(s) : s;
   }
 
-  // ADR-70 P3: Zod 运行时验证——在指令/查询执行前校验 LLM 参数。
-  // 返回 null = 通过，否则返回错误描述字符串。
-  // safeParse 成功时用 parsed.data 覆写 args，使 Zod transforms（.trim()/.default()）
-  // 对 impl 透明生效。impl 不再需要重复做 .trim() 或 ?? 默认值。
+  // ADR-70 P3: Zod-валидация во время выполнения — проверяет параметры LLM перед выполнением инструкции/запроса.
+  // Возвращает null = успех, иначе строку с описанием ошибки.
+  // При успехе safeParse перезаписывает args значением parsed.data, чтобы Zod transforms (.trim()/.default())
+  // применялись прозрачно для impl. impl больше не нужно повторно делать .trim() или ?? для значений по умолчанию.
   function validateParams(
     paramDefs: Record<string, ParamDefinition>,
     args: Record<string, unknown>,
@@ -196,7 +196,7 @@ export function createAliceDispatcher(options: CreateDispatcherOptions): Dispatc
     return prepared;
   }
 
-  // 指令 → Mod 索引
+  // Индекс инструкция → Mod
   const instructionIndex = new Map<string, { mod: ModDefinition; def: InstructionDefinition }>();
   for (const mod of mods) {
     for (const [name, def] of Object.entries(mod.instructions ?? {})) {
@@ -207,7 +207,7 @@ export function createAliceDispatcher(options: CreateDispatcherOptions): Dispatc
     }
   }
 
-  // 查询 → Mod 索引
+  // Индекс запрос → Mod
   const queryIndex = new Map<string, { mod: ModDefinition; def: QueryDefinition }>();
   for (const mod of mods) {
     for (const [name, def] of Object.entries(mod.queries ?? {})) {
@@ -225,7 +225,7 @@ export function createAliceDispatcher(options: CreateDispatcherOptions): Dispatc
         return undefined;
       }
 
-      // 循环保护：防止 listener 中 dispatch 导致递归炸栈
+      // Защита от циклов: предотвращает переполнение стека из-за рекурсивных dispatch в listener
       if (dispatchDepth >= MAX_DISPATCH_DEPTH) {
         log.error(`Dispatch depth exceeded ${MAX_DISPATCH_DEPTH}`, { instruction });
         return undefined;
@@ -233,16 +233,16 @@ export function createAliceDispatcher(options: CreateDispatcherOptions): Dispatc
 
       dispatchDepth++;
       try {
-        // ADR-70 P3: Zod 运行时验证
+        // ADR-70 P3: Zod-валидация во время выполнения
         const preparedArgs = prepareArgs(entry.def, args);
         const validationError = validateParams(entry.def.params, preparedArgs);
         if (validationError) {
           return { success: false, error: validationError };
         }
 
-        // 1. 执行
-        // C3: snapshot before execution — 失败时 restore 到执行前状态，
-        // 防止 impl 通过引用修改 state 后抛异常导致中间状态残留。
+        // 1. Выполнение
+        // C3: снимок до выполнения — при ошибке восстанавливаем состояние до выполнения,
+        // чтобы исключить остаточные промежуточные состояния при изменении state через ссылку в impl с последующим исключением.
         const modName = entry.mod.meta.name;
         const stateBackup = snapshotState(modName);
         const c = ctx(modName);
@@ -251,14 +251,14 @@ export function createAliceDispatcher(options: CreateDispatcherOptions): Dispatc
           result = entry.def.impl(c, preparedArgs);
           commitState(modName, c);
         } catch (e) {
-          // 回滚到执行前状态
+          // Откат к состоянию до выполнения
           modStates.set(modName, stateBackup);
           log.error(`Instruction ${instruction} failed`, e);
           // H1: sentinel вместо undefined — иначе роут рапортует LLM «успех» и упавшее действие теряется.
           return { __dispatchError: e instanceof Error ? e.message : String(e) };
         }
 
-        // 2. 广播给所有 listener
+        // 2. Рассылка всем listener
         for (const mod of mods) {
           const handler = mod.listen?.[instruction];
           if (handler) {
@@ -284,7 +284,7 @@ export function createAliceDispatcher(options: CreateDispatcherOptions): Dispatc
         log.warn(`Unknown query: ${name}`);
         return undefined;
       }
-      // ADR-70 P3: Zod 运行时验证
+      // ADR-70 P3: Zod-валидация во время выполнения
       const preparedArgs = prepareArgs(entry.def, args);
       const validationError = validateParams(entry.def.params, preparedArgs);
       if (validationError) {
@@ -355,10 +355,10 @@ export function createAliceDispatcher(options: CreateDispatcherOptions): Dispatc
       return items;
     },
 
-    // ADR-31: Mod 状态快照/恢复（用于沙箱原子执行）
-    // ⚠ 原子回滚假设：所有 listener 的副作用仅限于图属性和 Mod 状态。
-    // 图通过 restoreFrom(graphSnapshot) 回滚，Mod 通过 restoreModStates(modSnapshot) 回滚。
-    // 如果未来有 listener 产生图/Mod 以外的副作用（如直接写 DB），回滚将不完整。
+    // ADR-31: Снимок/восстановление состояния Mod (для атомарного выполнения в sandbox)
+    // ⚠ Допущение об атомарном откате: побочные эффекты всех listener ограничены свойствами графа и состоянием Mod.
+    // Граф откатывается через restoreFrom(graphSnapshot), Mod — через restoreModStates(modSnapshot).
+    // Если в будущем listener будет производить побочные эффекты за пределами графа/Mod (например, прямая запись в DB), откат будет неполным.
     snapshotModStates(): Map<string, unknown> {
       const snapshot = new Map<string, unknown>();
       for (const [name, state] of modStates) {
@@ -369,7 +369,7 @@ export function createAliceDispatcher(options: CreateDispatcherOptions): Dispatc
 
     restoreModStates(snapshot: Map<string, unknown>): void {
       for (const [name, state] of snapshot) {
-        // ADR-79 M3: 恢复时也深度合并，防止快照缺少新字段
+        // ADR-79 M3: при восстановлении тоже выполняем глубокое слияние, чтобы в снимке не отсутствовали новые поля
         const mod = mods.find((m) => m.meta.name === name);
         const merged = mod
           ? deepMergeModState(mod.initialState, structuredClone(state))
@@ -378,8 +378,8 @@ export function createAliceDispatcher(options: CreateDispatcherOptions): Dispatc
       }
     },
 
-    // ADR-33 Phase 1: Mod 状态持久化
-    // P1-core-1 修复: 用事务包裹避免部分写入 + 减少 WAL sync 开销。
+    // ADR-33 Phase 1: Сохранение состояния Mod
+    // Исправление P1-core-1: оборачиваем в транзакцию для защиты от частичных записей + снижение накладных расходов WAL sync.
     saveModStatesToDb(tick: number): void {
       const db = getDb();
       const sqlite = getSqlite();
@@ -420,7 +420,7 @@ export function createAliceDispatcher(options: CreateDispatcherOptions): Dispatc
       const rows = db.select().from(modStatesTable).all();
       if (rows.length === 0) return false;
 
-      // ADR-79 M3: 构建 modName → initialState 索引（用于深度合并）
+      // ADR-79 M3: строим индекс modName → initialState (для глубокого слияния)
       const initialStates = new Map<string, unknown>();
       for (const mod of mods) {
         initialStates.set(mod.meta.name, mod.initialState);
@@ -432,7 +432,7 @@ export function createAliceDispatcher(options: CreateDispatcherOptions): Dispatc
           try {
             const persisted = JSON.parse(row.stateJson);
             const initial = initialStates.get(row.modName);
-            // ADR-79 M3: 深度合并 — initialState 提供新字段默认值
+            // ADR-79 M3: глубокое слияние — initialState предоставляет значения по умолчанию для новых полей
             const merged = deepMergeModState(initial, persisted);
             modStates.set(row.modName, merged);
             restored++;
@@ -450,7 +450,7 @@ export function createAliceDispatcher(options: CreateDispatcherOptions): Dispatc
     },
   };
 
-  // 赋值 dispatchFn 供 ModContext.dispatch 使用（闭包引用）
+  // Назначаем dispatchFn для использования в ModContext.dispatch (ссылка замыкания)
   dispatchFn = dispatcher.dispatch;
 
   return dispatcher;

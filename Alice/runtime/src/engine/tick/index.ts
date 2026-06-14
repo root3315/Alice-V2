@@ -1,5 +1,5 @@
 /**
- * Blackboard Tick — ADR-142 公共 API。
+ * Blackboard Tick — публичный API ADR-142.
  * @see docs/adr/142-action-space-architecture/README.md
  */
 
@@ -12,11 +12,11 @@ export {
   isTerminal,
   updateBoard,
 } from "./blackboard.js";
-// Bridge — 适配 orchestrator 接口
+// Bridge — адаптер для интерфейса оркестратора
 export { runTickSubcycle } from "./bridge.js";
-// LLM 调用
+// Вызов LLM
 export { callTickLLM } from "./callLLM.js";
-// Prompt 构建
+// Построение Prompt
 export {
   buildActionFooter,
   buildCapabilityGuide,
@@ -24,11 +24,11 @@ export {
   resolveWhisper,
   type TickPromptContext,
 } from "./prompt-builder.js";
-// 目标解析
+// Разрешение цели
 export { buildContextVars, type ResolvedTarget, resolveTarget } from "./target.js";
-// Tick 循环
+// Tick-цикл
 export { type TickDeps, tick } from "./tick.js";
-// 类型
+// Типы
 export type {
   AffordanceDeclaration,
   AffordancePriority,

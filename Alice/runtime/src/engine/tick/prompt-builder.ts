@@ -1,29 +1,29 @@
 /**
- * Blackboard Tick Prompt 构建器 — 从 Blackboard 状态组装 LLM prompt。
+ * Построитель Blackboard Tick Prompt — сборка LLM prompt из состояния Blackboard.
  *
- * - Shell Manual：真实命令空间 + engine bridge
- * - Shell Manual：扁平展示真实命令签名；详细用法走 `<command> --help`
- * - 复用叶子函数：resolveTarget, timeline
+ * - Shell Manual: реальное пространство команд + engine bridge
+ * - Shell Manual: плоское отображение реальных сигнатур команд; подробный синтаксис через `<command> --help`
+ * - Повторное использование листовых функций: resolveTarget, timeline
  *
  * ═══════════════════════════════════════════════════════════════════════
- * ⚠ PROMPT 诚实性原则（ADR-209）
+ * ⚠ Принцип честности PROMPT (ADR-209)
  *
- * Alice 不知道引擎的存在。她只是一个人。每行 prompt 内容必须满足以下条件之一：
- *   □ 是真实世界的观察事实（"Rin 10 分钟前发了消息"）
- *   □ 是人类可理解的语义标签（"你最近有点冷淡"）
- *   □ 是情境提示，不是指令（"群里有人在吵架"，不是"不要插话"）
+ * Alice не знает о существовании движка. Она просто человек. Каждая строка содержимого prompt обязана удовлетворять одному из условий:
+ *   □ является наблюдаемым фактом реального мира ("Rin написала сообщение 10 минут назад")
+ *   □ является семантическим ярлыком, понятным человеку ("ты в последнее время немного холодна")
+ *   □ является контекстной подсказкой, а не инструкцией ("в группе кто-то спорит", не "не вмешивайся")
  *
- * 绝对禁止：
- *   ✗ 不暴露系统术语（tick, voice, pressure, mod, stage, step）
- *   ✗ 不暴露原始数值（百分比、计数、ID）——必须用语义标签
- *   ✗ 不解释"为什么"系统这样设计（LLM 只关心现象，不关心原因）
- *   ✗ 不发元指令（"Decide what to do." / "Make your decision now."）
- *   ✗ 不说"Your instinct:"（系统标签前缀）
+ * Категорически запрещено:
+ *   ✗ раскрывать системные термины (tick, voice, pressure, mod, stage, step)
+ *   ✗ раскрывать сырые числа (проценты, счётчики, ID) — обязательно использовать семантические ярлыки
+ *   ✗ объяснять "почему" система устроена именно так (LLM заботит только явление, не причина)
+ *   ✗ давать мета-инструкции ("Decide what to do." / "Make your decision now.")
+ *   ✗ использовать "Your instinct:" (системный префикс-ярлык)
  * ═══════════════════════════════════════════════════════════════════════
  *
  * @see docs/adr/142-action-space-architecture/README.md
  * @see docs/adr/163-expand-instruction-bt-native-disclosure.md §17
- * @see docs/adr/209-tui-native-prompt.md — 诚实性原则
+ * @see docs/adr/209-tui-native-prompt.md — принцип честности
  */
 
 import { CAPABILITY_FAMILIES } from "../../core/capability-families.js";
@@ -65,10 +65,10 @@ function feedbackEntriesFromContributions(items: readonly ContributionItem[]): s
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 类型
+// Типы
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** prompt-builder 所需的最小上下文（依赖注入，不直接用 ActContext）。 */
+/** Минимальный контекст, необходимый построителю prompt (внедрение зависимостей, не использует ActContext напрямую). */
 export interface TickPromptContext {
   G: WorldModel;
   dispatcher: Dispatcher;
@@ -91,34 +91,34 @@ export interface TickPromptContext {
   messages: MessageRecord[];
   observations: string[];
   round: number;
-  /** episode 内 block 续轮次数（host 触发的额外轮数，如本地 follow-up / 自纠）。0 = 首轮。 */
+  /** Количество продолжений block внутри episode (дополнительные раунды, инициированные хостом, например локальный follow-up / самокоррекция). 0 = первый раунд. */
   episodeRound?: number;
-  /** 墙钟时间覆盖（ms）。省略时使用 Date.now()。Eval 用固定时间戳消除时间漂移。 */
+  /** Переопределение времени по стенным часам (мс). При отсутствии используется Date.now(). Для eval используется фиксированная временная метка, чтобы устранить дрейф времени. */
   nowMs?: number;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Legacy Category Summary — 历史兼容：从工具 affordance 生成类别摘要
+// Legacy Category Summary — обратная совместимость: генерация сводки категорий из affordance инструментов
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 从 contextual 工具的 affordance 元数据生成类别摘要。
- * ADR-223 后正常 prompt 不再注入该 guide；shell manual 扁平展示所有可见命令。
- * 保留此函数是为了兼容旧测试/实验入口，文案统一指向 `<command> --help`。
+ * Генерирует сводку категорий из метаданных affordance contextual-инструментов.
+ * После ADR-223 этот guide больше не вставляется в обычный prompt; shell manual плоско показывает все видимые команды.
+ * Функция сохранена для совместимости со старыми тестами/экспериментальными точками входа; текст унифицирован с отсылкой к `<command> --help`.
  *
- * always 工具不需要出现（始终可见），on-demand 不通过 needs 激活。
- * 只渲染 contextual 工具的 category + whenToUse。
+ * Инструменты always не нужно включать (всегда видимы), on-demand не активируются через needs.
+ * Рендерится только category + whenToUse для contextual-инструментов.
  *
- * hardgate 过滤：requires 指定的 FeatureFlag 为 false 时，
- * 该工具不渲染到 guide 中——避免误导模型 prepare 不可用的 categories。
+ * Фильтр hardgate: если указанный в requires FeatureFlag равен false,
+ * инструмент не попадает в guide — чтобы не вводить модель в заблуждение, предлагая недоступные categories.
  */
 export function buildCapabilityGuide(
   allTools: readonly UnifiedTool[],
   features?: Readonly<FeatureFlags>,
 ): string {
-  // ADR-196 F9: 只追踪 category 存在性（函数名不再渲染，与 .d.ts 去重）
+  // ADR-196 F9: отслеживаем только наличие category (имена функций больше не рендерятся, дедупликация с .d.ts)
   const categories = new Set<string>();
-  // 从 per-tool affordance 收集 whenToUse / whenNotToUse 作为 App 族的 fallback
+  // Из per-tool affordance собираем whenToUse / whenNotToUse как fallback для семейства App
   const toolWhenToUse = new Map<string, string>();
   const toolWhenNotToUse = new Map<string, string>();
 
@@ -126,12 +126,12 @@ export function buildCapabilityGuide(
     const { affordance } = tool;
     if (affordance.priority !== "capability") continue;
 
-    // hardgate: requires 指定的 feature 必须为 true，否则跳过
+    // hardgate: указанная в requires feature обязана быть true, иначе пропускаем
     if (features && affordance.requires && !features[affordance.requires]) continue;
 
     if (!categories.has(affordance.category)) {
       categories.add(affordance.category);
-      // 首个 tool 的 whenToUse/whenNotToUse 作为 fallback（App 族没有 CAPABILITY_FAMILIES 条目）
+      // whenToUse/whenNotToUse первого инструмента используются как fallback (семейство App не имеет записи в CAPABILITY_FAMILIES)
       toolWhenToUse.set(affordance.category, affordance.whenToUse);
       if (affordance.whenNotToUse) {
         toolWhenNotToUse.set(affordance.category, affordance.whenNotToUse);
@@ -149,7 +149,7 @@ export function buildCapabilityGuide(
   ];
 
   for (const category of categories) {
-    // 族注册表是 whenToUse 的唯一真相源；App 族降级到 per-tool affordance
+    // Реестр семейств является единственным источником истины для whenToUse; семейство App деградирует до per-tool affordance
     const family = CAPABILITY_FAMILIES[category as import("../tick/types.js").ToolCategory];
     const whenToUse = family?.whenToUse ?? toolWhenToUse.get(category) ?? category;
     const whenNotToUse = toolWhenNotToUse.get(category);
@@ -164,11 +164,11 @@ export function buildCapabilityGuide(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// buildTickPrompt — 核心 prompt 组装
+// buildTickPrompt — сборка основного prompt
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 从 Blackboard 状态 + filtered tools 构建 LLM prompt。
+ * Построение LLM prompt из состояния Blackboard + отфильтрованных инструментов.
  *
  * system = manual + scriptGuide + capabilityGuide + mod contributions
  * user = contextVars + timeline + observations + footer
@@ -184,13 +184,13 @@ export async function buildTickPrompt(
   const chatType =
     item.target && G.has(item.target) ? G.getChannel(item.target).chat_type : "private";
   const isGroup = ChatTarget.isGroupChat(chatType);
-  // ADR-206: 频道是信息流实体，独立于 group 和 private 的第三种渲染路径
+  // ADR-206: канал — это медийная сущность, третий путь рендеринга, независимый от group и private
   const isChannel = ChatTarget.isChannelChat(chatType);
 
-  // ── ADR-220: 先构建 snapshot（作为场景标志的唯一真相源）──
+  // ── ADR-220: сначала строим snapshot (единственный источник истины для флагов сценария) ──
   const nowMs = ctx.nowMs ?? Date.now();
 
-  // 策略 C: 预收集 mod state（用于联系人画像、群组黑话）
+  // Стратегия C: предварительный сбор mod state (для профилей контактов, жаргона группы)
   const relState = dispatcher.readModState<{
     contactProfiles?: Record<
       string,
@@ -206,7 +206,7 @@ export async function buildTickPrompt(
     jargon?: Record<string, Record<string, { term: string; meaning: string }>>;
   }>("learning");
 
-  // 提取当前 target 的黑话
+  // Извлекаем жаргон для текущего target
   const targetJargon: Array<{ term: string; meaning: string }> = [];
   if (learnState?.jargon && item.target) {
     const groupJargon = learnState.jargon[item.target];
@@ -235,7 +235,7 @@ export async function buildTickPrompt(
     log.warn("Social case prompt replay failed", error);
   }
 
-  // 构建 snapshot（内部判定 isBot、isOwnedChannel 等标志）
+  // Строим snapshot (внутри определяются флаги isBot, isOwnedChannel и т.п.)
   const snapshot = buildUserPromptSnapshot({
     G,
     messages,
@@ -264,23 +264,23 @@ export async function buildTickPrompt(
         : undefined,
   });
 
-  // ── 从 snapshot 读取场景类型（单一真相源）──
+  // ── Читаем тип сценария из snapshot (единственный источник истины) ──
   const scriptGuide = buildShellGuide({
     chatTargetType: snapshot.chatTargetType,
     facetTags: getFacetTags(item.facetId),
     hasBots: board.features.hasBots,
   });
 
-  // ── 工具手册 ──
+  // ── Руководство по инструментам ──
   const manual = await generateShellManual(dispatcher.mods);
-  // ADR-223: 扁平工具可见性 — category guide 已从普通 prompt 删除。
-  // 56 个工具 × CLI 签名 ≈ 4000 token，在 12K budget 内。
-  // 所有工具签名已通过 Command Catalog + shell manual 扁平展示。
-  // 三层折叠（core/capability/on-demand）为省 2000 token 导致搜索等关键工具被永久隐藏。
-  // Claude Tool Search 解决的是 500+ JSON schema 工具的问题（每个~1000 token）；
-  // Alice 用 CLI 签名（每个~70 token），56 个工具全展开仅 4000 token，不需要搜索机制。
+  // ADR-223: плоская видимость инструментов — category guide удалён из обычного prompt.
+  // 56 инструментов × CLI-сигнатура ≈ 4000 token, укладывается в бюджет 12K.
+  // Все сигнатуры инструментов плоско представлены через Command Catalog + shell manual.
+  // Трёхуровневое свёртывание (core/capability/on-demand) ради экономии 2000 token приводило к постоянному сокрытию ключевых инструментов типа search.
+  // Claude Tool Search решает проблему 500+ JSON schema инструментов (~1000 token каждый);
+  // Alice использует CLI-сигнатуры (~70 token каждая), 56 инструментов полностью = всего 4000 token, поиск не нужен.
 
-  // ── Zone-aware budget ──
+  // ── Бюджет с учётом зон ──
   const footerText = buildActionFooter(G, item, tick, messages, ctx.nowMs);
   let conversationFixedTokens =
     estimateTokens(scriptGuide) + estimateTokens(manual) + estimateTokens(footerText);
@@ -297,8 +297,8 @@ export async function buildTickPrompt(
   }
 
   // ADR-172: Contribute → Rank → 【Filter】 → Trim → Inject
-  // ADR-220: 只收集 header bucket（system prompt 用）。
-  // User prompt 完全由新 ECS 管线生成，section/footer bucket 不再需要。
+  // ADR-220: собираем только bucket header (для system prompt).
+  // User prompt полностью генерируется новым ECS-конвейером, bucket section/footer больше не нужны.
   const headerOnly = rawContributions.filter((c) => c.bucket === "header");
   const audience = buildAudienceContext(G, item.target ?? null, chatType);
   const contributions = applyVisibilityFilter(headerOnly, audience, G);
@@ -310,39 +310,39 @@ export async function buildTickPrompt(
   );
   log.debug("Zone budget utilization", zoneStats);
 
-  // ── system prompt 组装 ──
+  // ── Сборка system prompt ──
   // manual + scriptGuide + capabilityGuide + mod contributions
   // ADR-223: capGuide removed — all tools visible in shell manual
   const systemParts = [renderedSystem, manual, scriptGuide];
   const system = systemParts.join("\n\n");
 
-  // ── User prompt 从 snapshot 渲染 ──
+  // ── Рендеринг user prompt из snapshot ──
   const user = renderUserPrompt(snapshot);
 
-  // ADR-141: 安全网
-  // system prompt 基本都是内部生成文本，违规则直接 warn。
+  // ADR-141: страховочная сеть
+  // System prompt почти полностью состоит из внутренне генерируемого текста — нарушения логируются как warn.
   enforcePromptStyle(system, "system-prompt-tick");
-  // user prompt 混入 Telegram 原始消息、历史回顾等外部内容。
-  // 这些文本可能天然带有 Markdown / 标题 / 缩进，不应在生产日志中反复告警。
-  // user prompt 的格式安全主要靠 PromptBuilder + 定向测试保障；
-  // 运行时这里只保留 debug 级审计入口，避免 PM2 日志被噪声淹没。
+  // User prompt включает внешнее содержимое: исходные Telegram-сообщения, историю и т.п.
+  // Эти тексты могут естественно содержать Markdown / заголовки / отступы — не стоит многократно предупреждать о них в production-логах.
+  // Форматная безопасность user prompt обеспечивается главным образом через PromptBuilder + точечные тесты;
+  // в runtime здесь оставлен только debug-уровень аудита, чтобы не засорять PM2-логи шумом.
   enforcePromptStyle(user, "user-prompt-tick", { violationLogLevel: "debug" });
 
   return { system, user };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 行动尾部 — 从 act/prompt.ts 迁移
+// Нижняя часть действия — перенесена из act/prompt.ts
 // ═══════════════════════════════════════════════════════════════════════════
 
-// ADR-174: VOICE_WHISPER 静态常量已删除，whisper 从 Persona Facet 动态获取。
+// ADR-174: статическая константа VOICE_WHISPER удалена, whisper теперь получается динамически из Persona Facet.
 // @see docs/adr/174-persona-facets.md
 
 /**
- * ADR-174: 从 facet 获取声部低语。
+ * ADR-174: получение голосового шёпота из facet.
  *
- * facetId 存在时从 palette 获取情境化的 whisper；
- * fallback 到 voice 名称（兼容无 facet 的代码路径）。
+ * Если facetId присутствует — получаем контекстуальный whisper из palette;
+ * fallback — имя голоса (для совместимости с кодовыми путями без facet).
  */
 export function resolveWhisper(voice: string, isGroup: boolean, facetId?: string | null): string {
   return getFacetWhisper(facetId, voice, isGroup);
@@ -353,15 +353,15 @@ function capitalizeFirst(s: string): string {
 }
 
 /**
- * 构建行动尾部提示——内心低语，不暴露系统概念。
+ * Построение нижней части подсказки действия — внутренний шёпот без раскрытия системных концепций.
  *
- * ADR-152: 群聊使用极乐迪斯科式问句低语，引导 LLM 先自我评估再行动。
- * 私聊保留情境事实陈述。
+ * ADR-152: в групповых чатах используется шёпот-вопрос в стиле Disco Elysium, побуждающий LLM сначала оценить ситуацию, затем действовать.
+ * В приватных чатах сохраняется констатация ситуативных фактов.
  *
- * 诚实性原则（ADR-209 F1）：
- * - 不说 "Your instinct:"（系统标签）
- * - 不说 "Decide what to do."（元指令）
- * - whisper 本身已是人类化内心独白，直接使用
+ * Принцип честности (ADR-209 F1):
+ * - не использовать "Your instinct:" (системный ярлык)
+ * - не использовать "Decide what to do." (мета-инструкция)
+ * - whisper сам по себе является очеловеченным внутренним монологом и используется напрямую
  */
 export function buildActionFooter(
   G: WorldModel,
@@ -372,7 +372,7 @@ export function buildActionFooter(
 ): string {
   const target = item.target;
 
-  // 从图中推断群聊/私聊
+  // Определяем групповой/приватный чат по графу
   const chatType = target && G.has(target) ? G.getChannel(target).chat_type : "private";
   const isGroup = ChatTarget.isGroupChat(chatType);
 
@@ -384,7 +384,7 @@ export function buildActionFooter(
 
   const resolved = resolveTarget(G, target);
 
-  // 查找 open thread
+  // Поиск открытого thread
   let openThread = "";
   const convId =
     resolved.channelId && G.has(resolved.channelId)
@@ -395,11 +395,11 @@ export function buildActionFooter(
     if (topic) openThread = topic;
   }
 
-  // ADR-70 P3: 关系描述已由 relationships.mod contribute() 提供，此处不重复。
+  // ADR-70 P3: описание отношений уже предоставляется через relationships.mod contribute(), здесь не дублируем.
   const parts: string[] = [];
   parts.push(capitalizeFirst(feeling));
 
-  // Layer 3: 对话状态增强（RC1 防复读）——在 instinct 后注入已发消息提醒
+  // Layer 3: расширение состояния диалога (RC1 защита от повторов) — напоминание об уже отправленных сообщениях после instinct
   if (messages && messages.length > 0) {
     const now = nowMs ?? Date.now();
     const presence = computeChannelPresence(messages);
@@ -420,7 +420,7 @@ export function buildActionFooter(
   }
 
   if (openThread) parts.push(`You were talking about: ${openThread}.`);
-  // 论文 L5: Degraded Action — 社交成本过高时约束 LLM 输出简短回复
+  // Статья L5: Degraded Action — ограничение вывода LLM коротким ответом при слишком высоких социальных издержках
   // @see paper/ Definition 10: L5 "Degraded Action"
   if (item.reason?.includes("degraded_action")) {
     parts.push("Running low — a reaction or a short line is enough.");

@@ -19,7 +19,7 @@ export const ALICE_CONTAINER_PATHS = {
   worki: "/work/worki",
 } as const;
 
-/** Alice 持久家目录（宿主侧路径）。容器内挂载为 /home/alice。 */
+/** Постоянный домашний каталог Alice (путь на хосте). Монтируется в контейнер как /home/alice. */
 export const ALICE_HOME = process.env.ALICE_HOME
   ? resolve(process.env.ALICE_HOME)
   : resolve(import.meta.dirname ?? ".", "../../home");
@@ -114,11 +114,11 @@ export function executeAliceSandboxProcess(
 }
 
 /**
- * 预热 Alice 系统 sandbox session container。
+ * Прогревает контейнер sandbox-сессии системы Alice.
  *
- * 在启动时调用，确保第一个 tick 不需要等待容器冷启动。
- * 使用与 shell-executor 相同的参数构建 session spec，
- * 这样 ensureDockerSession 会复用同一个容器。
+ * Вызывается при старте, чтобы первый tick не ждал холодного запуска контейнера.
+ * Строит session spec с теми же параметрами, что и shell-executor,
+ * поэтому ensureDockerSession переиспользует тот же контейнер.
  */
 export async function warmupSandboxSession(enginePort: number): Promise<void> {
   const opts = buildRunnerOptions({
@@ -128,7 +128,7 @@ export async function warmupSandboxSession(enginePort: number): Promise<void> {
     network: true,
     memory: "1g",
     timeout: 35,
-    // TCP 通信不依赖 socket 挂载 → 回归 gVisor (sandboxed)
+    // TCP-связь не требует монтирования сокета → возвращаемся к gVisor (sandboxed)
     includeAliceHome: true,
   });
   await ensureDockerSession(opts);

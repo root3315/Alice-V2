@@ -1,15 +1,15 @@
 /**
- * ADR-215: Cognitive Episode Graph — Episode 生命周期管理。
+ * ADR-215: Cognitive Episode Graph — управление жизненным циклом Episode.
  *
- * Episode = 一段连贯认知活动，从一个 target engagement 开始到自然中断为止。
- * 自动分割（Event Segmentation Theory），不需要 LLM 声明。
+ * Episode = отрезок связной когнитивной активности, начинающийся с target engagement и завершающийся естественным прерыванием.
+ * Автоматическая сегментация (Event Segmentation Theory), без явного объявления LLM.
  *
- * 核心创新：Residue（残留张力）编码未消解的心理状态，
- * 通过 channelPressures 注入参与压力竞争——仿生的主观能动性。
+ * Ключевая инновация: Residue (остаточное напряжение) кодирует неразрешённые психические состояния,
+ * инжектируемые через channelPressures в конкуренцию за вовлечённость — биомиметическая субъектная активность.
  *
  * @see docs/adr/215-cognitive-episode-graph.md
  * @see CompassMem arXiv:2601.04726 (Event Segmentation Theory)
- * @see MAGMA arXiv:2601.03236 (四图解耦 + 双流演化)
+ * @see MAGMA arXiv:2601.03236 (четырёхграфная развязка + двухпоточная эволюция)
  */
 
 import { and, eq, gt, isNotNull, lt } from "drizzle-orm";
@@ -23,13 +23,13 @@ const log = createLogger("episode");
 // ── Types ────────────────────────────────────────────────────────────────
 
 export interface EpisodeResidue {
-  /** 语义分类（从 outcome 推导，可能不可靠——参考用）。 */
+  /** Семантическая классификация (выведена из outcome, может быть ненадёжной — только для справки). */
   type: "unfinished" | "unresolved_emotion" | "interrupted" | "curiosity";
-  /** 原始 outcome 信号（ground truth，分类不可靠时可从此重新推导）。 */
+  /** Исходный сигнал outcome (ground truth, можно переопределить при ненадёжной классификации). */
   outcome: string;
-  /** 原始 engagement outcome（complete/timeout/preempted/limit/llm_failed 等）。 */
+  /** Исходный engagement outcome (complete/timeout/preempted/limit/llm_failed и т.д.). */
   engagementOutcome: string | null;
-  /** episode 结束时的 API 压力值。 */
+  /** Значение API-давления на момент завершения episode. */
   pressure: number;
   intensity: number; // 0..1
   toward: string | null; // entity ID or null
@@ -42,19 +42,19 @@ export interface ActiveResidue {
   residue: EpisodeResidue;
 }
 
-/** Episode 在 EvolveState 中的工作状态。 */
+/** Рабочее состояние Episode в EvolveState. */
 export interface EpisodeWorkingState {
-  /** 当前活跃 episode ID，null = 没有正在进行的 episode。 */
+  /** ID текущего активного episode, null = нет активного episode. */
   currentId: string | null;
-  /** 当前 episode 的 target。 */
+  /** Target текущего episode. */
   currentTarget: string | null;
-  /** 当前 episode 的开始 tick。 */
+  /** Стартовый tick текущего episode. */
   currentTickStart: number | null;
-  /** 活跃 residue 内存缓存（避免每 tick 查 DB）。 */
+  /** Кэш активных residue в памяти (чтобы не запрашивать DB каждый tick). */
   activeResidues: ActiveResidue[];
 }
 
-/** 从 applyPlan 传入的决策快照。 */
+/** Снимок решения, передаваемый из applyPlan. */
 export interface EpisodePlanSnapshot {
   type: "enqueue" | "silent" | "skip" | "system1";
   target: string | null;
@@ -66,32 +66,32 @@ export interface EpisodePlanSnapshot {
 
 // ── Constants ────────────────────────────────────────────────────────────
 
-/** 最小 episode 持续时间（ticks），防止碎片化。 */
+/** Минимальная продолжительность episode (в тиках), защита от фрагментации. */
 const MIN_EPISODE_TICKS = 2;
 
-/** Residue 衰减半衰期（ms），按类型区分。 */
+/** Период полураспада Residue (мс), разбитый по типам. */
 const RESIDUE_HALF_LIFE: Record<EpisodeResidue["type"], number> = {
-  unfinished: 30 * 60 * 1000, // 30 分钟
-  unresolved_emotion: 60 * 60 * 1000, // 1 小时
-  interrupted: 20 * 60 * 1000, // 20 分钟
-  curiosity: 45 * 60 * 1000, // 45 分钟
+  unfinished: 30 * 60 * 1000, // 30 минут
+  unresolved_emotion: 60 * 60 * 1000, // 1 час
+  interrupted: 20 * 60 * 1000, // 20 минут
+  curiosity: 45 * 60 * 1000, // 45 минут
 };
 
-/** Residue 贡献衰减到此值以下时忽略。 */
+/** Вклад Residue ниже этого значения игнорируется. */
 const RESIDUE_MIN_CONTRIBUTION = 0.01;
 
-/** 活跃 residue 最大年龄（ms）—— 超过后不再查询。 */
-const RESIDUE_MAX_AGE_MS = 4 * 60 * 60 * 1000; // 4 小时
+/** Максимальный возраст активного residue (мс) — после превышения не запрашивается. */
+const RESIDUE_MAX_AGE_MS = 4 * 60 * 60 * 1000; // 4 часа
 
-/** Episode 保留天数。 */
-const EPISODE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 天
+/** Срок хранения Episode (мс). */
+const EPISODE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 дней
 
-/** caused_by 推断的最大 tick 间隔。 */
+/** Максимальный разрыв в тиках для вывода caused_by. */
 const CAUSATION_MAX_GAP_TICKS = 5;
 
 // ── Lifecycle ────────────────────────────────────────────────────────────
 
-/** 初始化 EpisodeWorkingState。在 evolve 启动时调用一次。 */
+/** Инициализация EpisodeWorkingState. Вызывается один раз при запуске evolve. */
 export function initEpisodeState(): EpisodeWorkingState {
   const activeResidues = loadActiveResidues(Date.now());
   log.info("Episode state initialized", { activeResidues: activeResidues.length });
@@ -104,12 +104,12 @@ export function initEpisodeState(): EpisodeWorkingState {
 }
 
 /**
- * 每 tick 在 applyPlan 末尾调用。检测 episode 边界，自动开启/结束 episode。
+ * Вызывается каждый тик в конце applyPlan. Определяет границы episode, автоматически открывает/закрывает episode.
  *
- * 边界条件（Event Segmentation Theory）：
- * - target 切换
- * - plan.type 不是 enqueue（沉默/skip）
- * - 模态转换（通过 modeChanged flag）
+ * Граничные условия (Event Segmentation Theory):
+ * - смена target
+ * - plan.type не является enqueue (молчание/skip)
+ * - смена модуса (через флаг modeChanged)
  */
 export function updateEpisode(
   epState: EpisodeWorkingState,
@@ -123,19 +123,19 @@ export function updateEpisode(
   const prevTarget = epState.currentTarget;
   const prevId = epState.currentId;
 
-  // ── 结束条件 ──
+  // ── Условия завершения ──
   const shouldClose =
     prevId != null &&
-    (newTarget !== prevTarget || // target 变了
-      newTarget == null || // 沉默/skip
-      modeChanged || // 模态转换
-      engagementOutcome === "leave"); // 显式离开
+    (newTarget !== prevTarget || // target изменился
+      newTarget == null || // молчание/skip
+      modeChanged || // смена модуса
+      engagementOutcome === "leave"); // явный выход
 
   if (shouldClose && prevId) {
     closeEpisode(epState, tick);
   }
 
-  // ── 开始条件 ──
+  // ── Условия открытия ──
   if (newTarget && newTarget !== prevTarget) {
     openEpisode(epState, plan, tick, nowMs);
   }
@@ -149,7 +149,7 @@ function openEpisode(
 ): void {
   const id = `episode:${tick}`;
 
-  // 推断 caused_by（时序邻近 + residue 匹配 + 实体重叠）
+  // Вывод caused_by (временная близость + совпадение residue + пересечение сущностей)
   const causedBy = inferCausedBy(epState, plan.target, plan.voice, plan.focalEntities, tick);
 
   try {
@@ -185,21 +185,21 @@ function openEpisode(
 }
 
 /**
- * Evolve 线程的 episode 关闭——只做边界标记和清理工作状态。
+ * Закрытие episode в потоке Evolve — только маркировка границы и очистка рабочего состояния.
  *
- * 真正的 outcome + residue 由 act 线程的 closeEpisodeFromAct() 写入，
- * 因为只有 processResult 才有真实的 engagement 信号。
+ * Настоящий outcome + residue записывает поток act через closeEpisodeFromAct(),
+ * поскольку только processResult имеет реальный сигнал engagement.
  *
- * evolve 线程在 target 变化时调用此函数：
- * - 如果 episode 太短（< MIN_EPISODE_TICKS）→ 删除
- * - 如果 act 线程已写入 outcome → 不覆盖（已正确关闭）
- * - 如果 act 线程尚未写入 → 设置 tickEnd 但不写 outcome/residue（等 act 来补）
+ * Поток evolve вызывает эту функцию при смене target:
+ * - Если episode слишком короткий (< MIN_EPISODE_TICKS) → удалить
+ * - Если поток act уже записал outcome → не перезаписывать (уже корректно закрыт)
+ * - Если поток act ещё не записал → установить tickEnd, но не писать outcome/residue (ждём act)
  */
 function closeEpisode(epState: EpisodeWorkingState, tick: number): void {
   const id = epState.currentId;
   if (!id || !epState.currentTickStart) return;
 
-  // 最小持续时间检查——太短的 episode 直接删除
+  // Проверка минимальной продолжительности — слишком короткие episode удаляются сразу
   if (tick - epState.currentTickStart < MIN_EPISODE_TICKS) {
     try {
       getDb().delete(episodes).where(eq(episodes.id, id)).run();
@@ -212,7 +212,7 @@ function closeEpisode(epState: EpisodeWorkingState, tick: number): void {
     return;
   }
 
-  // 只设 tickEnd（如果 act 线程还没关闭的话）
+  // Устанавливаем только tickEnd (если поток act ещё не закрыл episode)
   try {
     const row = getDb()
       .select({ outcome: episodes.outcome })
@@ -220,10 +220,10 @@ function closeEpisode(epState: EpisodeWorkingState, tick: number): void {
       .where(eq(episodes.id, id))
       .get();
     if (row && !row.outcome) {
-      // act 线程尚未写入 outcome → 设置 tickEnd 边界
+      // Поток act ещё не записал outcome → устанавливаем границу tickEnd
       getDb().update(episodes).set({ tickEnd: tick }).where(eq(episodes.id, id)).run();
     }
-    // 如果 row.outcome 已有值，说明 act 线程已正确关闭，不覆盖
+    // Если row.outcome уже заполнен, поток act корректно закрыл episode — не перезаписываем
   } catch (e) {
     log.warn("Failed to mark episode boundary", {
       id,
@@ -249,7 +249,7 @@ function inferCausedBy(
 ): string[] {
   const causes: string[] = [];
 
-  // 规则 1: residue.toward 指向当前 target
+  // Правило 1: residue.toward указывает на текущий target
   for (const r of epState.activeResidues) {
     if (r.residue.toward === target && target != null) {
       causes.push(r.episodeId);
@@ -258,7 +258,7 @@ function inferCausedBy(
 
   if (causes.length > 0) return causes;
 
-  // 规则 2: 最近结束的 episode（时序邻近 + 实体重叠或声部延续）
+  // Правило 2: недавно завершённый episode (временная близость + пересечение сущностей или продолжение голоса)
   try {
     const recent = getDb()
       .select({ id: episodes.id, entityIds: episodes.entityIds, voice: episodes.voice })
@@ -289,8 +289,8 @@ function inferCausedBy(
 const LN2 = Math.LN2;
 
 /**
- * 计算所有活跃 residue 的压力贡献，注入 channelPressures map。
- * 在 evolve.ts 的 channelPressures 构造后、updateAttentionDebt 前调用。
+ * Вычисляет вклад давления всех активных residue и инжектирует их в channelPressures map.
+ * Вызывается после построения channelPressures в evolve.ts, перед updateAttentionDebt.
  */
 export function injectResidueContributions(
   _activeResidues: ActiveResidue[],
@@ -302,12 +302,12 @@ export function injectResidueContributions(
 }
 
 /**
- * 刷新 residue 缓存——移除已衰减到阈值以下的条目。
- * 每 tick 调用一次，轻量操作。
+ * Обновляет кэш residue — удаляет записи, затухшие ниже порога.
+ * Вызывается один раз за тик, лёгкая операция.
  */
 /**
- * 从 DB 刷新 residue 缓存（act 线程可能已写入新 residue）+ 裁剪已衰减条目。
- * 每 tick 调用一次。用 DB 读取替代纯内存裁剪，确保跨线程一致性。
+ * Обновляет кэш residue из DB (поток act мог записать новые residue) + обрезает затухшие записи.
+ * Вызывается один раз за тик. Чтение из DB вместо чисто памяти гарантирует согласованность между потоками.
  */
 export function refreshResidueCache(nowMs: number): ActiveResidue[] {
   const fresh = loadActiveResidues(nowMs);
@@ -347,7 +347,7 @@ function loadActiveResidues(nowMs: number): ActiveResidue[] {
 }
 
 /**
- * GC: 删除超龄 episode（> 7 天）。在 evolve 的维护阶段调用。
+ * GC: удаляет устаревшие episode (> 7 дней). Вызывается на фазе обслуживания evolve.
  */
 export function gcEpisodes(nowMs: number): number {
   try {
@@ -360,7 +360,7 @@ export function gcEpisodes(nowMs: number): number {
 }
 
 /**
- * 记录 consults 边——当 LLM 查阅某个 episode 时调用。
+ * Записывает ребро consults — вызывается, когда LLM обращается к некоторому episode.
  */
 export function recordConsults(currentEpisodeId: string, consultedEpisodeId: string): void {
   try {
@@ -388,9 +388,9 @@ export function recordConsults(currentEpisodeId: string, consultedEpisodeId: str
   }
 }
 
-// ── Act 线程 Episode 关闭（真实信号）────────────────────────────────
+// ── Закрытие Episode в потоке Act (реальный сигнал) ─────────────────────
 
-/** processResult 传入的真实 engagement 信号。 */
+/** Реальный сигнал engagement, передаваемый из processResult. */
 export interface ActOutcomeSignals {
   messageSent: boolean;
   isSilence: boolean;
@@ -406,13 +406,13 @@ export interface ActOutcomeSignals {
 }
 
 /**
- * 从 act 线程关闭 episode——双源融合（LLM 主源 + 结构兜底）。
+ * Закрытие episode из потока act — слияние двух источников (LLM как основной + структурный запасной).
  *
- * 信号来源：
- * - llmResidue：LLM 在 TickStepSchema.residue 中直接表达的认知残留（语义归 LLM）
- * - signals：processResult 的结构信号（messageSent/error/silence）
+ * Источники сигналов:
+ * - llmResidue: когнитивный остаток, напрямую выраженный LLM в TickStepSchema.residue (семантика на стороне LLM)
+ * - signals: структурные сигналы processResult (messageSent/error/silence)
  *
- * 合并规则：LLM 明确表达的认知残留才写入 residue；运行时失败不伪装成未完成想法。
+ * Правило слияния: в residue записывается только явно выраженный когнитивный остаток LLM; ошибки рантайма не маскируются под незавершённые мысли.
  *
  * @see docs/adr/215-cognitive-episode-graph.md
  */
@@ -465,15 +465,15 @@ export function closeEpisodeFromAct(
   }
 }
 
-/** LLM feeling → residue type 映射。 */
+/** Соответствие LLM feeling → тип residue. */
 const FEELING_MAP: Record<string, EpisodeResidue["type"]> = {
   unresolved: "unresolved_emotion",
   interrupted: "interrupted",
   curious: "curiosity",
-  settled: "unfinished", // settled 不产生 residue，此 mapping 不会被使用
+  settled: "unfinished", // settled не порождает residue, это маппинг не используется
 };
 
-/** LLM feeling → intensity 映射。 */
+/** Соответствие LLM feeling → интенсивность. */
 const FEELING_INTENSITY: Record<string, number> = {
   unresolved: 0.5,
   interrupted: 0.5,
@@ -481,7 +481,7 @@ const FEELING_INTENSITY: Record<string, number> = {
   settled: 0,
 };
 
-/** LLM residue 归一化。运行时失败不再生成结构兜底 residue。 */
+/** Нормализация LLM residue. Ошибки рантайма больше не порождают структурный запасной residue. */
 function mergeResidue(
   llm: import("../llm/schemas.js").LLMResidue | undefined,
   outcome: string,
@@ -495,7 +495,7 @@ function mergeResidue(
   };
 
   if (llm) {
-    if (llm.feeling === "settled") return null; // LLM 说没事 → 没事
+    if (llm.feeling === "settled") return null; // LLM говорит всё в порядке → ничего
     const type = FEELING_MAP[llm.feeling] ?? "unresolved_emotion";
     const toward = llm.toward ? (ensureNodeId(llm.toward) ?? null) : null;
     return {
@@ -511,7 +511,7 @@ function mergeResidue(
   return null;
 }
 
-/** 将 LLM 输出的任意格式 ID 统一为 graph node ID。 */
+/** Приводит ID любого формата из вывода LLM к унифицированному graph node ID. */
 function ensureNodeId(id: string): string | null {
   return ensureChannelId(id) ?? ensureContactId(id) ?? null;
 }

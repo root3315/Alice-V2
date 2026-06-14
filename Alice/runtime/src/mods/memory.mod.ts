@@ -1,17 +1,17 @@
 /**
- * Memory Mod — 消息记忆 + 对话历史上下文。
+ * Memory Mod — память сообщений + контекст истории диалога.
  *
- * 职责：
- * - 为 Storyteller 贡献近期对话历史（section 桶）
- * - 提供 recentChat 查询
- * - 监听 SEND_MESSAGE 记录发出消息
+ * Ответственность:
+ * - Вносить недавнюю историю диалога для Storyteller (секция-бакет)
+ * - Предоставлять запрос recentChat
+ * - Слушать SEND_MESSAGE и записывать отправленные сообщения
  *
- * 未来扩展：
- * - 可检索性 R_N（论文 Eq.12: 遗忘曲线）
- * - 记忆整合（stability update, Eq.13）
+ * Будущие расширения:
+ * - Извлекаемость R_N (статья Eq.12: кривая забывания)
+ * - Консолидация памяти (stability update, Eq.13)
  *
- * 参考: narrative-engine/mods/memory/index.ts
- * 参考: narrative-framework-paper §6b (Retrievability)
+ * Ссылка: narrative-engine/mods/memory/index.ts
+ * Ссылка: narrative-framework-paper §6b (Retrievability)
  */
 import { and, desc, eq, gte } from "drizzle-orm";
 import { z } from "zod";
@@ -26,16 +26,16 @@ import { parseTransportTargetId, stableTransportMessageId } from "../platform/tr
 import { estimateAgeS } from "../pressure/clock.js";
 import { humanDuration, humanDurationAgo } from "../utils/time-format.js";
 
-// -- Mod 状态 -----------------------------------------------------------------
+// -- Состояние мода -----------------------------------------------------------
 
 interface MemoryState {
-  /** 当前 briefing 的目标 chatId（由 act.ts 设置）。 */
+  /** Целевой chatId текущего брифинга (устанавливается в act.ts). */
   targetChatId: string | null;
-  /** ADR-83 D3: live window 消息数（由 act.ts 注入）。> 0 时跳过 conversation section 避免重叠。 */
+  /** ADR-83 D3: число сообщений в live window (внедряется из act.ts). При > 0 пропускать секцию conversation во избежание дублирования. */
   liveMessageCount: number;
 }
 
-// -- Mod 定义 -----------------------------------------------------------------
+// -- Определение мода ---------------------------------------------------------
 
 export const memoryMod = createMod<MemoryState>("memory", {
   category: "core",
@@ -43,7 +43,7 @@ export const memoryMod = createMod<MemoryState>("memory", {
   topics: ["memory"],
   initialState: { targetChatId: null, liveMessageCount: 0 },
 })
-  /** 设置当前目标频道（act 阶段调用）。 */
+  /** Установить текущий целевой канал (вызывается на фазе act). */
   .instruction("SET_CHAT_TARGET", {
     params: z.object({
       chatId: z.string().optional().describe("ID целевого канала"),
@@ -56,7 +56,7 @@ export const memoryMod = createMod<MemoryState>("memory", {
       return ctx.state.targetChatId;
     },
   })
-  /** 记录发出的消息。 */
+  /** Записать отправленное сообщение. */
   .instruction("SEND_MESSAGE", {
     params: z.object({
       chatId: z.string().min(1).describe("ID канала"),
@@ -71,7 +71,7 @@ export const memoryMod = createMod<MemoryState>("memory", {
       const target = parseTransportTargetId(chatId);
       const nativeChatId = target?.nativeId;
       const nativeMsgId = args.msgId != null ? String(args.msgId) : undefined;
-      // FTS 同步由 SQLite 触发器自动完成。
+      // Синхронизация FTS выполняется автоматически триггерами SQLite.
       // @see runtime/drizzle/0017_fts5_triggers.sql
       getDb()
         .insert(messageLog)
@@ -97,7 +97,7 @@ export const memoryMod = createMod<MemoryState>("memory", {
       return true;
     },
   })
-  /** 获取某频道的近期消息。 */
+  /** Получить недавние сообщения канала. */
   .query("recent_chat", {
     params: z.object({
       chatId: z.string().min(1).optional().describe("ID канала (если не указан — текущий чат)"),
@@ -166,9 +166,9 @@ export const memoryMod = createMod<MemoryState>("memory", {
     const items: ContributionItem[] = [];
     const db = getDb();
 
-    // 1. 目标聊天的对话历史
-    // ADR-83 D3: live window（Telegram API 实时拉取）为 ground truth。
-    // 当 liveMessageCount > 0 时跳过此 section，避免与 act.ts 的 live messages 重叠。
+    // 1. История диалога целевого чата
+    // ADR-83 D3: live window (реалтайм-получение через Telegram API) — источник истины.
+    // При liveMessageCount > 0 пропускать эту секцию, чтобы не дублировать live messages из act.ts.
     if (ctx.state.targetChatId && ctx.state.liveMessageCount === 0) {
       const messages = db
         .select()
@@ -182,7 +182,7 @@ export const memoryMod = createMod<MemoryState>("memory", {
       if (messages.length > 0) {
         const mb = new PromptBuilder();
         for (const m of messages) {
-          // IRC 风格：display_name ~senderId（非 Alice 消息附加 sender ID）
+          // IRC-стиль: display_name ~senderId (для не-Alice сообщений добавляется sender ID)
           let sender: string;
           if (m.isOutgoing) {
             sender = "Alice (you)";
@@ -196,13 +196,13 @@ export const memoryMod = createMod<MemoryState>("memory", {
               ? `${m.text.slice(0, 200)}...`
               : m.text
             : "(no text)";
-          // ADR-110/166: 统一使用 estimateAgeS
+          // ADR-110/166: использовать estimateAgeS единообразно
           const agoS = estimateAgeS(m, ctx.nowMs, ctx.tick);
           const ago = humanDurationAgo(agoS);
-          // ADR-219: 传入当前聊天可见 msgId，使 LLM 可用 `irc forward --ref msgId` 引用频道消息。
+          // ADR-219: передавать видимый msgId текущего чата, чтобы LLM мог ссылаться на сообщения через `irc forward --ref msgId`.
           mb.timeline(ago, sender, preview, m.msgId);
         }
-        // 用 display_name 替代 raw chatId（LLM 无障碍）
+        // Использовать display_name вместо raw chatId (для удобства LLM)
         let chatLabel = "(unknown chat)";
         if (ctx.state.targetChatId && ctx.graph.has(ctx.state.targetChatId)) {
           chatLabel = ctx.graph.getChannel(ctx.state.targetChatId).display_name ?? chatLabel;
@@ -213,23 +213,23 @@ export const memoryMod = createMod<MemoryState>("memory", {
       }
     }
 
-    // 2. 对话回顾 — 结构化时间线快照（PageIndex 哲学：提供结构，让 LLM 推理）
-    //    查最近 100 条消息（排除已展示的 20 条），按间隔分段，首尾摘要
+    // 2. Ретроспектива диалога — структурированный снимок временной шкалы (философия PageIndex: давать структуру, дать LLM рассуждать)
+    //    Запрашивать последние 100 сообщений (исключая уже показанные 20), разбивать по промежуткам, резюме начала и конца
     if (ctx.state.targetChatId) {
       const olderMessages = db
         .select()
         .from(messageLog)
         .where(eq(messageLog.chatId, ctx.state.targetChatId))
         .orderBy(desc(messageLog.id))
-        .limit(120) // 取 120 条，跳过最新 20 条（已在 conversation section 展示）
+        .limit(120) // Взять 120 записей, пропустить последние 20 (уже показаны в секции conversation)
         .all()
         .reverse();
 
-      // 跳过最新 20 条（已在 conversation section 展示）
+      // Пропустить последние 20 (уже показаны в секции conversation)
       const older = olderMessages.slice(0, Math.max(0, olderMessages.length - 20));
 
       if (older.length >= 3) {
-        // 按间隔分段（gap > 10 ticks → 新段）
+        // Разбить по промежуткам (gap > 10 тиков → новый сегмент)
         const segments: (typeof older)[] = [];
         let current: typeof older = [older[0]];
         for (let i = 1; i < older.length; i++) {
@@ -242,13 +242,13 @@ export const memoryMod = createMod<MemoryState>("memory", {
         }
         segments.push(current);
 
-        // 渲染：每段只显示首尾消息 + 消息数
+        // Рендер: для каждого сегмента показывать только первое и последнее сообщение + количество
         const recapLines: PromptLine[] = [];
         for (const seg of segments.slice(-5)) {
-          // 最多展示 5 段
+          // Показывать не более 5 сегментов
           const first = seg[0];
           const last = seg[seg.length - 1];
-          // ADR-210 F: Earlier conversation 是回顾性摘要——sender ID 无功能价值，只保留名字
+          // ADR-210 F: Earlier conversation — это ретроспективное резюме; sender ID функциональной ценности не несёт, оставлять только имя
           const firstSender = first.isOutgoing ? "Alice" : (first.senderName ?? "someone");
           const lastSender = last.isOutgoing ? "Alice" : (last.senderName ?? "someone");
           const rawFirst = (first.text ?? "").replaceAll("\n", " ");
@@ -264,7 +264,7 @@ export const memoryMod = createMod<MemoryState>("memory", {
               : rawLast
             : "(no text)";
 
-          // ADR-110/166: 统一使用 estimateAgeS
+          // ADR-110/166: использовать estimateAgeS единообразно
           const startAgoS = estimateAgeS(first, ctx.nowMs, ctx.tick);
           const endAgoS = estimateAgeS(last, ctx.nowMs, ctx.tick);
           const startAgo = humanDuration(startAgoS);
@@ -284,17 +284,17 @@ export const memoryMod = createMod<MemoryState>("memory", {
       }
     }
 
-    // 3. ADR-102: Action Echo — 反射性行动轨迹。
-    //    Alice 的自我模型有语义记忆（facts）和情绪记忆（diary），但缺少行动记忆。
-    //    当消息滚出 30 条 live window 后，Alice 对自己"做了什么"的感知消失，
-    //    而 diary 的未解决情绪持续注入 → 正反馈放大环 → 重复追问同一话题。
-    //    此 section 从 messageLog 提取 Alice 近期发出的消息，独立于 live window，
-    //    填补自我模型的"行动记忆"空缺。
+    // 3. ADR-102: Action Echo — рефлексивный след действий.
+    //    Модель себя у Alice содержит семантическую память (факты) и эмоциональную (дневник), но не содержит памяти действий.
+    //    Когда сообщения вытесняются за пределы 30-сообщенного live window, у Alice пропадает ощущение того, «что она делала»,
+    //    а неразрешённые эмоции из дневника продолжают накапливаться → петля усиления с положительной обратной связью → повторные расспросы по одной теме.
+    //    Эта секция извлекает из messageLog недавние исходящие сообщения Alice, независимо от live window,
+    //    восполняя пробел «памяти действий» в её модели себя.
     //    @see docs/adr/102-reflective-action-trace.md
     if (ctx.state.targetChatId) {
-      const ECHO_LOOKBACK_S = 3600; // 1 小时
+      const ECHO_LOOKBACK_S = 3600; // 1 час
       const ECHO_MAX_MESSAGES = 5;
-      // ADR-110: 使用 createdAt 替代 tick 窗口查询
+      // ADR-110: использовать createdAt вместо tick для оконного запроса
       const outgoing = db
         .select({
           tick: messageLog.tick,
@@ -317,7 +317,7 @@ export const memoryMod = createMod<MemoryState>("memory", {
       if (outgoing.length > 0) {
         const echoLines: PromptLine[] = [];
         for (const m of outgoing) {
-          // ADR-110/166: 统一使用 estimateAgeS
+          // ADR-110/166: использовать estimateAgeS единообразно
           const agoS = estimateAgeS(m, ctx.nowMs, ctx.tick);
           const ago = humanDurationAgo(agoS);
           // Сплющиваем переносы: .of() — однострочный (её код-ответы бывают многострочными).
@@ -326,15 +326,15 @@ export const memoryMod = createMod<MemoryState>("memory", {
           echoLines.push(PromptBuilder.of(`[${ago}] you: "${preview}"`));
         }
         items.push(
-          // ADR-102: priority 68 — 低于 threads(70)/self-mood(70)，高于 conversation-recap(65)。
-          // 在群聊紧张预算下必须存活：防止重复行为比 contact-mood(55)/group-dynamics(55) 更重要。
+          // ADR-102: priority 68 — ниже threads(70)/self-mood(70), выше conversation-recap(65).
+          // Должна выживать при жёстком бюджете группового чата: предотвращение повторений важнее contact-mood(55)/group-dynamics(55).
           section("action-echo", echoLines, "Said recently (this chat)", 15, 68),
         );
       }
     }
 
-    // ADR-56 S4: cross-chat-activity 已删除。
-    // 在当前聊天中暴露其他聊天的活动会导致 LLM 跨聊天泄漏信息。
+    // ADR-56 S4: cross-chat-activity удалена.
+    // Показ активности других чатов в текущем чате приводит к утечке информации между чатами на стороне LLM.
     // @see docs/adr/56-behavioral-reciprocity-action-loop.md §S4
 
     return items;

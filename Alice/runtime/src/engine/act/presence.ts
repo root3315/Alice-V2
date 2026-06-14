@@ -1,37 +1,37 @@
 /**
- * 群组存在感计算 — 极乐迪斯科式低语。
+ * Расчёт присутствия в группе — в духе шёпотов Disco Elysium.
  *
- * 纯函数模块：从消息窗口计算 Alice 的频道存在感，
- * 渲染为 IRC-style `---` 分隔符注入 prompt，
- * 让 LLM 感知"我已经说了多少"而不需要指令。
+ * Модуль чистых функций: вычисляет присутствие Alice в канале по окну сообщений,
+ * рендерит в виде IRC-style разделителя `---` для внедрения в prompt,
+ * давая LLM ощущение «сколько я уже сказала» без явных инструкций.
  *
- * 设计灵感：
- * - 极乐迪斯科技能低语 — 人格化环境感知，不是指令
- * - 叙事引擎 set_fact 渐进抑制 — 用 IRC 事实代替指令
- * - AGENTS.md 无障碍原则 — 自然语言事实，不暴露数字让 LLM 做算术
+ * Источники вдохновения:
+ * - Шёпоты навыков Disco Elysium — очеловеченное восприятие среды, а не инструкции
+ * - Постепенное подавление через set_fact нарративного движка — IRC-факты вместо инструкций
+ * - Принцип безбарьерности AGENTS.md — факты на естественном языке, без чисел для арифметики LLM
  *
  * @see docs/adr/118-group-presence-awareness.md
  */
 import type { MessageRecord } from "./messages.js";
 
 export interface ChannelPresence {
-  /** 消息窗口总数。 */
+  /** Общее количество сообщений в окне. */
   total: number;
-  /** Alice 的消息数。 */
+  /** Количество сообщений Alice. */
   yours: number;
-  /** 窗口中 bot 发来的消息数。 */
+  /** Количество входящих сообщений от бота в окне. */
   botIncoming: number;
-  /** 窗口中真人发来的消息数。 */
+  /** Количество входящих сообщений от людей в окне. */
   humanIncoming: number;
-  /** 消息列表尾部连续 Alice 消息数。 */
+  /** Количество последовательных сообщений Alice в конце списка сообщений. */
   trailingYours: number;
-  /** 消息列表尾部连续 bot 消息数。 */
+  /** Количество последовательных входящих сообщений от бота в конце списка. */
   trailingBotIncoming: number;
-  /** 最后一条非 Alice 消息距今 ms（Infinity = 全是 Alice）。 */
+  /** Миллисекунд с последнего не-Alice сообщения (Infinity = все сообщения от Alice). */
   lastOtherAgoMs: number;
 }
 
-/** 从消息窗口计算 Alice 的频道存在感。 */
+/** Вычисляет присутствие Alice в канале по окну сообщений. */
 export function computeChannelPresence(messages: readonly MessageRecord[]): ChannelPresence {
   if (messages.length === 0) {
     return {
@@ -62,7 +62,7 @@ export function computeChannelPresence(messages: readonly MessageRecord[]): Chan
     }
   }
 
-  // 尾部连续 Alice 消息数
+  // Количество последовательных сообщений Alice в конце
   let trailingYours = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].isOutgoing) {
@@ -96,24 +96,24 @@ export function computeChannelPresence(messages: readonly MessageRecord[]): Chan
 }
 
 /**
- * 渲染 IRC-style `---` 分隔符。
+ * Рендерит IRC-style разделитель `---`.
  *
- * 仅在 trailingYours >= 2 时渲染——低存在感时不显示，避免 LLM 产生"配额"心态。
- * 纯事实自然语言，不含指令，不暴露比例数字。
+ * Рендерится только при trailingYours >= 2 — при низком присутствии не отображается, чтобы у LLM не формировалось «квотное» мышление.
+ * Чистые факты на естественном языке, без инструкций, без числовых соотношений.
  *
- * 渲染规则（渐进信息密度）：
- * | trailingYours | 渲染 |
- * |---------------|------|
- * | < 2           | null（不显示） |
+ * Правила рендеринга (прогрессивная плотность информации):
+ * | trailingYours | Рендер |
+ * |---------------|--------|
+ * | < 2           | null (не отображать) |
  * | 2             | `--- 2 consecutive from you ---` |
  * | 3             | `--- 3 consecutive from you ---` |
  * | ≥ 4           | `--- N consecutive from you — STOP, wait for their reply ---` |
  *
- * ADR-159: trailingYours ≥ 4 时从纯事实升级为指令。
- * 实证数据表明纯事实提示（"only you talking"）被 LLM 忽视，
- * 4 条连发已是明显独白，此处牺牲"纯事实"设计换取行为约束。
+ * ADR-159: при trailingYours ≥ 4 переходим от чистых фактов к инструкции.
+ * Эмпирические данные показывают, что факты-подсказки («only you talking») игнорируются LLM,
+ * 4 подряд — явный монолог; здесь жертвуем принципом «только факты» ради поведенческого ограничения.
  *
- * @returns `--- N consecutive from you ---` 或 null
+ * @returns `--- N consecutive from you ---` или null
  */
 export function renderPresenceHint(presence: ChannelPresence): string | null {
   if (

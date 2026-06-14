@@ -1,17 +1,17 @@
 /**
- * Scheduler Mod — 定时任务系统（ADR-51 Wave 3 #16）。
+ * Scheduler Mod — система запланированных задач (ADR-51 Wave 3 #16).
  *
- * 职责：
- * - 支持 at（一次性定时）和 every（周期性）两种定时任务
- * - SQLite 持久化（重启不丢失）
- * - 通过 contribute 注入即将触发的任务到 LLM 上下文
- * - onTickEnd 检查并标记到期任务
+ * Обязанности:
+ * - Поддержка двух типов задач: at (одноразовое) и every (периодическое)
+ * - Персистентность через SQLite (не теряется при перезапуске)
+ * - Инжекция предстоящих задач в LLM-контекст через contribute
+ * - Проверка и пометка просроченных задач в onTickEnd
  *
- * 设计要点：
- * - 不直接执行 Telegram 动作——注入 contribute 让 LLM 决定如何响应
- * - Alice 是伴侣，不是 cron job
- * - 上限 50 个活跃任务（防止 LLM 无限创建）
- * - 所有时间使用墙钟 ms，不依赖 tick 间隔假设
+ * Ключевые решения:
+ * - Не выполняет Telegram-действия напрямую — инжектирует через contribute, позволяя LLM решать, как реагировать
+ * - Алиса — компаньон, а не cron job
+ * - Лимит 50 активных задач (защита от бесконечного создания LLM)
+ * - Всё время в мс настенных часов, без предположений об интервале тика
  */
 import { and, eq, lte } from "drizzle-orm";
 import { z } from "zod";
@@ -23,21 +23,21 @@ import { getDb } from "../db/connection.js";
 import { scheduledTasks } from "../db/schema.js";
 import { humanDuration } from "../utils/time-format.js";
 
-// -- 常量 --------------------------------------------------------------------
+// -- Константы ---------------------------------------------------------------
 
-/** 活跃任务上限。 */
+/** Максимальное число активных задач. */
 const MAX_ACTIVE_TASKS = 50;
-/** 即将触发的任务预告窗口（ms）。 */
+/** Окно предупреждения о предстоящих задачах (мс). */
 const UPCOMING_WINDOW_MS = 3 * 60_000;
 
-// -- Mod 状态 ----------------------------------------------------------------
+// -- Состояние Mod -----------------------------------------------------------
 
 interface SchedulerState {
-  /** 本 tick 触发的任务列表（供 contribute 展示）。 */
+  /** Список задач, сработавших в этом тике (для отображения в contribute). */
   firedThisTick: Array<{ id: number; action: string; target: string | null }>;
 }
 
-// -- Mod 定义 ----------------------------------------------------------------
+// -- Определение Mod ---------------------------------------------------------
 
 export const schedulerMod = createMod<SchedulerState>("scheduler", {
   category: "mechanic",
@@ -46,9 +46,9 @@ export const schedulerMod = createMod<SchedulerState>("scheduler", {
   initialState: { firedThisTick: [] },
 })
   /**
-   * 创建定时任务。
-   * type="at": 在 delay 分钟后触发一次
-   * type="every": 每 interval 分钟触发一次（首次在 interval 后）
+   * Создать запланированную задачу.
+   * type="at": срабатывает один раз через delay минут
+   * type="every": срабатывает каждые interval минут (впервые — через interval)
    */
   .instruction("schedule_task", {
     params: z.object({
@@ -74,7 +74,7 @@ export const schedulerMod = createMod<SchedulerState>("scheduler", {
       const target = args.target != null ? String(args.target) : null;
       const payload = args.payload != null ? String(args.payload) : null;
 
-      // 检查活跃任务上限
+      // Проверить лимит активных задач
       const activeCount = db
         .select({ id: scheduledTasks.id })
         .from(scheduledTasks)
@@ -123,7 +123,7 @@ export const schedulerMod = createMod<SchedulerState>("scheduler", {
       return { success: true, taskId: result.id };
     },
   })
-  /** 取消指定任务。 */
+  /** Отменить указанную задачу. */
   .instruction("cancel_task", {
     params: z.object({
       taskId: z.number().int().positive().describe("ID задачи"),
@@ -154,7 +154,7 @@ export const schedulerMod = createMod<SchedulerState>("scheduler", {
       return { success: true, cancelledTaskId: taskId };
     },
   })
-  /** 获取所有活跃任务。 */
+  /** Получить все активные задачи. */
   .query("reminders", {
     params: z.object({}),
     description: "Вернуть все активные запланированные задачи",
@@ -172,7 +172,7 @@ export const schedulerMod = createMod<SchedulerState>("scheduler", {
       return rows.map((r) => ({
         ...r,
         _currentMs: ctx.nowMs,
-        // 预解析 display_name，format() 无法访问 graph
+        // Предварительный разбор display_name — format() не имеет доступа к graph
         _targetName:
           r.target && ctx.graph.has(r.target)
             ? String(ctx.graph.getDynamic(r.target, "display_name") ?? r.target)
@@ -198,18 +198,18 @@ export const schedulerMod = createMod<SchedulerState>("scheduler", {
     },
   })
   .onTickStart((_ctx) => {
-    // 不在此处清空 firedThisTick——需要保留到下一 tick 的 contribute 读取
-    // 清空逻辑移至 onTickEnd 开头（处理到期任务之前）
+    // firedThisTick здесь не очищается — нужно сохранить до чтения contribute следующего тика
+    // Логика очистки перенесена в начало onTickEnd (до обработки просроченных задач)
   })
   .onTickEnd((ctx) => {
-    // 先清空上一轮的触发记录，再处理本轮到期任务
-    // 生命周期: onTickStart → contribute → LLM → onTickEnd
-    // 这样 contribute 能看到上一 tick onTickEnd 写入的 firedThisTick
+    // Сначала очистить записи о срабатываниях прошлого тика, затем обработать просроченные задачи текущего
+    // Жизненный цикл: onTickStart → contribute → LLM → onTickEnd
+    // Таким образом contribute видит firedThisTick, записанный onTickEnd предыдущего тика
     ctx.state.firedThisTick = [];
 
     const db = getDb();
 
-    // 查找所有到期的活跃任务（targetMs <= nowMs）
+    // Найти все просроченные активные задачи (targetMs <= nowMs)
     const dueTasks = db
       .select()
       .from(scheduledTasks)
@@ -217,7 +217,7 @@ export const schedulerMod = createMod<SchedulerState>("scheduler", {
       .all();
 
     for (const task of dueTasks) {
-      // 记录触发
+      // Записать срабатывание
       ctx.state.firedThisTick.push({
         id: task.id,
         action: task.action,
@@ -225,13 +225,13 @@ export const schedulerMod = createMod<SchedulerState>("scheduler", {
       });
 
       if (task.type === "at") {
-        // 一次性任务：触发后 deactivate
+        // Одноразовая задача: деактивировать после срабатывания
         db.update(scheduledTasks)
           .set({ active: false })
           .where(eq(scheduledTasks.id, task.id))
           .run();
       } else if (task.type === "every" && task.intervalMs) {
-        // 周期性任务：更新下次触发时间
+        // Периодическая задача: обновить время следующего срабатывания
         db.update(scheduledTasks)
           .set({ targetMs: ctx.nowMs + task.intervalMs })
           .where(eq(scheduledTasks.id, task.id))
@@ -243,7 +243,7 @@ export const schedulerMod = createMod<SchedulerState>("scheduler", {
     const items: ContributionItem[] = [];
     const db = getDb();
 
-    // 1. 展示本 tick 触发的任务
+    // 1. Показать задачи, сработавшие в этом тике
     if (ctx.state.firedThisTick.length > 0) {
       const firedLines = ctx.state.firedThisTick.map((t) => {
         const targetLabel =
@@ -259,13 +259,13 @@ export const schedulerMod = createMod<SchedulerState>("scheduler", {
           "scheduler-fired",
           firedLines,
           "Scheduled tasks just fired",
-          15, // 高优先级（定时任务触发需要及时响应）
+          15, // Высокий приоритет (задача сработала — нужен быстрый ответ)
           85,
         ),
       );
     }
 
-    // 2. 展示即将触发的任务（targetMs <= nowMs + UPCOMING_WINDOW_MS）
+    // 2. Показать предстоящие задачи (targetMs <= nowMs + UPCOMING_WINDOW_MS)
     const upcomingTasks = db
       .select()
       .from(scheduledTasks)
@@ -276,7 +276,7 @@ export const schedulerMod = createMod<SchedulerState>("scheduler", {
         ),
       )
       .all()
-      // 排除已经到期的（targetMs <= nowMs 的会在 onTickEnd 处理，这里只看未来的）
+      // Исключить уже просроченные (targetMs <= nowMs будут обработаны в onTickEnd, здесь только будущие)
       .filter((t) => (t.targetMs ?? 0) > ctx.nowMs);
 
     if (upcomingTasks.length > 0) {

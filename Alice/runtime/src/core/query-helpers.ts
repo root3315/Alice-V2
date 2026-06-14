@@ -1,11 +1,11 @@
 /**
- * 类型安全的 dispatcher.query wrapper。
+ * Типобезопасная обёртка dispatcher.query.
  *
- * 单一入口的受控 `as` 断言 — 调用站点零 `as`。
- * 查询返回类型在 QueryResultMap 中集中声明。
+ * Единственная точка с контролируемым приведением `as` — на сайтах вызова ноль `as`.
+ * Типы возвращаемых значений запросов централизованно объявлены в QueryResultMap.
  */
 
-/** 所有已知 query → 返回类型的映射。 */
+/** Отображение всех известных query → типов возвращаемых значений. */
 export interface QueryResultMap {
   debugPressures: {
     P1: number;
@@ -29,7 +29,7 @@ export interface QueryResultMap {
     id: number;
     title: string;
     pressure?: number;
-    /** ADR-190: "conversation" | "system"。用于过滤 system thread。 */
+    /** ADR-190: "conversation" | "system". Используется для фильтрации system thread. */
     source?: string | null;
   }>;
   crisis_channels: string[];
@@ -46,14 +46,14 @@ export interface QueryResultMap {
   } | null;
 }
 
-/** Dispatcher-like 接口（避免循环依赖）。 */
+/** Dispatcher-подобный интерфейс (во избежание циклических зависимостей). */
 interface Queryable {
   query: (name: string, args: Record<string, unknown>) => unknown;
 }
 
 /**
- * 类型安全的 dispatcher.query。
- * 内部有一处受控 `as`，所有调用站点零 `as`。
+ * Типобезопасный dispatcher.query.
+ * Внутри одно контролируемое приведение `as`, на всех сайтах вызова ноль `as`.
  */
 export function typedQuery<K extends keyof QueryResultMap>(
   dispatcher: Queryable,

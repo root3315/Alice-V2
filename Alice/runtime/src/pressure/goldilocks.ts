@@ -1,13 +1,13 @@
 /**
- * Goldilocks Window — per-contact 最佳联络窗口。
+ * Goldilocks Window — оптимальное окно контакта per-contact.
  *
- * 将 P3 冷却阈值（θ_c）和 C_sat 冷却常数（τ_cool）统一为
- * per-tier 的时间窗口 [t_min, t_max]，在 V-max 决策层调制 ΔP。
+ * Объединяет порог охлаждения P3 (θ_c) и константу охлаждения C_sat (τ_cool)
+ * в временное окно [t_min, t_max] на уровне per-tier, модулируя ΔP на уровне принятия решений V-max.
  *
- * 核心公式（对数域 log-normal 钟形效用）：
+ * Основная формула (лог-нормальная колоколообразная функция полезности в логарифмической области):
  *   U(t) = exp(-0.5 × ((ln(t) - ln(t_peak)) / σ_ln)²)
  *
- * 纯函数模块——零副作用、零 IO、零外部依赖（仅导入类型和常量）。
+ * Чистый функциональный модуль — без побочных эффектов, без IO, без внешних зависимостей (только импорт типов и констант).
  *
  * @see docs/adr/154-goldilocks-window/README.md
  * @see Fang et al. 2025 "The Goldilocks Time Window for Proactive Interventions"
@@ -17,56 +17,56 @@ import { DUNBAR_TIER_THETA } from "../graph/constants.js";
 import type { DunbarTier } from "../graph/entities.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 常量
+// Константы
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * θ_c → τ_cool 比例因子。
+ * Коэффициент масштабирования θ_c → τ_cool.
  *
- * 选择 α=0.15 使 t_min ≈ 0.35 × θ_c（冷却期约为 θ_c 的三分之一）。
- * 推导：t_min = 2.3 × τ_cool = 2.3 × α × θ_c ≈ 0.345 × θ_c。
+ * Выбор α=0.15 даёт t_min ≈ 0.35 × θ_c (период охлаждения примерно треть от θ_c).
+ * Вывод: t_min = 2.3 × τ_cool = 2.3 × α × θ_c ≈ 0.345 × θ_c.
  *
  * @see docs/adr/154-goldilocks-window/README.md §3.2
  */
 const GOLDILOCKS_ALPHA = 0.15;
 
 /**
- * σ_cool 衰减阈值（10%）的对数值 = ln(10) ≈ 2.302585。
- * t_min = τ_cool × ln(1/θ_low) = τ_cool × ln(10)。
+ * Логарифм порога затухания σ_cool (10%) = ln(10) ≈ 2.302585.
+ * t_min = τ_cool × ln(1/θ_low) = τ_cool × ln(10).
  */
 const LN_10 = Math.log(10);
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 类型
+// Типы
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Goldilocks Window 参数。 */
+/** Параметры Goldilocks Window. */
 export interface GoldilocksParams {
-  /** 最早可联络时间（秒）。t < tMin → U = 0。 */
+  /** Наиболее ранний момент контакта (секунды). При t < tMin → U = 0. */
   tMin: number;
-  /** 最晚应联络时间（秒）= θ_c。t > tMax → 渐进衰减。 */
+  /** Наиболее поздний желательный момент контакта (секунды) = θ_c. При t > tMax → постепенное затухание. */
   tMax: number;
-  /** 效用峰值时间（秒）= √(tMin × tMax)。 */
+  /** Время пика полезности (секунды) = √(tMin × tMax). */
   tPeak: number;
-  /** 对数域标准差（窗口宽度）。 */
+  /** Стандартное отклонение в логарифмической области (ширина окна). */
   sigmaLn: number;
-  /** Per-tier proactive 冷却时间常数（秒）。 */
+  /** Константа времени упреждающего охлаждения per-tier (секунды). */
   tauCool: number;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 核心纯函数
+// Основные чистые функции
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 从 Dunbar tier 推导 Goldilocks Window 参数。
+ * Выводит параметры Goldilocks Window из уровня Dunbar.
  *
- * 推导链：
+ * Цепочка вывода:
  *   τ_cool = α × θ_c
  *   t_min  = ln(10) × τ_cool  ≈ 2.3 × τ_cool
  *   t_max  = θ_c
- *   t_peak = √(t_min × t_max)   ← 对数域中点（几何均值）
- *   σ_ln   = (ln(t_max) - ln(t_min)) / 4  ← 使 t_min/t_max 落在 ±2σ 处
+ *   t_peak = √(t_min × t_max)   ← центральная точка в логарифмической области (геометрическое среднее)
+ *   σ_ln   = (ln(t_max) - ln(t_min)) / 4  ← чтобы t_min/t_max попадали в ±2σ
  *
  * @see docs/adr/154-goldilocks-window/README.md §2.2, §4.1
  */
@@ -82,22 +82,22 @@ export function goldilocksParams(tier: DunbarTier): GoldilocksParams {
 }
 
 /**
- * 计算 Goldilocks 效用 U(t, c) ∈ [0, 1]。
+ * Вычисляет полезность Goldilocks U(t, c) ∈ [0, 1].
  *
- * 三段分区：
- *   t < tMin    → 0（冷却期，不打扰）
- *   tMin ≤ t ≤ tMax → log-normal 钟形（窗口内，效用最高）
- *   t > tMax    → 渐进衰减（与 P3 接力，不骤降）
+ * Три зоны:
+ *   t < tMin    → 0 (период охлаждения, не беспокоить)
+ *   tMin ≤ t ≤ tMax → лог-нормальный колокол (внутри окна, максимальная полезность)
+ *   t > tMax    → постепенное затухание (эстафета с P3, без резкого спада)
  *
- * 自适应修正（可选）：
- *   - emaIntervalS：历史交互频率 EMA → 高频联系人 tMin 缩短
- *   - sigma2Tier：tier 信念方差 → 不确定时窗口加宽
+ * Адаптивные поправки (опциональные):
+ *   - emaIntervalS: EMA исторической частоты взаимодействий → для высокочастотных контактов tMin сокращается
+ *   - sigma2Tier: дисперсия убеждений о tier → при неопределённости окно расширяется
  *
- * @param silenceS - 自上次交互的经过时间（秒）
- * @param tier - 联系人的 Dunbar tier
- * @param emaIntervalS - 历史交互频率 EMA（秒），可选
- * @param sigma2Tier - tier 信念方差（0-1），可选
- * @returns 效用值 ∈ [0, 1]
+ * @param silenceS - время, прошедшее с последнего взаимодействия (секунды)
+ * @param tier - уровень Dunbar контакта
+ * @param emaIntervalS - EMA исторической частоты взаимодействий (секунды), опционально
+ * @param sigma2Tier - дисперсия убеждений о tier (0-1), опционально
+ * @returns значение полезности ∈ [0, 1]
  *
  * @see docs/adr/154-goldilocks-window/README.md §2.3, §4.4
  */
@@ -112,12 +112,12 @@ export function computeGoldilocksUtility(
   const params = goldilocksParams(tier);
   let { tMin, tMax, tPeak, sigmaLn } = params;
 
-  // 自适应 1: 历史交互频率 EMA — 高频联系人窗口提前打开
-  // 当 emaInterval 远小于 θ_c 时，tMin 按比例缩短
+  // Адаптация 1: EMA исторической частоты взаимодействий — окно открывается раньше для высокочастотных контактов
+  // Когда emaInterval намного меньше θ_c, tMin пропорционально сокращается
   if (emaIntervalS != null && emaIntervalS > 0) {
     const ratio = emaIntervalS / tMax;
     if (ratio < 0.5) {
-      // 高频交互者：tMin 缩短，tPeak 提前
+      // Высокочастотные контакты: tMin сокращается, tPeak сдвигается раньше
       const shrink = 0.5 + ratio; // ratio=0.1 → shrink=0.6, ratio=0.5 → shrink=1.0
       tMin *= shrink;
       tPeak = Math.sqrt(tMin * tMax);
@@ -125,38 +125,38 @@ export function computeGoldilocksUtility(
     }
   }
 
-  // 自适应 2: σ² 信念不确定性 — 不确定时窗口加宽
-  // 钳位到 [0, 1] 防止 BeliefStore 的 σ² 溢出导致异常宽窗口
+  // Адаптация 2: неопределённость убеждений σ² — при неопределённости окно расширяется
+  // Зажим в [0, 1] предотвращает аномально широкое окно из-за переполнения σ² в BeliefStore
   if (sigma2Tier != null && sigma2Tier > 0.3) {
     sigmaLn *= 1 + Math.min(sigma2Tier, 1.0);
   }
 
-  // 冷却期: t < tMin → 效用为 0
+  // Период охлаждения: t < tMin → полезность равна 0
   if (silenceS < tMin) return 0;
 
-  // 窗口内: log-normal 钟形
+  // Внутри окна: лог-нормальный колокол
   // U(t) = exp(-0.5 × ((ln(t) - ln(tPeak)) / σ_ln)²)
   if (silenceS <= tMax) {
     const z = (Math.log(silenceS) - Math.log(tPeak)) / sigmaLn;
     return Math.exp(-0.5 * z * z);
   }
 
-  // 窗口后: 渐进衰减（不骤降，与 P3 接力）
-  // 在 tMax 处的效用作为起点，然后对数域衰减
+  // После окна: постепенное затухание (без резкого спада, эстафета с P3)
+  // Полезность в точке tMax используется как начальное значение, затем убывает в логарифмической области
   const zAtMax = (Math.log(tMax) - Math.log(tPeak)) / sigmaLn;
   const uAtMax = Math.exp(-0.5 * zAtMax * zAtMax);
-  // 超出 tMax 后指数衰减：U × exp(-(t - tMax) / tMax)
-  // 使用 tMax 作为衰减时间常数——关系越远衰减越慢（tMax=θ_c 自动标定）
+  // После tMax экспоненциальное затухание: U × exp(-(t - tMax) / tMax)
+  // tMax используется как константа времени затухания — чем дальше отношение, тем медленнее затухание (tMax=θ_c самокалибруется)
   const overshoot = (silenceS - tMax) / tMax;
   return uAtMax * Math.exp(-overshoot);
 }
 
 /**
- * Per-tier proactive 冷却时间常数（秒）。
+ * Константа времени упреждающего охлаждения per-tier (секунды).
  *
  * τ_cool(tier) = α × DUNBAR_TIER_THETA[tier]
  *
- * 替代旧版全局固定的 proactive 冷却常数。
+ * Заменяет старую глобальную фиксированную константу упреждающего охлаждения.
  *
  * @see docs/adr/154-goldilocks-window/README.md §3.2
  */

@@ -1,13 +1,13 @@
 /**
- * 运行时配置提取 — 从 Config / ActContext 派生 ActionRuntimeConfig。
+ * Извлечение конфигурации времени выполнения — получение ActionRuntimeConfig из Config / ActContext.
  *
- * 从 react/subcycle.ts 提取为独立模块，消除循环依赖风险。
+ * Выделено из react/subcycle.ts в отдельный модуль для устранения риска циклических зависимостей.
  */
 
 import type { Config } from "../../config.js";
 import type { ActionRuntimeConfig } from "../../core/action-executor.js";
 
-/** 从 Config 提取 Telegram action impl 所需的运行时配置。 */
+/** Извлекает из Config конфигурацию времени выполнения, необходимую для реализации Telegram-действий. */
 export function extractRuntimeConfig(config: Config): ActionRuntimeConfig {
   return {
     ttsConfig: {

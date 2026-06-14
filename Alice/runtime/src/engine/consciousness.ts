@@ -1,8 +1,8 @@
 /**
- * ADR-204: 意识流核心管道。
+ * ADR-204: Основной конвейер потока сознания.
  *
- * emit() 持久化事件 → surface() 浮现到 prompt → reinforce() 闭合反馈环。
- * 所有函数都是纯 DB 操作，无 Telegram / LLM 副作用。
+ * emit() сохраняет событие → surface() всплывает в prompt → reinforce() замыкает петлю обратной связи.
+ * Все функции — чистые DB-операции, без побочных эффектов Telegram / LLM.
  *
  * @see docs/adr/204-consciousness-stream/
  */
@@ -11,13 +11,13 @@ import { consciousnessEvents } from "../db/schema.js";
 import { activationRetrieval } from "../graph/activation.js";
 import type { WorldModel } from "../graph/world-model.js";
 
-/** getDb() 返回类型的宽松别名（避免 drizzle generic 泛型不兼容）。 */
+/** Нестрогий псевдоним возвращаемого типа getDb() (во избежание несовместимости дженериков drizzle). */
 // biome-ignore lint/suspicious/noExplicitAny: drizzle schema generic variance
 type Db = any;
 
-// ── ADR-210: voice → 人类化情绪映射 ──────────────────────────────────────
+// ── ADR-210: voice → Человекочитаемое отображение эмоций ──────────────────────────────────────
 
-/** voice 名称 → 人类可理解的情绪/意图描述（用于意识流 summary） */
+/** Имя voice → понятное человеку описание эмоции/намерения (для summary потока сознания). */
 const VOICE_FEELING: Record<string, string> = {
   diligence: "felt responsible",
   curiosity: "got curious",
@@ -25,9 +25,9 @@ const VOICE_FEELING: Record<string, string> = {
   caution: "held back a bit",
 };
 
-// ── 类型 ────────────────────────────────────────────────────────────────────
+// ── Типы ────────────────────────────────────────────────────────────────────
 
-/** 写入事件（emit 入参）。 */
+/** Записываемое событие (аргумент emit). */
 export interface CEvent {
   kind: string;
   entityIds: string[];
@@ -36,7 +36,7 @@ export interface CEvent {
   expandHint?: string;
 }
 
-/** 浮现指针（surface 返回）。 */
+/** Всплывающий указатель (возвращаемый surface). */
 export interface CPointer {
   id: number;
   kind: string;
@@ -46,7 +46,7 @@ export interface CPointer {
   ageMs: number;
 }
 
-// ── Salience 规则表 ─────────────────────────────────────────────────────────
+// ── Таблица правил salience ─────────────────────────────────────────────────────────
 
 const SALIENCE_RULES: [string, number][] = [
   ["evolve:tier", 0.9],
@@ -60,7 +60,7 @@ const SALIENCE_RULES: [string, number][] = [
   ["evolve:silence", 0.2],
 ];
 
-/** 根据 kind 前缀返回默认 salience。 */
+/** Возвращает salience по умолчанию по префиксу kind. */
 export function defaultSalience(kind: string): number {
   for (const [prefix, val] of SALIENCE_RULES) {
     if (kind === prefix || kind.startsWith(prefix)) return val;
@@ -70,7 +70,7 @@ export function defaultSalience(kind: string): number {
 
 // ── emit ────────────────────────────────────────────────────────────────────
 
-/** INSERT 一条意识流事件。 */
+/** INSERT одного события потока сознания. */
 export function emit(db: Db, tick: number, timestampMs: number, event: CEvent): void {
   db.insert(consciousnessEvents)
     .values({
@@ -87,12 +87,12 @@ export function emit(db: Db, tick: number, timestampMs: number, event: CEvent): 
 
 // ── surface ─────────────────────────────────────────────────────────────────
 
-const HALF_LIFE_MS = 30 * 60 * 1000; // 30 分钟半衰期
+const HALF_LIFE_MS = 30 * 60 * 1000; // Период полураспада 30 минут
 const LN2 = Math.LN2;
 
 /**
- * 浮现最相关的意识流事件。
- * score = (salience + entityOverlap) × recency（30 分钟半衰期指数衰减）。
+ * Всплывает наиболее релевантные события потока сознания.
+ * score = (salience + entityOverlap) × recency (экспоненциальное затухание с периодом полураспада 30 минут).
  */
 export function surface(
   db: Db,
@@ -101,7 +101,7 @@ export function surface(
   limit = 5,
   G?: WorldModel,
 ): CPointer[] {
-  // 拉取最近 2 小时内的高 salience 事件（预过滤，减少 JS 侧计算量）
+  // Получаем события с высоким salience за последние 2 часа (предфильтрация, чтобы снизить вычисления на стороне JS)
   const cutoff = nowMs - 2 * 60 * 60 * 1000;
   const rows = db
     .select()
@@ -115,7 +115,7 @@ export function surface(
 
   const seedSet = new Set(seedEntityIds);
 
-  // C13: 扩散激活——将高激活 fact 节点加入扩展种子集
+  // C13: Распространяющаяся активация — добавляем высокоактивированные fact-узлы в расширенное начальное множество
   if (G && seedEntityIds.length > 0) {
     try {
       const hits = activationRetrieval(G, seedEntityIds, nowMs);
@@ -123,7 +123,7 @@ export function surface(
         seedSet.add(hit.entityId);
       }
     } catch {
-      /* 图操作失败不影响基础 surface 逻辑 */
+      /* Сбой операции с графом не влияет на базовую логику surface */
     }
   }
 
@@ -159,8 +159,8 @@ export function surface(
 
   scored.sort((a: { score: number }, b: { score: number }) => b.score - a.score);
 
-  // diary.mod 是日记的权威渲染者（完整内容 + about + 时间格式化），
-  // consciousness.mod 的 summary 是退化版本——排除避免双重注入。
+  // diary.mod является авторитетным рендерером дневника (полный контент + about + форматирование времени),
+  // summary из consciousness.mod — деградированная версия; исключаем, чтобы избежать двойного внедрения.
   const filtered = scored.filter(({ row }) => row.kind !== "self:diary");
 
   return filtered.slice(0, limit).map(({ row, ageMs }: { row: Row; ageMs: number }) => ({
@@ -176,15 +176,15 @@ export function surface(
 // ── reinforce ───────────────────────────────────────────────────────────────
 
 /**
- * 增强/衰减与指定实体关联的最近事件的 salience。
- * 返回受影响的行数。
+ * Усиливает/ослабляет salience последних событий, связанных с указанными сущностями.
+ * Возвращает количество затронутых строк.
  */
 export function reinforce(db: Db, entityIds: string[], delta: number): number {
   if (entityIds.length === 0 || delta === 0) return 0;
 
   let affected = 0;
   for (const eid of entityIds) {
-    // SQL LIKE 匹配 JSON 数组中的实体 ID
+    // SQL LIKE для сопоставления ID сущности в JSON-массиве
     const result = db
       .update(consciousnessEvents)
       .set({
@@ -200,8 +200,8 @@ export function reinforce(db: Db, entityIds: string[], delta: number): number {
 // ── gc ──────────────────────────────────────────────────────────────────────
 
 /**
- * 清理过期低 salience 事件。高 salience 事件保留（结晶化）。
- * 返回删除行数。
+ * Очищает устаревшие события с низким salience. События с высоким salience сохраняются (кристаллизация).
+ * Возвращает количество удалённых строк.
  */
 export function gc(
   db: Db,
@@ -222,13 +222,13 @@ export function gc(
   return result.changes;
 }
 
-// ── commitTickEvents — evolve 决策→事件批量提取 ─────────────────────────────
+// ── commitTickEvents — пакетное извлечение событий из решений evolve ─────────────────────────────
 
 /**
- * 从 evolve 管线的 TickPlan 提取意识流事件。
+ * Извлекает события потока сознания из TickPlan конвейера evolve.
  *
- * 接收宽松类型以避免与 evolve.ts 内部类型的循环依赖——
- * 只读取 type、target、voice、reason、pressures.API 等公共字段。
+ * Принимает нестрогий тип во избежание циклических зависимостей с внутренними типами evolve.ts —
+ * читает только публичные поля: type, target, voice, reason, pressures.API и т.п.
  */
 export function commitTickEvents(
   db: Db,
@@ -269,12 +269,12 @@ export function commitTickEvents(
   }
 }
 
-// ── commitActEvents — act 执行→事件批量提取 ──────────────────────────────────
+// ── commitActEvents — пакетное извлечение событий из выполнения act ──────────────────────────────────
 
 /**
- * 从 act 线程的 SubcycleResult 提取意识流事件。
+ * Извлекает события потока сознания из SubcycleResult потока act.
  *
- * 宽松类型：只读取 instructions/actions 的 fn/type 字段。
+ * Нестрогий тип: читает только поля fn/type из instructions/actions.
  */
 export function commitActEvents(
   db: Db,
@@ -326,11 +326,11 @@ export function commitActEvents(
     }
   }
 
-  // ADR-204 C11: tool:* kind — Skill/shell 执行事件
-  // completedActions 来自 shell-executor 的 __ALICE_ACTION__ 控制行
+  // ADR-204 C11: kind tool:* — события выполнения Skill/shell
+  // completedActions поступают из управляющих строк __ALICE_ACTION__ оболочки shell-executor
   if (sub.completedActions && sub.completedActions.length > 0) {
     for (const ca of sub.completedActions) {
-      // 格式: "sent:chatId=X:msgId=Y", "downloaded:chatId=X:...", "sent-file:chatId=X:..."
+      // Формат: "sent:chatId=X:msgId=Y", "downloaded:chatId=X:...", "sent-file:chatId=X:..."
       const kind = ca.startsWith("downloaded:")
         ? "tool:download"
         : ca.startsWith("sent-file:")

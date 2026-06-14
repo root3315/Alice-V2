@@ -1,19 +1,22 @@
 /**
- * ADR-130: Engagement Interleaving — 协作式交错调度器。
+ * ADR-130: Engagement Interleaving — кооперативный чередующийся планировщик.
  *
- * 替换 startActLoop 的串行单消费者 while 循环，引入多 engagement 交错调度。
- * subcycle（一轮 ReAct：LLM → Sandbox → Execute → Feedback）是最小不可中断单元。
- * subcycle 之间是自然的切换点——对应人类在 IM 中"回了一句，切到另一个窗口"的行为。
+ * Заменяет последовательный single-consumer while-цикл startActLoop, вводя
+ * чередующееся планирование нескольких engagement-ов.
+ * subcycle (один раунд ReAct: LLM → Sandbox → Execute → Feedback) — минимальная неделимая единица.
+ * Между subcycle-ами находятся естественные точки переключения — аналог поведения человека в IM:
+ * «ответил на сообщение и переключился в другое окно».
  *
- * 核心不变量：
- * 1. Subcycle 原子性 — subcycle 内不切换（CQRS 事务性）
- * 2. Engagement Exclusivity — 每个目标最多一个活跃 engagement（ADR-124）
- * 3. Dispatcher 目标隔离 — 切换时重新 SET_CONTACT_TARGET / SET_CHAT_TARGET
- * 4. Graph 一致性 — Node.js 单线程 + subcycle 同步修改
+ * Ключевые инварианты:
+ * 1. Атомарность subcycle — внутри subcycle не переключаемся (транзакционность CQRS)
+ * 2. Engagement Exclusivity — не более одного активного engagement на цель (ADR-124)
+ * 3. Изоляция целей Dispatcher — при переключении повторно задаём SET_CONTACT_TARGET / SET_CHAT_TARGET
+ * 4. Согласованность графа — однопоточность Node.js + синхронные изменения внутри subcycle
  *
- * ADR-142: selectNextEngagement 的泛型 BT 等价物为 tick/compose.ts::reactiveSelect。
- * 本文件保留 engagement-specific 的调度逻辑（initSlot, checkWatchers, startWatcher 等），
- * compose.ts::reactiveSelect 提供不依赖 engagement 语义的通用优先级选择器。
+ * ADR-142: обобщённым BT-эквивалентом selectNextEngagement является tick/compose.ts::reactiveSelect.
+ * В этом файле сохранена логика планирования, специфичная для engagement (initSlot, checkWatchers,
+ * startWatcher и др.); compose.ts::reactiveSelect предоставляет универсальный приоритетный
+ * селектор без зависимости от семантики engagement.
  *
  * @see docs/adr/130-engagement-interleaving.md
  * @see docs/adr/142-action-space-architecture/README.md
@@ -42,30 +45,30 @@ import { fetchRecentMessages, type MessageRecord } from "./messages.js";
 
 const log = createLogger("act:scheduler");
 
-// ── ADR-130 常量 ──────────────────────────────────────────────────────
+// ── Константы ADR-130 ──────────────────────────────────────────────────────
 
-/** 最大并发 engagement 数（Miller 7±2 的保守端）。 */
+/** Максимальное число одновременных engagement-ов (консервативный конец шкалы Миллера 7±2). */
 export const MAX_CONCURRENT_ENGAGEMENTS = 3;
 
-/** 切换到不同目标时的额外延迟（ms）——可观测的"切换思考间隙"。 */
+/** Дополнительная задержка при переключении на другую цель (мс) — наблюдаемая «пауза при переключении». */
 export const SWITCH_COST_MS = 1500;
 
 // ── EngagementSlot ─────────────────────────────────────────────────────
 
-/** 调度槽位状态。运行时专用，不复用 LLM afterward 词汇。 */
+/** Состояние слота планировщика. Только для runtime, не переиспользует лексику LLM afterward. */
 export type SlotState = "ready" | "reply_watch" | "linger_watch" | "done";
 
-/** 需要被非阻塞观察的 afterward 结果。 */
+/** Результат afterward, требующий неблокирующего наблюдения. */
 export type DeferredTurnOutcome = "waiting_reply" | "watching";
 
-/** 调度器内部 watch 计划。运行时专用，不暴露给 LLM。 */
+/** Внутренний план наблюдения планировщика. Только для runtime, не экспонируется LLM. */
 export type WatchPlan = "reply_window" | "linger_window";
 
 export function watchPlanFromOutcome(outcome: DeferredTurnOutcome): WatchPlan {
   return outcome === "waiting_reply" ? "reply_window" : "linger_window";
 }
 
-/** Watcher 非阻塞观察器的运行时状态。 */
+/** Runtime-состояние неблокирующего наблюдателя (watcher). */
 export interface ActiveWatcher {
   readonly plan: WatchPlan;
   readonly handle: ReturnType<typeof prepareEngagementWatch>;
@@ -78,44 +81,45 @@ function isWatchState(state: SlotState): state is "reply_watch" | "linger_watch"
 }
 
 /**
- * 一个活跃 engagement 的调度槽位。
- * 每个 slot 独立持有执行上下文——切换 engagement 时无需序列化。
+ * Слот планировщика для одного активного engagement.
+ * Каждый слот независимо хранит контекст выполнения — сериализация при переключении не нужна.
  *
- * 初始化阶段确定的字段标记 readonly，仅 state/urgency/liveMessages/watcher 可变。
+ * Поля, определяемые на этапе инициализации, помечены readonly; изменяемы только state/urgency/liveMessages/watcher.
  */
 export interface EngagementSlot {
   readonly item: ActionQueueItem;
   readonly session: EngagementSession;
   state: SlotState;
   urgency: number;
-  /** Prepare 阶段解析的目标信息。 */
+  /** Целевая информация, разрешённая на этапе Prepare. */
   readonly resolved: ResolvedTarget | null;
   readonly contextVars: ContextVars | undefined;
-  /** 可刷新——subcycle 间重新拉取。 */
+  /** Обновляемо — перечитывается между subcycle-ами. */
   liveMessages: MessageRecord[];
   readonly targetChatId: number | null;
   readonly targetChannelId: string | null;
-  /** engagement 粘性（用于 preemption 判断）。 */
+  /** «Липкость» engagement (используется для оценки preemption). */
   readonly holdStrength: number;
-  /** ClosureDepth 测量用的图状态快照。 */
+  /** Снимок состояния графа для замера ClosureDepth. */
   readonly graphBefore: ReturnType<typeof captureGraphState>;
-  /** engagement 开始时的墙钟时间（ms）。 */
+  /** Время начала engagement по настенным часам (мс). */
   readonly startMs: number;
-  /** 非阻塞 watcher 状态。null = 无活跃 watcher。 */
+  /** Состояние неблокирующего watcher. null = нет активного watcher. */
   watcher: ActiveWatcher | null;
   /**
-   * interrupt 抢占标志。为 true 时 finalizeSlot 跳过 markComplete，
-   * 因为 target 已重新入队——processing 锁应由新 engagement 持有。
+   * Флаг вытеснения (preempt). Когда true, finalizeSlot пропускает markComplete,
+   * поскольку target уже повторно поставлен в очередь — блокировка processing
+   * должна принадлежать новому engagement.
    * @see C1 in adr130-review.md
    */
   preempted: boolean;
 }
 
-// ── 调度器 API ─────────────────────────────────────────────────────────
+// ── API планировщика ─────────────────────────────────────────────────────────
 
 /**
- * 初始化一个 engagement slot。
- * 执行 Prepare 阶段：拉取消息、解析目标、设置 Dispatcher 目标。
+ * Инициализирует слот engagement.
+ * Выполняет фазу Prepare: получает сообщения, разрешает цель, устанавливает цель Dispatcher.
  */
 export async function initSlot(ctx: ActContext, item: ActionQueueItem): Promise<EngagementSlot> {
   const targetChatId = item.target ? extractNumericId(item.target) : null;
@@ -133,7 +137,7 @@ export async function initSlot(ctx: ActContext, item: ActionQueueItem): Promise<
   const holdStrength = Math.max(...item.pressureSnapshot, 3.0);
   const graphBefore = captureGraphState(ctx.G);
 
-  // thinking_target 可观测性信号
+  // Сигнал наблюдаемости thinking_target
   const tick = ctx.getCurrentTick();
   if (item.target && ctx.G.has(ALICE_SELF)) {
     ctx.G.updateAgent(ALICE_SELF, { thinking_target: item.target });
@@ -164,8 +168,8 @@ export async function initSlot(ctx: ActContext, item: ActionQueueItem): Promise<
 }
 
 /**
- * ADR-130: 选择下一个 ready 的 engagement——紧急度最高者优先。
- * 单遍历 O(n)。
+ * ADR-130: выбирает следующий engagement в состоянии ready — приоритет у наиболее срочного.
+ * Один проход O(n).
  */
 export function selectNextEngagement(active: EngagementSlot[]): EngagementSlot | null {
   let best: EngagementSlot | null = null;
@@ -178,26 +182,26 @@ export function selectNextEngagement(active: EngagementSlot[]): EngagementSlot |
 }
 
 /**
- * 检查 watch slot 是否有事件唤醒。
- * 非阻塞——只检查 watcher 是否仍然存活。
+ * Проверяет, есть ли событие пробуждения для watch-слота.
+ * Неблокирующая — только проверяет, жив ли watcher.
  *
- * 安全性依赖 Node.js 单线程模型：handleWatchResult 的
- * `watcher = null; state = "ready"` 是同一个微任务内的同步赋值，
- * 不会被 checkWatchers 的同步遍历中断。
+ * Безопасность опирается на однопоточную модель Node.js: присваивания
+ * `watcher = null; state = "ready"` в handleWatchResult выполняются синхронно
+ * в одной микрозадаче и не могут быть прерваны синхронным обходом checkWatchers.
  */
 export function checkWatchers(active: EngagementSlot[]): void {
   for (const slot of active) {
     if (isWatchState(slot.state) && slot.watcher === null) {
-      // watcher 已被消费或不存在——标记 done
+      // watcher уже потреблён или отсутствует — помечаем done
       slot.state = "done";
     }
   }
 }
 
 /**
- * 等待任一 watch slot 的 watcher 完成或超时。
- * 当所有 slot 都不是 ready 时调用（阻塞直到有 slot 可调度）。
- * 同时也等待 ActionQueue 中的新 item（队列不为空时唤醒）。
+ * Ожидает завершения или таймаута watcher любого watch-слота.
+ * Вызывается, когда ни один слот не находится в состоянии ready (блокирует до появления
+ * планируемого слота). Также ожидает новые элементы в ActionQueue (пробуждение при непустой очереди).
  */
 export async function awaitAnyWakeup(active: EngagementSlot[], _queue: ActionQueue): Promise<void> {
   const promises: Promise<unknown>[] = [];
@@ -208,8 +212,8 @@ export async function awaitAnyWakeup(active: EngagementSlot[], _queue: ActionQue
     }
   }
 
-  // 加入一个短暂的 timer 作为兜底（轮询）——避免所有 watcher 都永久等待。
-  // 注意：此函数不直接监听队列新 item，而是靠 500ms 轮询回到主循环检测。
+  // Добавляем короткий таймер как страховку (polling) — чтобы не зависнуть, если все watcher-ы ждут бесконечно.
+  // Примечание: функция не слушает новые элементы очереди напрямую — возврат в главный цикл через 500ms polling.
   let timerHandle: ReturnType<typeof setTimeout> | undefined;
   const timerPromise = new Promise<void>((resolve) => {
     timerHandle = setTimeout(resolve, 500);
@@ -220,7 +224,7 @@ export async function awaitAnyWakeup(active: EngagementSlot[], _queue: ActionQue
   if (timerHandle != null) clearTimeout(timerHandle);
 }
 
-/** Watcher 配置：工厂函数 + 超时 + 对应 slot 状态。 */
+/** Конфигурация watcher: фабричная функция + таймаут + соответствующее состояние слота. */
 interface WatchConfig {
   readonly slotState: "reply_watch" | "linger_watch";
   readonly timeout: number;
@@ -231,7 +235,7 @@ interface WatchConfig {
   ) => ReturnType<typeof prepareEngagementWatch>;
 }
 
-/** runtime watch 计划 → 配置映射。 */
+/** Отображение runtime watch-плана → конфигурация. */
 const WATCH_CONFIG: Record<WatchPlan, WatchConfig> = {
   reply_window: {
     slotState: "reply_watch",
@@ -247,8 +251,8 @@ const WATCH_CONFIG: Record<WatchPlan, WatchConfig> = {
 };
 
 /**
- * 为 slot 启动非阻塞 watcher。
- * watcher 结果通过 promise .then 自动流入 handleWatchResult。
+ * Запускает неблокирующий watcher для слота.
+ * Результат watcher автоматически передаётся в handleWatchResult через promise .then.
  */
 export function startWatcher(ctx: ActContext, slot: EngagementSlot, plan: WatchPlan): void {
   if (!slot.targetChannelId) {
@@ -268,19 +272,19 @@ export function startWatcher(ctx: ActContext, slot: EngagementSlot, plan: WatchP
 }
 
 /**
- * 处理 watcher 结果——更新 slot 状态。
- * 在 watcher promise resolve 时自动调用。
+ * Обрабатывает результат watcher — обновляет состояние слота.
+ * Вызывается автоматически при resolve promise watcher.
  *
- * timeout outcome 由 `watcher.plan` 决定（而非 `slot.state`），
- * 避免 handleWatchResult 依赖 slot 当前状态——在 promise 异步 resolve 时
- * slot.state 可能已被其他路径修改。
+ * Исход таймаута определяется `watcher.plan` (а не `slot.state`), чтобы
+ * handleWatchResult не зависел от текущего состояния слота — при асинхронном
+ * resolve promise значение slot.state могло быть изменено другим путём.
  */
 function handleWatchResult(ctx: ActContext, slot: EngagementSlot, result: WatchResult): void {
-  // C3 guard: 如果 watcher 已被 releaseSlot 清除（shutdown/cleanup 路径），
-  // 跳过整个 handler——避免在已 finalized 的 slot 上产生副作用。
+  // C3 guard: если watcher уже очищен releaseSlot (путь shutdown/cleanup),
+  // пропускаем весь handler — избегаем побочных эффектов на уже финализированном слоте.
   if (!slot.watcher) return;
 
-  // 捕获 plan 后清除 watcher（plan 用于 timeout outcome 判断）
+  // Захватываем plan, затем очищаем watcher (plan нужен для определения исхода таймаута)
   const plan = slot.watcher.plan;
   slot.session.elapsed += result.elapsed;
   slot.watcher = null;
@@ -288,7 +292,7 @@ function handleWatchResult(ctx: ActContext, slot: EngagementSlot, result: WatchR
   switch (result.type) {
     case "reply":
     case "activity":
-      // 回复/活动到达——重新 ready，下次 subcycle 会拉取新消息
+      // Ответ/активность получены — переходим в ready, следующий subcycle подтянет новые сообщения
       slot.state = "ready";
       log.info("Watcher event received", {
         target: slot.item.target,
@@ -298,8 +302,8 @@ function handleWatchResult(ctx: ActContext, slot: EngagementSlot, result: WatchR
       break;
 
     case "interrupt":
-      // 被更紧急的事件抢占——重新入队
-      // 标记 preempted: finalizeSlot 跳过 markComplete，processing 锁由新 engagement 继承
+      // Вытеснено более срочным событием — повторно ставим в очередь
+      // Помечаем preempted: finalizeSlot пропускает markComplete, блокировка processing переходит к новому engagement
       slot.session.outcome = "preempted";
       slot.preempted = true;
       ctx.queue.enqueue({
@@ -308,7 +312,7 @@ function handleWatchResult(ctx: ActContext, slot: EngagementSlot, result: WatchR
         reason: "engagement_interrupted",
         pressureSnapshot: ctx.getCurrentPressures(),
         contributions: slot.item.contributions,
-        focalEntities: slot.item.focalEntities, // M8: 保留 focalEntities
+        focalEntities: slot.item.focalEntities, // M8: сохраняем focalEntities
         enqueueTick: ctx.getCurrentTick(),
       });
       slot.state = "done";
@@ -316,9 +320,9 @@ function handleWatchResult(ctx: ActContext, slot: EngagementSlot, result: WatchR
       break;
 
     case "timeout":
-      // timeout outcome 取决于 runtime watch 计划：
-      // reply_window 超时 = 对方未回复 → "timeout"
-      // linger_window 超时 = 正常逗留结束 → "complete"
+      // Исход таймаута зависит от runtime watch-плана:
+      // reply_window истёк = собеседник не ответил → "timeout"
+      // linger_window истёк = нормальное завершение ожидания → "complete"
       slot.session.outcome = plan === "reply_window" ? "timeout" : "complete";
       slot.state = "done";
       log.info("Watcher timeout", {
@@ -331,21 +335,21 @@ function handleWatchResult(ctx: ActContext, slot: EngagementSlot, result: WatchR
 }
 
 /**
- * 释放 slot 的所有资源。
- * - 释放 processing 锁
- * - 清除可观测性信号
- * - 取消 watcher
+ * Освобождает все ресурсы слота.
+ * - Снимает блокировку processing
+ * - Очищает сигналы наблюдаемости
+ * - Отменяет watcher
  */
 export function releaseSlot(ctx: ActContext, slot: EngagementSlot): void {
-  // 取消 watcher（如果有）
+  // Отменяем watcher (если есть)
   if (slot.watcher) {
     slot.watcher.handle.cancel();
     slot.watcher = null;
   }
 
-  // 释放可观测性信号
+  // Очищаем сигналы наблюдаемости
   if (ctx.G.has(ALICE_SELF)) {
-    // 只有当 thinking_target 指向此 slot 的目标时才清除
+    // Очищаем только если thinking_target указывает на цель этого слота
     const current = ctx.G.getAgent(ALICE_SELF).thinking_target;
     if (current === slot.item.target) {
       ctx.G.updateAgent(ALICE_SELF, { thinking_target: null });

@@ -1,20 +1,20 @@
 /**
- * WorldModel — Alice 的世界模型（类型化属性图）。
+ * WorldModel — модель мира Алисы (типизированный граф свойств).
  *
- * ADR-154 clean-room 重写，替代 WorldModel。
+ * Переписан с нуля по ADR-154, заменяет предыдущий WorldModel.
  *
- * 核心改进：
- * 1. 类型化存储：Map<string, NodeEntry>（判别联合）替代 Map<string, Record<string, unknown>>
- * 2. 类型化 mutation：updateChannel(id, patch) 替代 setNodeAttr(id, "key", value)
- * 3. 实体默认值外提：entity-defaults.ts 纯函数，图类无领域知识
- * 4. 依赖倒置修复：entities.ts 零 telegram/ 导入
- * 5. Ephemeral 存储分离：action 结果不污染持久状态
+ * Ключевые улучшения:
+ * 1. Типизированное хранилище: Map<string, NodeEntry> (дискриминированное объединение) вместо Map<string, Record<string, unknown>>
+ * 2. Типизированные мутации: updateChannel(id, patch) вместо setNodeAttr(id, "key", value)
+ * 3. Дефолтные значения вынесены наружу: чистые функции entity-defaults.ts, граф-класс не знает домена
+ * 4. Исправление инверсии зависимостей: entities.ts без импортов из telegram/
+ * 5. Изоляция ephemeral-хранилища: результаты action не загрязняют персистентное состояние
  *
- * 存储所有权：
- * | 层 | 存储 | 写入者 | 语义 |
+ * Владение хранилищами:
+ * | Слой | Хранилище | Писатель | Семантика |
  * |---|---|---|---|
- * | node attrs | Map<string, NodeEntry> | perceive / act (typed update) | 实时状态 |
- * | beliefs | BeliefStore | belief/update | Bayesian 连续估计 |
+ * | node attrs | Map<string, NodeEntry> | perceive / act (typed update) | текущее состояние |
+ * | beliefs | BeliefStore | belief/update | непрерывная байесовская оценка |
  *
  * @see docs/adr/154-world-model-rewrite.md
  * @see paper-pomdp/ Def 3-4: G(n) is compressed belief, not ground truth
@@ -51,28 +51,28 @@ import {
 } from "./entity-defaults.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 增量快照类型
+// Типы инкрементального снапшота
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 增量快照数据 — 只包含 dirty 数据，比全图 snapshot() 轻量。
+ * Данные инкрементального снапшота — содержит только dirty-данные, легче полного snapshot().
  *
- * 用于沙箱原子执行的快照/回滚：
- * - dirtyNodeEntries: dirty 节点的 NodeEntry 浅拷贝
- * - edges: 仅当 dirtyEdgesRebuild=true 时包含全量边数据
- * - beliefsDict: 始终包含（保证完整回滚）
+ * Используется для снапшота/отката атомарного выполнения в песочнице:
+ * - dirtyNodeEntries: поверхностные копии NodeEntry для dirty-узлов
+ * - edges: полный набор рёбер, только если dirtyEdgesRebuild=true
+ * - beliefsDict: всегда включён (гарантия полного отката)
  *
  * @see paper/ §4 "Incremental State Management"
  */
 export interface IncrementalSnapshot {
   tick: number;
-  /** dirty 节点的类型化条目（Map<nodeId, NodeEntry 浅拷贝>）。 */
+  /** Типизированные записи dirty-узлов (Map<nodeId, поверхностная копия NodeEntry>). */
   dirtyNodeEntries: Map<string, NodeEntry>;
-  /** dirty 节点中已删除的 ID（快照时图中不存在但 dirtySet 中记录的节点）。 */
+  /** ID удалённых узлов среди dirty-узлов (узлы, отсутствующие в графе на момент снапшота, но записанные в dirtySet). */
   deletedNodeIds: Set<string>;
   /** H8: полный набор id узлов НА МОМЕНТ снапшота — чтобы при откате удалять только реально новые. */
   snapshotNodeIds?: Set<string>;
-  /** 如果边需要重建，包含全量边数据。 */
+  /** Полный набор данных рёбер, если требуется перестройка рёбер. */
   edges?: Array<{ src: string; dst: string; data: EdgeData }>;
   beliefsDict: BeliefDict;
 }
@@ -81,15 +81,15 @@ export class WorldModel {
   // === Private state ===
 
   private nodes = new Map<string, NodeEntry>();
-  /** 出边：src → dst → EdgeData[]（允许同对节点间多条边）。 */
+  /** Исходящие рёбра: src → dst → EdgeData[] (допускается несколько рёбер между одной парой узлов). */
   private outEdges = new Map<string, Map<string, EdgeData[]>>();
-  /** 入边：dst → src → EdgeData[]。 */
+  /** Входящие рёбра: dst → src → EdgeData[]. */
   private inEdges = new Map<string, Map<string, EdgeData[]>>();
 
-  /** Social POMDP: 信念存储。 */
+  /** Social POMDP: хранилище убеждений. */
   readonly beliefs = new BeliefStore();
 
-  /** ADR-33: dirty tracking。 */
+  /** ADR-33: отслеживание dirty-состояния. */
   private dirtyNodes = new Set<string>();
   private dirtyEdgesRebuild = false;
 
@@ -105,7 +105,7 @@ export class WorldModel {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Node creation (type-specific)
+  // Создание узлов (типизированное)
   // ═══════════════════════════════════════════════════════════════════════════
 
   addAgent(nodeId: string, attrs?: Partial<Omit<AgentAttrs, "entity_type">>): void {
@@ -145,7 +145,7 @@ export class WorldModel {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Node mutation (type-specific)
+  // Мутация узлов (типизированная)
   // ═══════════════════════════════════════════════════════════════════════════
 
   updateAgent(nodeId: string, patch: Mutable<AgentAttrs>): void {
@@ -185,10 +185,10 @@ export class WorldModel {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Node access (type-specific) — 返回浅拷贝
+  // Доступ к узлам (типизированный) — возвращает поверхностные копии
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /** 泛型 typed getter。类型不匹配或节点不存在时抛出。 */
+  /** Обобщённый типизированный геттер. Выбрасывает исключение при несовпадении типа или отсутствии узла. */
   getTyped<T extends NodeType>(nodeId: string, expectedType: T): NodeAttrsMap[T] {
     const entry = this._expectType(nodeId, expectedType);
     return { ...entry.attrs } as NodeAttrsMap[T];
@@ -210,7 +210,7 @@ export class WorldModel {
     return this.getTyped(nodeId, "thread");
   }
 
-  /** ADR-154: getInfoItem → getFact。 */
+  /** ADR-154: getInfoItem → getFact. */
   getFact(nodeId: string): FactAttrs {
     return this.getTyped(nodeId, "fact");
   }
@@ -223,19 +223,19 @@ export class WorldModel {
   // Node access (generic)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /** 返回节点的判别联合条目（浅拷贝）。用于 switch(entry.type) 的泛型代码。 */
+  /** Возвращает дискриминированную запись узла (поверхностная копия). Используется в обобщённом коде с switch(entry.type). */
   getEntry(nodeId: string): NodeEntry {
     const entry = this.nodes.get(nodeId);
     if (!entry) throw new Error(`Node not found: ${nodeId}`);
     return { type: entry.type, attrs: { ...entry.attrs } } as NodeEntry;
   }
 
-  /** 返回节点的 entity_type（不存在返回 undefined）。 */
+  /** Возвращает entity_type узла (undefined если узел не существует). */
   getNodeType(nodeId: string): NodeType | undefined {
     return this.nodes.get(nodeId)?.type as NodeType | undefined;
   }
 
-  /** 返回指定类型的所有节点 id。 */
+  /** Возвращает все id узлов указанного типа. */
   getEntitiesByType(entityType: NodeType | string): string[] {
     // Compat: "info_item" → "fact"
     const effectiveType = entityType === "info_item" ? "fact" : entityType;
@@ -246,24 +246,24 @@ export class WorldModel {
     return result;
   }
 
-  /** 返回所有节点 id。 */
+  /** Возвращает все id узлов. */
   allNodeIds(): string[] {
     return Array.from(this.nodes.keys());
   }
 
-  /** 检查节点是否存在。 */
+  /** Проверяет существование узла. */
   has(nodeId: string): boolean {
     return this.nodes.has(nodeId);
   }
 
-  /** 节点数量。 */
+  /** Количество узлов. */
   get size(): number {
     return this.nodes.size;
   }
 
   /**
-   * ADR-112 D2: 图年龄（毫秒）。
-   * 读取 self 节点的 created_ms，缺失时回退到 tick × 60s 估算。
+   * ADR-112 D2: возраст графа (в миллисекундах).
+   * Читает created_ms узла self; при отсутствии — возвращает оценку tick × 60s.
    */
   getGraphAgeMs(nowMs: number): number {
     const entry = this.nodes.get("self");
@@ -275,12 +275,12 @@ export class WorldModel {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Escape hatches — 仅供序列化/测试/迁移过渡
+  // Аварийные выходы — только для сериализации/тестов/переходных миграций
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * 无类型属性写入（逃生舱口）。
-   * 仅供序列化路径和测试使用。生产代码应使用 updateX() 方法。
+   * Нетипизированная запись атрибута (аварийный выход).
+   * Только для пути сериализации и тестов. В production-коде использовать методы updateX().
    */
   setDynamic(nodeId: string, key: string, value: unknown): void {
     if (key === "entity_type") throw new Error("Cannot change entity_type via setDynamic");
@@ -291,8 +291,8 @@ export class WorldModel {
   }
 
   /**
-   * 无类型属性读取（逃生舱口）。
-   * 仅供需要跨类型泛型访问的场景。
+   * Нетипизированное чтение атрибута (аварийный выход).
+   * Только для сценариев с обобщённым доступом через несколько типов.
    */
   getDynamic(nodeId: string, key: string): unknown {
     const entry = this.nodes.get(nodeId);
@@ -305,8 +305,8 @@ export class WorldModel {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * 添加一条带标签的有向边。
-   * label 自动映射到 EdgeCategory（via labelToCategory）。
+   * Добавляет размеченное направленное ребро.
+   * label автоматически отображается в EdgeCategory (через labelToCategory).
    */
   addRelation(
     src: string,
@@ -320,18 +320,18 @@ export class WorldModel {
     this.dirtyEdgesRebuild = true;
   }
 
-  /** 添加一条边（显式指定 label + category）。 */
+  /** Добавляет ребро (явно задаются label + category). */
   addEdge(src: string, dst: string, label: string, category: EdgeCategory): void {
     this.addRelation(src, label, dst, { category });
   }
 
-  /** 移除节点及其所有边。审计修复: 级联清理引用此节点的 conversation 实体。 */
+  /** Удаляет узел и все его рёбра. Аудит-фикс: каскадно очищает conversation-сущности, ссылающиеся на этот узел. */
   removeEntity(nodeId: string): void {
     if (!this.nodes.has(nodeId)) return;
 
-    // 审计修复: 级联清理关联的 conversation 节点。
-    // 当 channel 被删除时，引用该 channel 的 conversation 成为孤儿。
-    // findActiveConversation 等查询可能返回无效对话。
+    // Аудит-фикс: каскадно очищаем связанные conversation-узлы.
+    // При удалении channel conversation-ы, ссылающиеся на него, становятся осиротевшими.
+    // Запросы вроде findActiveConversation могут возвращать недействительные диалоги.
     const node = this.nodes.get(nodeId);
     if (node && node.type === "channel") {
       const orphanConvs: string[] = [];
@@ -342,11 +342,11 @@ export class WorldModel {
         }
       }
       for (const convId of orphanConvs) {
-        this.removeEntity(convId); // 递归清理
+        this.removeEntity(convId); // рекурсивная очистка
       }
     }
 
-    // 移除所有出边
+    // Удаляем все исходящие рёбра
     const srcOut = this.outEdges.get(nodeId);
     if (srcOut) {
       for (const dst of srcOut.keys()) {
@@ -355,7 +355,7 @@ export class WorldModel {
     }
     this.outEdges.delete(nodeId);
 
-    // 移除所有入边
+    // Удаляем все входящие рёбра
     const dstIn = this.inEdges.get(nodeId);
     if (dstIn) {
       for (const src of dstIn.keys()) {
@@ -369,7 +369,7 @@ export class WorldModel {
     this.dirtyEdgesRebuild = true;
   }
 
-  /** 后继邻居（出边目标），可按 label 过滤。 */
+  /** Преемники (цели исходящих рёбер), можно фильтровать по label. */
   getNeighbors(nodeId: string, label?: string): string[] {
     const srcOut = this.outEdges.get(nodeId);
     if (!srcOut) return [];
@@ -381,7 +381,7 @@ export class WorldModel {
     return result;
   }
 
-  /** 前驱邻居（入边来源），可按 label 过滤。 */
+  /** Предшественники (источники входящих рёбер), можно фильтровать по label. */
   getPredecessors(nodeId: string, label?: string): string[] {
     const dstIn = this.inEdges.get(nodeId);
     if (!dstIn) return [];
@@ -393,7 +393,7 @@ export class WorldModel {
     return result;
   }
 
-  /** 遍历所有边。 */
+  /** Обходит все рёбра. */
   *allEdges(): Generator<[string, string, EdgeData]> {
     for (const [src, targets] of this.outEdges) {
       for (const [dst, edges] of targets) {
@@ -404,7 +404,7 @@ export class WorldModel {
     }
   }
 
-  /** 边数量。 */
+  /** Количество рёбер. */
   get edgeCount(): number {
     let count = 0;
     for (const targets of this.outEdges.values()) {
@@ -419,7 +419,7 @@ export class WorldModel {
   // Serialization (ADR-154: toDict → serialize, fromDict → deserialize)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /** 序列化为 JSON 兼容字典。格式与旧 WorldModel.toDict() 兼容。 */
+  /** Сериализует в JSON-совместимый словарь. Формат совместим со старым WorldModel.toDict(). */
   serialize(): SerializedGraph {
     const nodes: SerializedNode[] = [];
     for (const [id, entry] of this.nodes) {
@@ -451,8 +451,8 @@ export class WorldModel {
   }
 
   /**
-   * 从字典反序列化。
-   * ADR-154 D8: 旧快照中的 info_item 自动映射为 fact。
+   * Десериализует из словаря.
+   * ADR-154 D8: info_item в старых снапшотах автоматически отображается как fact.
    */
   static deserialize(data: SerializedGraph): WorldModel {
     const G = new WorldModel();
@@ -464,7 +464,7 @@ export class WorldModel {
   // Dirty tracking (ADR-33)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /** 是否有未写回的变更。 */
+  /** Есть ли незафиксированные изменения. */
   isDirty(): boolean {
     return this.dirtyNodes.size > 0 || this.dirtyEdgesRebuild;
   }
@@ -475,17 +475,17 @@ export class WorldModel {
     this.dirtyEdgesRebuild = true;
   }
 
-  /** 获取 dirty 节点集合（flush 时使用）。 */
+  /** Возвращает набор dirty-узлов (используется при flush). */
   getDirtyNodes(): ReadonlySet<string> {
     return this.dirtyNodes;
   }
 
-  /** 是否需要重建边（flush 时使用）。 */
+  /** Нужно ли перестраивать рёбра (используется при flush). */
   needsEdgeRebuild(): boolean {
     return this.dirtyEdgesRebuild;
   }
 
-  /** flush 完成后清除 dirty 标记。 */
+  /** Сбрасывает dirty-метки после завершения flush. */
   clearDirty(): void {
     this.dirtyNodes.clear();
     this.dirtyEdgesRebuild = false;
@@ -496,7 +496,7 @@ export class WorldModel {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * 增量快照——只包含 dirty 数据。
+   * Инкрементальный снапшот — содержит только dirty-данные.
    * @see paper/ §4 "Incremental State Management"
    */
   snapshotIncremental(): IncrementalSnapshot {
@@ -531,30 +531,30 @@ export class WorldModel {
   }
 
   /**
-   * 从增量快照恢复（回滚 dirty 变更）。
+   * Восстанавливает из инкрементального снапшота (откат dirty-изменений).
    *
-   * 恢复策略：
-   * 1. dirty 节点：恢复 NodeEntry 到快照值，或删除快照中不存在的节点
-   * 2. 执行期间新创建的节点（不在快照中）：删除
-   * 3. 边：若快照包含边数据则全量重建
-   * 4. beliefs：全量恢复
-   * 5. tick：恢复到快照时的值
+   * Стратегия восстановления:
+   * 1. dirty-узлы: восстанавливаем NodeEntry до значений снапшота или удаляем узлы, отсутствующие в снапшоте
+   * 2. Узлы, созданные в процессе выполнения (не в снапшоте): удаляем
+   * 3. Рёбра: полная перестройка, если снапшот содержит данные рёбер
+   * 4. beliefs: полное восстановление
+   * 5. tick: возвращаем к значению на момент снапшота
    */
   restoreFromIncremental(snap: IncrementalSnapshot): void {
-    // 1. 恢复 dirty 节点
+    // 1. Восстанавливаем dirty-узлы
     for (const [nodeId, entry] of snap.dirtyNodeEntries) {
       this.nodes.set(nodeId, { type: entry.type, attrs: { ...entry.attrs } } as NodeEntry);
       this._ensureEdgeMaps(nodeId);
     }
 
-    // 2. 删除快照时不存在但执行中被创建的节点
+    // 2. Удаляем узлы, которых не было в снапшоте, но созданные в процессе выполнения
     for (const nodeId of snap.deletedNodeIds) {
       if (this.nodes.has(nodeId)) {
         this.removeEntity(nodeId);
       }
     }
 
-    // 3. 删除执行期间新创建的节点（快照中既不在 entries 也不在 deleted 中）
+    // 3. Удаляем узлы, созданные в процессе выполнения (отсутствующие в снапшоте ни в entries, ни в deleted)
     const toRemove: string[] = [];
     for (const nodeId of this.dirtyNodes) {
       // H8: удаляем только узлы, РЕАЛЬНО созданные после снапшота (которых не было в snapshotNodeIds).
@@ -570,7 +570,7 @@ export class WorldModel {
       this.removeEntity(nodeId);
     }
 
-    // 4. 恢复边
+    // 4. Восстанавливаем рёбра
     if (snap.edges) {
       this.outEdges.clear();
       this.inEdges.clear();
@@ -584,13 +584,13 @@ export class WorldModel {
       }
     }
 
-    // 5. 恢复 beliefs
+    // 5. Восстанавливаем beliefs
     this.beliefs.restoreFrom(BeliefStore.fromDict(snap.beliefsDict));
 
-    // 6. 恢复 tick
+    // 6. Восстанавливаем tick
     this._tick = snap.tick;
 
-    // 回滚后标记恢复的节点和边为 dirty
+    // После отката помечаем восстановленные узлы и рёбра как dirty
     for (const nodeId of snap.dirtyNodeEntries.keys()) {
       this.dirtyNodes.add(nodeId);
     }
@@ -608,7 +608,7 @@ export class WorldModel {
     if (!this.inEdges.has(nodeId)) this.inEdges.set(nodeId, new Map());
   }
 
-  /** 类型守卫：断言节点存在且类型匹配。返回内部 NodeEntry 引用（非拷贝）。 */
+  /** Тип-гард: утверждает, что узел существует и тип совпадает. Возвращает внутреннюю ссылку NodeEntry (не копию). */
   private _expectType<T extends NodeType>(
     nodeId: string,
     expectedType: T,
@@ -621,7 +621,7 @@ export class WorldModel {
     return entry as Extract<NodeEntry, { type: T }>;
   }
 
-  /** 直接插入边到邻接表（不设置 dirtyEdgesRebuild——供反序列化和快照恢复使用）。 */
+  /** Напрямую вставляет ребро в список смежности (без установки dirtyEdgesRebuild — для десериализации и восстановления снапшота). */
   private _insertEdge(src: string, dst: string, data: EdgeData): void {
     let srcOut = this.outEdges.get(src);
     if (!srcOut) {
@@ -643,23 +643,23 @@ export class WorldModel {
   }
 
   /**
-   * 从序列化数据重建节点、边。
-   * ADR-154 D8: info_item 自动映射为 fact。
+   * Перестраивает узлы и рёбра из сериализованных данных.
+   * ADR-154 D8: info_item автоматически отображается как fact.
    */
   private _rebuildFrom(data: SerializedGraph): void {
     this._tick = data.tick;
 
-    // 重建节点——通过 typed add 方法确保默认值
+    // Перестраиваем узлы — дефолтные значения гарантируются типизированными методами add
     for (const node of data.nodes) {
       const { id, entity_type, ...rest } = node;
       for (const [k, v] of Object.entries(rest)) {
         if (v === "inf") (rest as Record<string, unknown>)[k] = Infinity;
       }
-      // _addFromSerialized 内部处理 info_item → fact 迁移
+      // _addFromSerialized внутри обрабатывает миграцию info_item → fact
       this._addFromSerialized(id as string, entity_type as string, rest as Record<string, unknown>);
     }
 
-    // 重建边（通过 _insertEdge 直接操作邻接表，不触发 dirtyEdgesRebuild）
+    // Перестраиваем рёбра (через _insertEdge напрямую в список смежности, без установки dirtyEdgesRebuild)
     for (const edge of data.edges) {
       const { src, dst, label, category, ...rest } = edge;
       for (const [k, v] of Object.entries(rest)) {
@@ -673,18 +673,18 @@ export class WorldModel {
       this._insertEdge(src as string, dst as string, edgeData);
     }
 
-    // Social POMDP: 恢复信念
+    // Social POMDP: восстанавливаем убеждения
     if (data.beliefs) {
       this.beliefs.restoreFrom(BeliefStore.fromDict(data.beliefs));
     }
   }
 
-  /** 反序列化分派——从 entity_type 字符串路由到 typed add 方法。 */
+  /** Диспетчеризация десериализации — маршрутизирует по строке entity_type к типизированным методам add. */
   private _addFromSerialized(id: string, entityType: string, attrs: Record<string, unknown>): void {
-    // ADR-154 D8: info_item → fact 迁移
+    // ADR-154 D8: миграция info_item → fact
     const type = entityType === "info_item" ? "fact" : entityType;
-    // 反序列化路径：attrs 来自 JSON，类型为 Record<string, unknown>。
-    // 工厂函数的 spread 保留所有已知和未知字段，entity_type 最后覆写。
+    // Путь десериализации: attrs из JSON, тип Record<string, unknown>.
+    // Spread в фабричной функции сохраняет все известные и неизвестные поля; entity_type перезаписывается последним.
     switch (type) {
       case "agent":
         this.addAgent(id, attrs as Partial<Omit<AgentAttrs, "entity_type">>);
@@ -704,7 +704,7 @@ export class WorldModel {
       case "conversation":
         this.addConversation(id, attrs as Partial<Omit<ConversationAttrs, "entity_type">>);
         break;
-      // 未知实体类型——静默跳过（旧快照可能包含已废弃的类型）
+      // Неизвестный тип сущности — молча пропускаем (старые снапшоты могут содержать устаревшие типы)
     }
   }
 }

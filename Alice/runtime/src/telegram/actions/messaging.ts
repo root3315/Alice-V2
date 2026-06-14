@@ -1,5 +1,5 @@
 /**
- * messaging 类别动作：send_message, mark_read, edit_message, forward_message, publish_channel, send_dm。
+ * Действия категории messaging: send_message, mark_read, edit_message, forward_message, publish_channel, send_dm.
  *
  * @see docs/adr/149-define-action-builder.md
  */
@@ -45,14 +45,14 @@ export const messagingActions: TelegramActionDef[] = [
       priority: "core",
     },
     async impl(ctx, args) {
-      // S-1: 清洗注解泄漏 + Telegram 消息上限 4096 字符
+      // S-1: Очистка утечек аннотаций + лимит сообщений Telegram 4096 символов
       const text = sanitizeOutgoingText(args.text ?? "");
       if (!args.chatId || !text) return false;
 
       const rawId = ctx.parseChatId(args.chatId);
       const graphId = ctx.ensureGraphId(args.chatId);
 
-      // 观察窗口检查：新加入的频道需要先静默/学徒
+      // Проверка окна наблюдения: новые каналы требуют режима молчания/ученика
       if (ctx.G.has(graphId)) {
         const channelAttrs = ctx.G.getChannel(graphId);
         const joinMs = channelAttrs.join_ms ?? 0;
@@ -86,14 +86,14 @@ export const messagingActions: TelegramActionDef[] = [
         mentions: args.mentions,
       });
 
-      // 主动缓存 outgoing msg_id（不依赖 onNewMessage 被动接收）
+      // Активно кэшировать исходящий msg_id (без зависимости от пассивного получения через onNewMessage)
       if (msgId != null) {
         cacheOutgoingMsg(graphId, msgId);
       }
 
       if (ctx.G.has(graphId)) {
         // @see paper-five-dim/ Axiom 1: Structure as Feedback
-        // m2 修复: 按 code point 截断，避免 emoji surrogate pair 被切断
+        // m2 fix: обрезать по code point, чтобы не разрывать surrogate pair emoji
         ctx.G.setDynamic(graphId, "last_outgoing_text", [...text].slice(0, 150).join(""));
       }
 
@@ -109,7 +109,7 @@ export const messagingActions: TelegramActionDef[] = [
     name: "mark_read",
     category: "messaging",
     description: ["Mark a chat as read without responding."],
-    // chatId 有意保留为 LLM 可见（无 inject）——系统线程场景需要跨聊天标记已读。
+    // chatId намеренно остаётся видимым для LLM (без inject) — сценарии системных потоков требуют отметки прочитанного в разных чатах.
     params: z.object({
       chatId: z.number().describe("Chat ID"),
     }),
@@ -129,8 +129,8 @@ export const messagingActions: TelegramActionDef[] = [
         ctx.G.setDynamic(graphId, "unread", 0);
         // @see paper-five-dim/ §4.2: directed obligation decrement semantics
         ctx.G.setDynamic(graphId, "mentions_alice", false);
-        // ADR-158 Fix 6: 与 System 1 mark_read（evolve.ts:1069）保持一致——
-        // 记录清除时间戳，让 focus.ts diligence 阻尼正确抑制刚清除的实体。
+        // ADR-158 Fix 6: согласованность с System 1 mark_read (evolve.ts:1069) —
+        // записывать временную метку очистки, чтобы демпфирование diligence в focus.ts корректно подавляло только что очищенные сущности.
         // @see docs/adr/158-outbound-feedback-gap.md
         ctx.G.setDynamic(graphId, "recently_cleared_ms", Date.now());
       }
@@ -195,7 +195,7 @@ export const messagingActions: TelegramActionDef[] = [
       try {
         fwdMsgId = await forwardMessage(ctx.client, rawFromId, args.msgId, rawToId);
       } catch (err) {
-        // ADR-156: Block 检测 — 被拉黑/隐私限制时标记 graph，后续全景过滤
+        // ADR-156: Обнаружение блокировки — пометить граф при блокировке/ограничении приватности для последующей глобальной фильтрации
         if (
           tl.RpcError.is(err, "USER_PRIVACY_RESTRICTED") ||
           tl.RpcError.is(err, "PEER_ID_BLOCKED") ||
@@ -210,7 +210,7 @@ export const messagingActions: TelegramActionDef[] = [
         throw err;
       }
 
-      // 主动缓存 outgoing msg_id — reply directed 检测需要
+      // Активно кэшировать исходящий msg_id — необходимо для определения directed reply
       if (fwdMsgId != null) {
         cacheOutgoingMsg(toGraphId, fwdMsgId);
       }
@@ -239,7 +239,7 @@ export const messagingActions: TelegramActionDef[] = [
     },
   }),
 
-  // ── ADR-206 W7: 频道发布行为 ─────────────────────────────────────────────
+  // ── ADR-206 W7: Поведение публикации в канале ────────────────────────────
 
   defineAction({
     name: "publish_channel",
@@ -262,15 +262,15 @@ export const messagingActions: TelegramActionDef[] = [
       priority: "core",
     },
     async impl(ctx, args) {
-      // S-1: 清洗注解泄漏 + Telegram 消息上限 4096 字符
+      // S-1: Очистка утечек аннотаций + лимит сообщений Telegram 4096 символов
       const text = sanitizeOutgoingText(args.text ?? "");
       if (!args.channelId || !text) return false;
 
       const graphId = ctx.ensureGraphId(args.channelId);
 
-      // ADR-206 C4 Gate 1: alice_role 硬检查
-      // 注意：不需要 observation window（与 send_message 不同）——
-      // admin/owner 角色本身已是强信任信号，不存在"新加入静默期"语义。
+      // ADR-206 C4 Gate 1: жёсткая проверка alice_role
+      // Примечание: окно наблюдения не нужно (в отличие от send_message) —
+      // роль admin/owner сама по себе является сильным сигналом доверия, семантики «молчания при новом вступлении» нет.
       if (!ctx.G.has(graphId)) return { success: false, error: "unknown channel" };
       const attrs = ctx.G.getChannel(graphId);
       const role = String(attrs.alice_role ?? "");
@@ -279,7 +279,7 @@ export const messagingActions: TelegramActionDef[] = [
         return { success: false, error: "not admin or owner" };
       }
 
-      // ADR-206 C4 Gate 2: 2 小时发布冷却期
+      // ADR-206 C4 Gate 2: кулдаун публикации 2 часа
       const PUBLISH_COOLDOWN_MS = 2 * 60 * 60_000; // 2h
       const lastPublishMs = Number(attrs.last_publish_ms ?? 0);
       if (lastPublishMs > 0 && Date.now() - lastPublishMs < PUBLISH_COOLDOWN_MS) {
@@ -287,7 +287,7 @@ export const messagingActions: TelegramActionDef[] = [
         return { success: false, error: "publish cooldown (2h)" };
       }
 
-      // ADR-206 C4 Gate 3: chat_type 必须是 channel
+      // ADR-206 C4 Gate 3: chat_type должен быть channel
       if (attrs.chat_type !== "channel") {
         return { success: false, error: "not a channel" };
       }
@@ -295,7 +295,7 @@ export const messagingActions: TelegramActionDef[] = [
       const rawId = ctx.parseChatId(args.channelId);
       const msgId = await sendText(ctx.client, rawId, text);
 
-      // 更新图状态
+      // Обновить состояние графа
       if (msgId != null) {
         cacheOutgoingMsg(graphId, msgId);
       }
@@ -306,7 +306,7 @@ export const messagingActions: TelegramActionDef[] = [
       ctx.dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
 
       ctx.log.info("publish_channel executed", { channelId: args.channelId, textLen: text.length });
-      // 频道发布不消耗 directed 义务
+      // Публикация в канале не расходует directed-обязательства
       return { success: true, msgId: msgId ?? undefined, obligationsConsumed: 0 };
     },
   }),
@@ -322,7 +322,7 @@ export const messagingActions: TelegramActionDef[] = [
       who: z.string().describe("Contact to DM (use ~senderId from chat log)"),
       text: z.string().describe("Message text"),
     }),
-    // 无 inject — who 由 LLM 显式传入（仿 mark_read 先例）
+    // Без inject — who явно передаётся LLM (по аналогии с mark_read)
     affordance: {
       whenToUse:
         "Privately reach out to someone you saw in a group — follow up, check in, or share something personal",
@@ -331,34 +331,34 @@ export const messagingActions: TelegramActionDef[] = [
       priority: "core",
     },
     async impl(ctx, args) {
-      // S-1: 清洗注解泄漏 + Telegram 消息上限 4096 字符
+      // S-1: Очистка утечек аннотаций + лимит сообщений Telegram 4096 символов
       const text = sanitizeOutgoingText(args.text ?? "");
       if (!text) return false;
 
       const who = args.who ?? "";
       const telegramNativeId = extractNumericId(who);
 
-      // Guard 2: contact 解析
+      // Guard 2: разрешение contact
       const contactId =
         telegramNativeId != null ? telegramContactId(telegramNativeId) : ensureContactId(who);
       if (!contactId) return { success: false, error: "invalid contact" };
 
-      // Guard 3: 图中存在
+      // Guard 3: наличие в графе
       if (!ctx.G.has(contactId)) return { success: false, error: "unknown contact" };
 
-      // Guard 4: 有过互动
+      // Guard 4: было взаимодействие
       const contactAttrs = ctx.G.getContact(contactId);
       if (contactAttrs.interaction_count <= 0) return { success: false, error: "never interacted" };
 
-      // Guard 5: 非陌生人（tier < 500）
+      // Guard 5: не незнакомец (tier < 500)
       if (contactAttrs.tier >= 500) return { success: false, error: "too distant" };
 
-      // Guard 6: DM channel 解析
+      // Guard 6: разрешение DM channel
       const dmChannelId =
         telegramNativeId != null ? telegramChannelId(telegramNativeId) : ensureChannelId(who);
       if (!dmChannelId) return { success: false, error: "cannot resolve" };
 
-      // Guard 7: 如果图中有该 channel 节点，确认是私聊
+      // Guard 7: если узел channel присутствует в графе — убедиться, что это личный чат
       if (ctx.G.has(dmChannelId)) {
         const channelAttrs = ctx.G.getChannel(dmChannelId);
         if (channelAttrs.chat_type && channelAttrs.chat_type !== "private") {
@@ -366,7 +366,7 @@ export const messagingActions: TelegramActionDef[] = [
         }
       }
 
-      // Typing 延迟（impl 内自处理，不走 executor 的打字延迟）
+      // Задержка typing (обрабатывается внутри impl, минуя задержку набора executor)
       const rawId = extractNumericId(dmChannelId);
       if (rawId == null) return { success: false, error: "cannot resolve" };
       try {
@@ -374,19 +374,19 @@ export const messagingActions: TelegramActionDef[] = [
         const delayMs = Math.min(Math.max(text.length * 80, 800), 8000);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       } catch {
-        // typing 失败不阻断发送
+        // ошибка typing не блокирует отправку
       }
 
       const msgId = await sendText(ctx.client, rawId, text);
 
-      // 取消 typing
+      // Отменить typing
       try {
         await setTyping(ctx.client, rawId, true);
       } catch {
         // ignore
       }
 
-      // 图更新 + 事件分派（与 send_message 对齐）
+      // Обновление графа + диспетчеризация событий (в соответствии с send_message)
       if (msgId != null) {
         cacheOutgoingMsg(dmChannelId, msgId);
       }
@@ -399,7 +399,7 @@ export const messagingActions: TelegramActionDef[] = [
       ctx.dispatcher.dispatch("DECLARE_ACTION", { target: dmChannelId });
 
       ctx.log.info("send_dm executed", { who: args.who, textLen: text.length });
-      // DM 不消耗群聊 obligation
+      // DM не расходует obligation группового чата
       return { success: true, msgId: msgId ?? undefined, obligationsConsumed: 0 };
     },
   }),

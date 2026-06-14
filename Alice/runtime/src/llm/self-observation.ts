@@ -1,10 +1,10 @@
 /**
- * ADR-23 Wave 3: 自观察层 — 行为模式检测 + 持久化。
+ * ADR-23 Wave 3: слой самонаблюдения — обнаружение поведенческих паттернов + персистентность.
  *
- * ADR-81: renderSelfObservation 已删除（内容由 observer.mod + strategy.mod 覆盖）。
- * 保留 persistBehavioralInsights 供 evolve.ts 周期调用（每 60 ticks）。
+ * ADR-81: renderSelfObservation удалён (содержимое покрывается observer.mod + strategy.mod).
+ * Сохранён persistBehavioralInsights для периодического вызова из evolve.ts (каждые 60 тиков).
  *
- * @see docs/adr/81-reflection-separation.md §自观察层迁移
+ * @see docs/adr/81-reflection-separation.md §миграция-слоя-самонаблюдения
  * @see paper-five-dim/ §6.3 "Self-Observation Write-Back"
  */
 import { desc, sql } from "drizzle-orm";
@@ -14,7 +14,7 @@ import { getDb } from "../db/connection.js";
 import { actionLog, messageLog } from "../db/schema.js";
 import { chatIdToContactId } from "../graph/constants.js";
 
-// -- 类型 --------------------------------------------------------------------
+// -- Типы --------------------------------------------------------------------
 
 interface OutboundAction {
   tick: number;
@@ -37,9 +37,9 @@ interface RelationshipTrend {
   tierDirection: "stable" | "improving" | "declining";
 }
 
-// -- 数据采集函数 ---------------------------------------------------------------
+// -- Функции сбора данных -------------------------------------------------------
 
-/** 近期出站行为。 */
+/** Недавние исходящие действия. */
 export function gatherOutboundActions(tick: number, window = 50): OutboundAction[] {
   const db = getDb();
   return db
@@ -58,7 +58,7 @@ export function gatherOutboundActions(tick: number, window = 50): OutboundAction
     .reverse();
 }
 
-/** 每联系人 outbound/inbound 比。 */
+/** Соотношение outbound/inbound по каждому контакту. */
 export function gatherInteractionPatterns(tick: number, window = 100): InteractionPattern[] {
   const db = getDb();
   const messages = db
@@ -86,7 +86,7 @@ export function gatherInteractionPatterns(tick: number, window = 100): Interacti
   }));
 }
 
-// -- M5: 行为模式检测 ---------------------------------------------------------
+// -- M5: обнаружение поведенческих паттернов ---------------------------------
 
 interface BehaviorPattern {
   actionRepetitionRate: number;
@@ -95,9 +95,9 @@ interface BehaviorPattern {
 }
 
 /**
- * M5: 行为模式检测 — 论文 D3-R 要求的 pattern detection query。
+ * M5: обнаружение поведенческих паттернов — запрос pattern detection, требуемый статьёй D3-R.
  *
- * 检测近期行为中的重复模式。
+ * Обнаруживает повторяющиеся паттерны в недавнем поведении.
  */
 export function gatherBehaviorPatterns(tick: number, window = 50): BehaviorPattern {
   const actions = gatherOutboundActions(tick, window);
@@ -133,8 +133,8 @@ export function gatherBehaviorPatterns(tick: number, window = 50): BehaviorPatte
 }
 
 /**
- * M5: 关系趋势检测 — tier 变化轨迹。
- * ADR-198: trust 统一由 rv_trust 管理，趋势改为基于 tier_direction 图属性。
+ * M5: обнаружение трендов отношений — траектория изменений tier.
+ * ADR-198: trust централизованно управляется через rv_trust, тренд переведён на граф-атрибут tier_direction.
  */
 export function gatherRelationshipTrends(
   dispatcher: Dispatcher,
@@ -148,7 +148,7 @@ export function gatherRelationshipTrends(
     const profile = typedQuery(dispatcher, "contact_profile", { contactId });
     if (!profile) continue;
 
-    // tier_direction 由 onTickEnd 的 tier 演化设置（upgrade/downgrade/undefined）
+    // tier_direction устанавливается эволюцией tier в onTickEnd (upgrade/downgrade/undefined)
     const rawDirection = (profile as Record<string, unknown>).tierDirection;
     let tierDirection: "stable" | "improving" | "declining" = "stable";
     if (rawDirection === "upgrade") tierDirection = "improving";
@@ -163,14 +163,14 @@ export function gatherRelationshipTrends(
   return trends;
 }
 
-// -- C4 Write-Back: 自观察持久化 -----------------------------------------------
+// -- C4 Write-Back: персистентность самонаблюдения ----------------------------
 
 /**
- * C4 Write-Back Loop: 将显著行为模式持久化为 self facts。
+ * C4 Write-Back Loop: сохраняет значимые поведенческие паттерны как self facts.
  *
- * ADR-81: 从 reflect.ts 迁移到 evolve.ts 周期调用（每 60 ticks）。
- * 只在检测到显著偏离（重复率 > 60%，关系趋势变化）时写入，
- * 避免噪声事实淹没有意义的自知。
+ * ADR-81: перенесено из reflect.ts в периодический вызов evolve.ts (каждые 60 тиков).
+ * Запись происходит только при обнаружении значимого отклонения (повторяемость > 60%, изменение трендов отношений),
+ * чтобы шумовые факты не заглушали осмысленное самопознание.
  *
  * @see paper-five-dim/ §6.3 "Self-Observation Write-Back"
  */
@@ -181,7 +181,7 @@ export function persistBehavioralInsights(
 ): number {
   let insightCount = 0;
 
-  // 1. 行为重复模式 → self fact
+  // 1. паттерн повторяющихся действий → self fact
   const behavior = gatherBehaviorPatterns(tick);
   if (behavior.dominantAction && behavior.actionRepetitionRate > 0.6) {
     try {
@@ -193,11 +193,11 @@ export function persistBehavioralInsights(
       });
       insightCount++;
     } catch {
-      // 非致命——写入失败不影响主循环
+      // не критично — сбой записи не влияет на главный цикл
     }
   }
 
-  // 2. 关系趋势变化 → self fact
+  // 2. изменение тренда отношений → self fact
   const trends = gatherRelationshipTrends(dispatcher, chatIds);
   for (const t of trends) {
     if (t.tierDirection === "stable") continue;
@@ -211,7 +211,7 @@ export function persistBehavioralInsights(
       });
       insightCount++;
     } catch {
-      // 非致命
+      // не критично
     }
   }
 

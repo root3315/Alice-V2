@@ -1,14 +1,14 @@
 /**
- * Vercel AI SDK — 多 LLM endpoint fallback 链。
+ * Vercel AI SDK — цепочка fallback для нескольких LLM endpoint.
  *
- * D5（ADR-123 §D5）：将单一 provider 单例扩展为有序 endpoint 数组。
- * 每个 endpoint 拥有独立的熔断器（via resilience.ts per-endpoint breaker）。
- * `selectProviderForFirstPass()` 按 firstPass 路由返回首轮/通用结构化任务的 endpoint，
- * `selectProviderForTick()` 按 toolTick 路由返回后续 shell/tool 执行模型。
- * 路由内全部 open 时退回第一个（等待半开放试探）。
+ * D5 (ADR-123 §D5): расширение единственного синглтона provider до упорядоченного массива endpoint.
+ * Каждый endpoint имеет собственный автоматический выключатель (через per-endpoint breaker в resilience.ts).
+ * `selectProviderForFirstPass()` возвращает endpoint для первого прохода/общих структурированных задач по маршруту firstPass,
+ * `selectProviderForTick()` возвращает модель для последующего выполнения shell/tool по маршруту toolTick.
+ * При полностью открытых выключателях в маршруте — откат к первому (ожидание полуоткрытой пробы).
  *
- * 使用 @ai-sdk/openai-compatible（而非 @ai-sdk/openai），
- * 因为 Alice 连接的是 OpenAI 兼容代理（如 ohmygpt），不是 OpenAI 原生 API。
+ * Используется @ai-sdk/openai-compatible (а не @ai-sdk/openai),
+ * поскольку Alice подключается к OpenAI-совместимому прокси (например, ohmygpt), а не к нативному API OpenAI.
  *
  * @see docs/adr/123-crystallization-substrate-generalization.md §D5
  */
@@ -16,7 +16,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { Config, ProviderConfig } from "../config.js";
 import { getBreakerState } from "./resilience.js";
 
-// -- 类型 -------------------------------------------------------------------
+// -- Типы -------------------------------------------------------------------
 
 interface ProviderEntry {
   config: ProviderConfig;
@@ -29,7 +29,7 @@ export interface AvailableProvider {
   name: string;
 }
 
-// -- 状态 -------------------------------------------------------------------
+// -- Состояние --------------------------------------------------------------
 
 let _providers: ProviderEntry[] = [];
 let _routing: Config["llmRouting"] = {
@@ -44,9 +44,9 @@ let _routing: Config["llmRouting"] = {
 const _providerByName = new Map<string, ProviderEntry>();
 const _routeBags = new Map<string, string[]>();
 
-// -- 公共 API ---------------------------------------------------------------
+// -- Публичный API ----------------------------------------------------------
 
-/** 从 Config.providers 初始化 endpoint 链。启动时调用一次。 */
+/** Инициализировать цепочку endpoint из Config.providers. Вызывается один раз при запуске. */
 export function initProviders(config: Config): void {
   _providers = config.providers.map((pc) => ({
     config: pc,
@@ -54,9 +54,9 @@ export function initProviders(config: Config): void {
       name: pc.name,
       baseURL: pc.baseUrl,
       apiKey: pc.apiKey,
-      // 启用 json_schema 模式，让 generateObject 发送完整 schema 给 API，
-      // 服务端强制 structured output。否则只发 { type: "json_object" }，
-      // LLM 返回自由格式 JSON → Zod 验证系统性失败。
+      // Включить режим json_schema, чтобы generateObject отправлял полную схему API,
+      // принуждая сервер к structured output. Иначе отправляется только { type: "json_object" },
+      // LLM возвращает свободный JSON → систематические сбои Zod-валидации.
       // @see https://github.com/vercel/ai/issues/5197
       supportsStructuredOutputs: true,
     }),
@@ -78,9 +78,9 @@ export function initProviders(config: Config): void {
 }
 
 /**
- * 返回当前可用的 firstPass endpoint（跳过熔断器 open 的）。
- * firstPass 用于首轮/通用结构化任务，不代表后续 shell/tool tick 执行模型。
- * 全部 open 时退回第一个，等待半开放试探。
+ * Вернуть текущий доступный firstPass endpoint (пропускать те, чей автовыключатель открыт).
+ * firstPass используется для первого прохода/общих структурированных задач, не для последующей модели выполнения shell/tool tick.
+ * При полностью открытых выключателях — откат к первому, ожидание полуоткрытой пробы.
  */
 export function selectProviderForFirstPass(ops = false): AvailableProvider {
   const useOps = ops && _routing.opsFirstPass.length > 0;
@@ -108,7 +108,7 @@ function selectAvailableFromRoute(route: readonly string[], routeName: string): 
       return { provider: entry.provider, model: entry.config.model, name: entry.config.name };
     }
   }
-  // 全部 open → 强制使用路由第一个（等待半开放试探）
+  // Все open → принудительно использовать первый в маршруте (ожидание полуоткрытой пробы)
   const first = entries[0];
   return { provider: first.provider, model: first.config.model, name: first.config.name };
 }
@@ -145,13 +145,13 @@ function shuffle<T>(items: T[]): T[] {
 }
 
 /**
- * tick 入口使用的模型选择。
+ * Выбор модели для входной точки tick.
  *
- * 轮换身份是稳定模型 ID（AvailableProvider.model），不是 endpoint name。
- * endpoint name 只用于路由、熔断和传输诊断。
+ * Идентификатор ротации — стабильный model ID (AvailableProvider.model), не имя endpoint.
+ * Имя endpoint используется только для маршрутизации, автовыключателей и диагностики транспорта.
  *
- * 选择边界是 tick subcycle：同一个 subcycle 内的修正/续轮应复用同一个模型，
- * 避免一次行动里人格和推理口径漂移。
+ * Граница выбора — subcycle тика: корректировки/повторные проходы внутри одного subcycle должны переиспользовать одну модель,
+ * чтобы избежать дрейфа личности и способа рассуждения в рамках одного действия.
  */
 export function selectProviderForTick(ops = false): AvailableProvider {
   const useOps = ops && _routing.opsToolTick.length > 0;
@@ -163,37 +163,37 @@ export function selectProviderForTick(ops = false): AvailableProvider {
 }
 
 /**
- * Eval / calibration 使用的 provider。
+ * Provider для eval / calibration.
  *
- * 独立于生产 firstPass/toolTick，避免测试模型选择反向污染线上路由。
+ * Независим от боевых firstPass/toolTick, чтобы тестовый выбор модели не загрязнял продакшн-маршруты.
  */
 export function getEvalProvider(): AvailableProvider {
   return selectAvailableFromRoute(_routing.eval, "eval");
 }
 
 /**
- * 应用内部辅助任务使用的 provider。
+ * Provider для внутренних вспомогательных задач приложения.
  *
- * 不参与 toolTick 执行池；按 llm.routing.auxiliary 的 fallback 顺序选择。
+ * Не участвует в пуле выполнения toolTick; выбирается по порядку fallback в llm.routing.auxiliary.
  */
 export function getAuxiliaryProvider(): AvailableProvider {
   return selectAvailableFromRoute(_routing.auxiliary, "auxiliary");
 }
 
 /**
- * 是否有任何 provider 的熔断器不在 open 状态。
+ * Есть ли хотя бы один provider с автовыключателем не в состоянии open.
  *
- * evolve 层在 directed_override 前调用此函数——
- * 全部 provider 熔断时强制行动只会空转浪费 tick。
+ * Слой evolve вызывает эту функцию перед directed_override —
+ * при полностью сработавших провайдерах принудительное действие лишь вхолостую расходует тик.
  *
- * @see docs/adr/156-emotional-reactivity-damping.md — 级联故障修复
+ * @see docs/adr/156-emotional-reactivity-damping.md — исправление каскадного сбоя
  */
 export function isAnyProviderHealthy(): boolean {
   if (_providers.length === 0) return false;
   return _providers.some((entry) => getBreakerState(entry.config.name) !== "open");
 }
 
-/** 重置 provider 列表（用于测试）。 */
+/** Сбросить список провайдеров (для тестов). */
 export function resetProviders(): void {
   _providers = [];
   _providerByName.clear();

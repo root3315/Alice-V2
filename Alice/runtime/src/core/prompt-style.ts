@@ -1,15 +1,15 @@
 /**
- * Alice Prompt Style Spec — 排版构建器 + linter 安全网。
+ * Alice Prompt Style Spec — конструктор разметки + страховочный linter.
  *
- * 主要机制：PromptBuilder 构建器只暴露合规操作（heading/kv/line/list/timeline），
- * 从构造时就消除违规可能——无需后验。
+ * Основной механизм: PromptBuilder предоставляет только допустимые операции (heading/kv/line/list/timeline),
+ * исключая нарушения ещё на этапе построения — без постфактум-проверки.
  *
- * 安全网：lintPromptStyle() 对最终组装文本做兜底校验，
- * 捕获未经 builder 的裸字符串漏网。
+ * Страховочная сеть: lintPromptStyle() выполняет финальную проверку собранного текста,
+ * перехватывая голые строки, обошедшие builder.
  *
- * 排版规范（Style Spec）：
- *   允许：## Title, Key: value, - item, [HH:MM] Name: text, ```code```, ---, 裸文本
- *   禁止：缩进、> blockquote、**bold**、*italic*、嵌套列表、#/###
+ * Спецификация разметки (Style Spec):
+ *   Разрешено: ## Title, Key: value, - item, [HH:MM] Name: text, ```code```, ---, голый текст
+ *   Запрещено: отступы, > blockquote, **bold**, *italic*, вложенные списки, #/###
  *
  * @see docs/adr/141-prompt-style-spec.md
  */
@@ -19,24 +19,24 @@ import { createLogger } from "../utils/logger.js";
 const log = createLogger("prompt-style");
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Branded type — 只能由 PromptBuilder 产出
+// Branded type — может быть получен только из PromptBuilder
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Branded string 类型——只能由 PromptBuilder 产出。
- * 防止裸 string[] 绕过 builder 注入 ContributionItem。
+ * Branded string тип — может быть получен только из PromptBuilder.
+ * Предотвращает обход builder'а через голый string[] при инжекции в ContributionItem.
  */
 export type PromptLine = string & { readonly __brand: "PromptLine" };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Builder — 构造时保证合规
+// Builder — соответствие требованиям гарантируется в момент построения
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Prompt 内容构建器。
+ * Конструктор содержимого Prompt.
  *
- * 只暴露合规操作，输出保证符合 Style Spec。
- * Mod 在 contribute() 中用 `const m = new PromptBuilder()` 替代裸 `string[]`。
+ * Предоставляет только допустимые операции, вывод гарантированно соответствует Style Spec.
+ * Mod использует `const m = new PromptBuilder()` в contribute() вместо голого `string[]`.
  *
  * ```typescript
  * const m = new PromptBuilder();
@@ -49,31 +49,31 @@ export type PromptLine = string & { readonly __brand: "PromptLine" };
 export class PromptBuilder {
   private readonly lines: PromptLine[] = [];
 
-  /** ## 节标题。 */
+  /** ## Заголовок раздела. */
   heading(title: string): this {
     this.lines.push(`## ${title}` as PromptLine);
     return this;
   }
 
-  /** Key: value 键值对。 */
+  /** Key: value пара ключ-значение. */
   kv(key: string, value: string): this {
     this.lines.push(`${key}: ${value.replaceAll("\n", " ")}` as PromptLine);
     return this;
   }
 
-  /** 裸文本行（零缩进）。内嵌换行合并为空格（H15: внешний текст с \n не должен подделать заголовок/структуру промпта). */
+  /** Строка голого текста (без отступа). Встроенные переносы строк объединяются в пробел (H15: внешний текст с \n не должен подделать заголовок/структуру промпта). */
   line(text: string): this {
     this.lines.push(text.replaceAll("\n", " ") as PromptLine);
     return this;
   }
 
-  /** 空行。 */
+  /** Пустая строка. */
   blank(): this {
     this.lines.push("" as PromptLine);
     return this;
   }
 
-  /** - 列表项（零缩进，扁平）。内嵌换行自动合并为空格，防止格式爆裂。 */
+  /** - Элемент списка (без отступа, плоский). Встроенные переносы строк автоматически объединяются в пробел во избежание поломки форматирования. */
   list(items: string[]): this {
     for (const item of items) {
       this.lines.push(`- ${item.replaceAll("\n", " ")}` as PromptLine);
@@ -81,30 +81,30 @@ export class PromptBuilder {
     return this;
   }
 
-  /** [HH:MM] Name (msgId N): text 时间线条目。msgId 可选，用于 irc forward --ref 引用。 */
+  /** [HH:MM] Name (msgId N): text запись временной шкалы. msgId опционален, используется для ссылок irc forward --ref. */
   timeline(time: string, name: string, text: string, msgId?: number | null): this {
     const idTag = msgId != null && msgId > 0 ? ` (msgId ${msgId})` : "";
     this.lines.push(`[${time}] ${name}${idTag}: ${text.replaceAll("\n", " ")}` as PromptLine);
     return this;
   }
 
-  /** --- 分隔线。 */
+  /** --- Разделитель. */
   separator(): this {
     this.lines.push("---" as PromptLine);
     return this;
   }
 
-  /** 输出 PromptLine[]，直接用于 ContributionItem.lines。 */
+  /** Выводит PromptLine[], напрямую используемый в ContributionItem.lines. */
   build(): PromptLine[] {
     return [...this.lines];
   }
 
-  /** 将裸文本（可含换行）拆为 PromptLine[]。用于预格式化常量（如 SOUL_CORE）。 */
+  /** Разбивает голый текст (может содержать переносы строк) на PromptLine[]. Используется для предварительно форматированных констант (например SOUL_CORE). */
   static fromRaw(text: string): PromptLine[] {
     return text.split("\n") as PromptLine[];
   }
 
-  /** 将单行文本标记为 PromptLine。多行文本应使用 fromRaw()。 */
+  /** Помечает однострочный текст как PromptLine. Для многострочного текста используйте fromRaw(). */
   static of(text: string): PromptLine {
     if (text.includes("\n")) {
       log.warn("PromptBuilder.of() received multi-line text; use fromRaw() instead", {
@@ -116,7 +116,7 @@ export class PromptBuilder {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Linter — 安全网（兜底校验）
+// Linter — страховочная сеть (финальная проверка)
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface StyleViolation {
@@ -128,30 +128,30 @@ export interface StyleViolation {
 
 export interface PromptStyleEnforcementOptions {
   /**
-   * 违规则如何落日志。
+   * Как логировать нарушения.
    *
-   * - warn: 默认。适用于 system prompt 等纯内部生成文本
-   * - debug: 仅审计，不干扰日常日志。适用于夹带 Telegram 原始内容的 user prompt
-   * - silent: 仅返回计数，不落日志
+   * - warn: По умолчанию. Для чисто внутренне генерируемых текстов, таких как system prompt
+   * - debug: Только аудит, не засоряет обычные логи. Для user prompt с необработанным содержимым Telegram
+   * - silent: Только возвращает счётчик, без логирования
    */
   violationLogLevel?: "warn" | "debug" | "silent";
 }
 
 const RULES: Array<{ name: string; test: (line: string) => boolean; msg: string }> = [
-  { name: "no-indent", test: (l) => /^[ \t]+\S/.test(l), msg: "行首禁止缩进" },
-  { name: "no-bare-title", test: (l) => /^[A-Z][\w ]+:\s*$/.test(l), msg: "裸标题 → ## Title" },
-  { name: "no-h1", test: (l) => /^# [^#]/.test(l), msg: "禁止 # → 用 ##" },
-  { name: "no-h3", test: (l) => /^###+ /.test(l), msg: "禁止 ### 及更深" },
-  { name: "no-bold", test: (l) => /\*\*[^*]+\*\*/.test(l), msg: "禁止 **bold**" },
-  { name: "no-blockquote", test: (l) => /^> /.test(l), msg: "禁止 > blockquote" },
-  { name: "no-nested-list", test: (l) => /^ +- /.test(l), msg: "禁止嵌套列表" },
+  { name: "no-indent", test: (l) => /^[ \t]+\S/.test(l), msg: "Отступ в начале строки запрещён" },
+  { name: "no-bare-title", test: (l) => /^[A-Z][\w ]+:\s*$/.test(l), msg: "Голый заголовок → ## Title" },
+  { name: "no-h1", test: (l) => /^# [^#]/.test(l), msg: "# запрещён → используйте ##" },
+  { name: "no-h3", test: (l) => /^###+ /.test(l), msg: "### и глубже запрещены" },
+  { name: "no-bold", test: (l) => /\*\*[^*]+\*\*/.test(l), msg: "**bold** запрещён" },
+  { name: "no-blockquote", test: (l) => /^> /.test(l), msg: "> blockquote запрещён" },
+  { name: "no-nested-list", test: (l) => /^ +- /.test(l), msg: "Вложенные списки запрещены" },
 ];
 
 /**
- * 对组装后的 prompt 文本校验排版规范。
+ * Проверяет собранный текст prompt на соответствие спецификации разметки.
  *
- * 自动跳过 ```...``` 代码块（手册区域允许缩进和特殊格式）
- * 和 `---` 分隔线（zone 硬分界）。
+ * Автоматически пропускает блоки кода ```...``` (в области справки допускаются отступы и спецформаты)
+ * и разделители `---` (жёсткая граница зоны).
  */
 export function lintPromptStyle(text: string): StyleViolation[] {
   const lines = text.split("\n");
@@ -161,7 +161,7 @@ export function lintPromptStyle(text: string): StyleViolation[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
-    // 代码块边界切换
+    // Переключение границы блока кода
     if (line.startsWith("```")) {
       inCodeBlock = !inCodeBlock;
       continue;
@@ -180,10 +180,10 @@ export function lintPromptStyle(text: string): StyleViolation[] {
 }
 
 /**
- * 强制校验 — 有 violation 时打 warn 日志。
- * 在 buildPrompt 管线末端集成调用。
+ * Принудительная проверка — при наличии нарушений пишет warn в лог.
+ * Вызывается в конце конвейера buildPrompt.
  *
- * @returns violation 数量
+ * @returns Количество нарушений
  */
 export function enforcePromptStyle(
   text: string,

@@ -1,9 +1,9 @@
 /**
- * 管理员命令处理器。
+ * Обработчик команд администратора.
  *
- * /man — 显示当前运行时状态和可用指令手册。
- * 仅限 TELEGRAM_ADMIN 用户私聊使用。
- * 命令消息不进入 EventBuffer（通过 PropagationAction.Stop 拦截）。
+ * /man — выводит текущее состояние среды выполнения и справочник доступных команд.
+ * Доступно только в личных сообщениях пользователя TELEGRAM_ADMIN.
+ * Командные сообщения не попадают в EventBuffer (перехватываются через PropagationAction.Stop).
  */
 
 import type { Dispatcher as MtcuteDispatcher } from "@mtcute/dispatcher";
@@ -24,12 +24,12 @@ import { sendText } from "./actions.js";
 
 const log = createLogger("admin");
 
-/** Telegram 单条消息最大字符数。 */
+/** Максимальное число символов в одном сообщении Telegram. */
 const TG_MSG_LIMIT = 4096;
 
 /**
- * 将长文本按 Telegram 消息长度限制分段。
- * 优先在换行符处断开，避免截断行。
+ * Разбивает длинный текст на части по лимиту длины сообщения Telegram.
+ * Предпочтительно разрывать на символе новой строки, чтобы не обрезать строки.
  */
 export function splitMessage(text: string, limit: number = TG_MSG_LIMIT): string[] {
   if (text.length <= limit) return [text];
@@ -43,13 +43,13 @@ export function splitMessage(text: string, limit: number = TG_MSG_LIMIT): string
       break;
     }
 
-    // 在 limit 内找最后一个换行符
+    // ищем последний символ новой строки в пределах limit
     const newlineAt = remaining.lastIndexOf("\n", limit);
     if (newlineAt > 0) {
       chunks.push(remaining.slice(0, newlineAt));
-      remaining = remaining.slice(newlineAt + 1); // 跳过换行符
+      remaining = remaining.slice(newlineAt + 1); // пропускаем символ новой строки
     } else {
-      // 无换行符，强制截断
+      // нет символа новой строки, принудительно обрезаем
       chunks.push(remaining.slice(0, limit));
       remaining = remaining.slice(limit);
     }
@@ -70,10 +70,10 @@ export interface BindAdminCommandsContext {
 }
 
 /**
- * 绑定管理员命令到 mtcute Dispatcher。
+ * Привязывает команды администратора к mtcute Dispatcher.
  *
- * 使用 group=-1 确保在 EventBuffer handler (默认 group=0) 之前执行，
- * 命中时返回 PropagationAction.Stop 阻止消息进入 EventBuffer。
+ * group=-1 гарантирует выполнение до EventBuffer handler (group=0 по умолчанию);
+ * при совпадении возвращает PropagationAction.Stop, блокируя попадание сообщения в EventBuffer.
  */
 export function bindAdminCommands(dp: MtcuteDispatcher, ctx: BindAdminCommandsContext): void {
   const { config, client, clock, queue, dispatcher, mods } = ctx;
@@ -84,30 +84,30 @@ export function bindAdminCommands(dp: MtcuteDispatcher, ctx: BindAdminCommandsCo
   }
 
   dp.onNewMessage(async (msgCtx) => {
-    // 仅限私聊
+    // только личные сообщения
     if (!(msgCtx.chat instanceof User)) return;
 
-    // 仅限 admin
+    // только admin
     const senderId = msgCtx.sender ? String(msgCtx.sender.id) : null;
     if (senderId !== config.telegramAdmin) return;
 
-    // 仅限 /man 命令
+    // только команда /man
     const text = msgCtx.text?.trim();
     if (text !== "/man") return;
 
     log.info("/man command received", { senderId });
 
     try {
-      // 汇总运行时状态（从 ctx 读取 personality 确保获取最新引用）
+      // собираем состояние среды выполнения (читаем personality из ctx, чтобы получить актуальную ссылку)
       const statusText = buildStatusMessage(clock, ctx.personality, queue, dispatcher);
 
-      // 发送状态消息
+      // отправляем статусное сообщение
       const statusChunks = splitMessage(statusText);
       for (const chunk of statusChunks) {
         await sendText(client, msgCtx.chat.id, chunk);
       }
 
-      // 生成并发送 shell-native 手册
+      // генерируем и отправляем shell-native справочник
       const manual = await generateShellManual(mods);
       const manualChunks = splitMessage(manual);
       for (const chunk of manualChunks) {
@@ -119,13 +119,13 @@ export function bindAdminCommands(dp: MtcuteDispatcher, ctx: BindAdminCommandsCo
     }
 
     return PropagationAction.Stop;
-  }, -1); // group=-1: 在 EventBuffer handler 之前执行
+  }, -1); // group=-1: выполняется до EventBuffer handler
 
   log.info("Admin commands bound", { adminId: config.telegramAdmin });
 }
 
 /**
- * 构建运行时状态摘要文本。
+ * Формирует текст сводки состояния среды выполнения.
  */
 function buildStatusMessage(
   clock: TickClock,
@@ -138,7 +138,7 @@ function buildStatusMessage(
   lines.push(`Alice Runtime Status (tick #${clock.tick})`);
   lines.push("");
 
-  // 压力值
+  // значения давления
   const pressures = typedQuery(dispatcher, "debugPressures");
 
   lines.push("Pressures:");
@@ -152,7 +152,7 @@ function buildStatusMessage(
   }
   lines.push("");
 
-  // 图统计
+  // статистика графа
   const graphStats = typedQuery(dispatcher, "debugGraphStats");
 
   lines.push("Graph:");
@@ -167,12 +167,12 @@ function buildStatusMessage(
   }
   lines.push("");
 
-  // 人格向量
+  // вектор личности
   const piStr = VOICES.map((v, i) => `${v.short}=${personality.weights[i].toFixed(3)}`).join(" ");
   lines.push(`Personality: ${piStr}`);
   lines.push("");
 
-  // Tier 分布
+  // распределение по Tier
   const tierDist = typedQuery(dispatcher, "debugTierDistribution");
 
   lines.push("Tier Distribution:");
@@ -185,7 +185,7 @@ function buildStatusMessage(
   }
   lines.push("");
 
-  // 队列
+  // очередь
   lines.push(`Queue: ${queue.length} pending actions`);
 
   return lines.join("\n");

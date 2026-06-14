@@ -1,13 +1,13 @@
 /**
- * Persona Facets — 声部竞争结果的人格放大器。
+ * Persona Facets — усилитель личности по результатам конкуренции голосов.
  *
- * 声部赢得选举之后，facet 在整个 prompt 中留下可感知的人格指纹：
- * - guidance（header）：替代旧 VOICE_GUIDANCE + MOOD_STATES
- * - whisper（footer）：替代旧 VOICE_WHISPER
- * - exampleTags：驱动 Gold Examples 动态选择
+ * После победы голоса facet оставляет ощутимый личностный отпечаток во всём prompt:
+ * - guidance（header）：заменяет старые VOICE_GUIDANCE + MOOD_STATES
+ * - whisper（footer）：заменяет старый VOICE_WHISPER
+ * - exampleTags：управляет динамическим выбором Gold Examples
  *
- * 16 个 facets = 4 声部 × 4 情境。
- * 同声部内按 match(ctx) 分数 softmax 选择。
+ * 16 facets = 4 голоса × 4 ситуации.
+ * Внутри одного голоса выбор по softmax на основе оценок match(ctx).
  *
  * @see docs/adr/174-persona-facets.md
  */
@@ -15,10 +15,10 @@
 import type { VoiceAction } from "./personality.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 类型
+// Типы
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** ADR-181: 归一化压力，每个 P̂_k = tanh(P_k/κ_k) ∈ [0, 1)。 */
+/** ADR-181: нормализованные давления, каждое P̂_k = tanh(P_k/κ_k) ∈ [0, 1). */
 export interface NormalizedPressures {
   p1: number;
   p2: number;
@@ -29,22 +29,22 @@ export interface NormalizedPressures {
   api: number;
 }
 
-/** Facet 选择所需的运行时上下文。 */
+/** Контекст времени выполнения, необходимый для выбора facet. */
 export interface FacetContext {
-  /** ADR-181: 归一化压力。 */
+  /** ADR-181: нормализованные давления. */
   normalized: NormalizedPressures;
   isGroup: boolean;
-  /** Dunbar tier（数值越小越亲密）。null = 未知。 */
+  /** Dunbar tier (чем меньше значение, тем ближе отношения). null = неизвестно. */
   tier: number | null;
 }
 
 /**
- * ADR-181: 将原始压力归一化为 [0, 1) 区间供 facet match() 使用。
+ * ADR-181: нормализует сырые давления в диапазон [0, 1) для использования в facet match().
  *
  * P̂_k = tanh(P_k / κ_k)
  *
- * @param pressures - 原始压力标量 { P1, P2, ..., P6, API }
- * @param kappa - 归一化尺度（自适应 κ 的当前值）
+ * @param pressures - сырые скаляры давления { P1, P2, ..., P6, API }
+ * @param kappa - масштаб нормализации (текущее значение адаптивного κ)
  */
 export function normalizePressuresForFacet(
   pressures: {
@@ -65,27 +65,27 @@ export function normalizePressuresForFacet(
     p4: Math.tanh(Math.max(0, pressures.P4) / (kappa[3] || 5)),
     p5: Math.tanh(Math.max(0, pressures.P5) / (kappa[4] || 3)),
     p6: Math.tanh(Math.max(0, pressures.P6) / (kappa[5] || 5)),
-    api: Math.tanh(Math.max(0, pressures.API) / 5), // API κ 固定 5
+    api: Math.tanh(Math.max(0, pressures.API) / 5), // API κ фиксировано 5
   };
 }
 
 export interface PersonaFacet {
-  /** 唯一 ID，如 "diligence:responsive"。 */
+  /** Уникальный ID, например "diligence:responsive". */
   readonly id: string;
-  /** 所属声部。 */
+  /** Голос, которому принадлежит facet. */
   readonly voice: VoiceAction;
-  /** 替代 VOICE_GUIDANCE 的丰富指导文本（~80-150 tokens）。 */
+  /** Расширенный направляющий текст (~80-150 токенов), заменяющий VOICE_GUIDANCE. */
   readonly guidance: string;
-  /** 替代 VOICE_WHISPER 的内心低语。 */
+  /** Внутренний шёпот, заменяющий VOICE_WHISPER. */
   readonly whisper: { readonly dm: string; readonly group: string };
-  /** 匹配 Gold Example 的标签集合。 */
+  /** Набор тегов для сопоставления с Gold Examples. */
   readonly exampleTags: readonly string[];
-  /** 选择条件——压力/上下文匹配函数。返回 0-1 的匹配分数。 */
+  /** Условие выбора — функция сопоставления давлений/контекста. Возвращает оценку 0-1. */
   readonly match: (ctx: FacetContext) => number;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 16 Facets — 4 声部 × 4 情境
+// 16 Facets — 4 голоса × 4 ситуации
 // ═══════════════════════════════════════════════════════════════════════════
 
 const FACETS: readonly PersonaFacet[] = [
@@ -101,7 +101,7 @@ const FACETS: readonly PersonaFacet[] = [
     },
     exampleTags: ["engaged", "responsible", "helpful"],
     match: (ctx) => {
-      // p1 高 = 注意力负债堆积（已归一化到 [0,1)）
+      // p1 высокий = накопленный долг внимания (уже нормализован в [0,1))
       return ctx.normalized.p1 * 0.8 + 0.2;
     },
   },
@@ -117,8 +117,8 @@ const FACETS: readonly PersonaFacet[] = [
     },
     exampleTags: ["engaged", "observant", "warm"],
     match: (ctx) => {
-      // p5 高 = 社交义务（正在对话中）
-      // p1 低 = 没有太多积压
+      // p5 высокий = социальное обязательство (идёт разговор)
+      // p1 низкий = нет большого накопленного долга
       return ctx.normalized.p5 * 0.6 + (1 - ctx.normalized.p1) * 0.4;
     },
   },
@@ -134,9 +134,9 @@ const FACETS: readonly PersonaFacet[] = [
     },
     exampleTags: ["minimal", "low-energy", "casual"],
     match: (ctx) => {
-      // p1 低 + p5 低 = 低负载巡逻状态
+      // p1 низкий + p5 низкий = состояние патрулирования с низкой нагрузкой
       const lowLoad = 1 - Math.max(ctx.normalized.p1, ctx.normalized.p5);
-      // api 低 = 还没消耗太多
+      // api низкий = ещё не израсходовано много
       return lowLoad * 0.5 + (1 - ctx.normalized.api) * 0.3 + 0.2;
     },
   },
@@ -151,8 +151,8 @@ const FACETS: readonly PersonaFacet[] = [
     },
     exampleTags: ["low-energy", "drained", "minimal"],
     match: (ctx) => {
-      // drained 是“多线程输入过载”，不是“单个热点很热”。
-      // p1=积压，p4=线程压力；两者同时高才应投影成低能量。
+      // drained — это “перегрузка от множества потоков”, а не “один горячий очаг”.
+      // p1=накопленный долг, p4=давление потоков; оба должны быть высокими, чтобы перейти в низкую энергию.
       const overload = Math.min(ctx.normalized.p1, ctx.normalized.p4);
       return Math.min(1, 0.05 + overload * overload * 1.1);
     },
@@ -171,7 +171,7 @@ const FACETS: readonly PersonaFacet[] = [
     },
     exampleTags: ["curious", "technical", "engaged"],
     match: (ctx) => {
-      // p6 高 = 好奇心压力; p4 表明有活跃线程
+      // p6 высокий = давление любопытства; p4 указывает на активные потоки
       return ctx.normalized.p6 * 0.6 + ctx.normalized.p4 * 0.3 + 0.1;
     },
   },
@@ -187,7 +187,7 @@ const FACETS: readonly PersonaFacet[] = [
     },
     exampleTags: ["curious", "observant", "warm"],
     match: (ctx) => {
-      // p6 中等 + p3 信号（关系相关）
+      // p6 умеренный + сигнал p3 (связанный с отношениями)
       const p6Moderate = ctx.normalized.p6 > 0.1 ? ctx.normalized.p6 : 0;
       return p6Moderate * 0.5 + ctx.normalized.p3 * 0.4 + 0.1;
     },
@@ -204,7 +204,7 @@ const FACETS: readonly PersonaFacet[] = [
     },
     exampleTags: ["curious", "observing", "cautious"],
     match: (ctx) => {
-      // p6 高 = 好奇心强; 低亲密度 tier = 新人/新群
+      // p6 высокий = сильное любопытство; низкий tier близости = новый контакт/группа
       const newContact = ctx.tier != null && ctx.tier > 100 ? 0.5 : 0;
       return ctx.normalized.p6 * 0.5 + newContact * 0.3 + 0.2;
     },
@@ -221,7 +221,7 @@ const FACETS: readonly PersonaFacet[] = [
     },
     exampleTags: ["minimal", "withdrawn", "casual"],
     match: (ctx) => {
-      // p4 高 = 线程分散; api 低 = 不活跃
+      // p4 высокий = рассеянность потоков; api низкий = низкая активность
       return ctx.normalized.p4 * 0.5 + (1 - ctx.normalized.api) * 0.4 + 0.1;
     },
   },
@@ -238,10 +238,10 @@ const FACETS: readonly PersonaFacet[] = [
       group: "there are people you haven't talked to lately",
     },
     exampleTags: ["missing", "warm", "shy"],
-    // ADR-190: sociability:missing 基线从 0.2 降为 0.1。
-    // P3=0 时（无关系冷却）不应有 0.2 的保底推力驱动"想念"行为。
+    // ADR-190: базовый уровень sociability:missing снижен с 0.2 до 0.1.
+    // При P3=0 (нет охлаждения отношений) не должно быть гарантированного импульса 0.2 для поведения "скучаю".
     match: (ctx) => {
-      // p3 高 = 关系冷却
+      // p3 высокий = охлаждение отношений
       return ctx.normalized.p3 * 0.9 + 0.1;
     },
   },
@@ -256,10 +256,10 @@ const FACETS: readonly PersonaFacet[] = [
     },
     exampleTags: ["warm", "engaged", "shy"],
     match: (ctx) => {
-      // tier 亲密
+      // tier близости
       const intimate =
         ctx.tier != null && ctx.tier <= 30 ? 0.8 : ctx.tier != null && ctx.tier <= 80 ? 0.4 : 0;
-      // p5 有对话
+      // p5 — идёт разговор
       return intimate * 0.5 + ctx.normalized.p5 * 0.3 + 0.2;
     },
   },
@@ -275,9 +275,9 @@ const FACETS: readonly PersonaFacet[] = [
     },
     exampleTags: ["withdrawn", "minimal", "restraint"],
     match: (ctx) => {
-      // p3 偏高但 p5 低 = 关系需要维护但没有主动对话
+      // p3 умеренно высокий, но p5 низкий = отношения требуют поддержки, но активного разговора нет
       const p3Moderate = ctx.normalized.p3 > 0.3 ? ctx.normalized.p3 : 0;
-      // api 偏高 = 已经消耗了一些
+      // api умеренно высокий = уже кое-что потрачено
       return p3Moderate * 0.3 + (1 - ctx.normalized.p5) * 0.3 + ctx.normalized.api * 0.3 + 0.1;
     },
   },
@@ -293,7 +293,7 @@ const FACETS: readonly PersonaFacet[] = [
     },
     exampleTags: ["excited", "warm", "social", "casual"],
     match: (ctx) => {
-      // 群聊加分; p5 有对话 + p3 不太高（是当前热闹）
+      // бонус за групповой чат; p5 — идёт разговор + p3 не слишком высокий (текущее оживление)
       const groupBoost = ctx.isGroup ? 0.3 : 0;
       return ctx.normalized.p5 * 0.4 + (1 - ctx.normalized.p3) * 0.2 + groupBoost + 0.1;
     },
@@ -311,14 +311,14 @@ const FACETS: readonly PersonaFacet[] = [
       group: "not sure what to make of this — watching first",
     },
     exampleTags: ["observing", "cautious", "restraint"],
-    // ADR-190: 私聊场景也给予基线分（0.2），避免 caution 在私聊中被完全压制。
-    // 原逻辑 groupFactor=0.5 导致私聊 caution:observing 最高只有 ~0.2，
-    // 被 sociability:missing 的 0.2 保底轻松压过。
+    // ADR-190: в личных чатах тоже даётся базовый балл (0.2), чтобы caution не подавлялся полностью в ЛС.
+    // Старая логика groupFactor=0.5 давала caution:observing в ЛС максимум ~0.2,
+    // что легко перекрывалось гарантированным базовым уровнем sociability:missing в 0.2.
     match: (ctx) => {
-      // 群聊 + 不太熟 = 强观察信号; 私聊也有基线
+      // группа + незнакомец = сильный сигнал наблюдения; в ЛС тоже есть базовый уровень
       const sceneFactor = ctx.isGroup ? 0.5 : 0.2;
       const unfamiliar = ctx.tier != null && ctx.tier > 80 ? 0.5 : 0;
-      // api 高 = 已发多条消息，观察冲动更强（"说太多了"）
+      // api высокий = уже отправлено много сообщений, желание наблюдать сильнее ("сказала слишком много")
       return sceneFactor + unfamiliar * 0.3 + ctx.normalized.api * 0.2 + 0.1;
     },
   },
@@ -334,7 +334,7 @@ const FACETS: readonly PersonaFacet[] = [
     },
     exampleTags: ["cautious", "restraint", "observing"],
     match: (ctx) => {
-      // 高 api + 高 p1 = 压力状态; p4 高 = 线程混乱
+      // api высокий + p1 высокий = состояние стресса; p4 высокий = хаос потоков
       const stressed = Math.max(ctx.normalized.api, ctx.normalized.p1);
       return stressed * 0.5 + ctx.normalized.p4 * 0.3 + 0.2;
     },
@@ -350,13 +350,13 @@ const FACETS: readonly PersonaFacet[] = [
       group: "it's peaceful — no need to break the silence",
     },
     exampleTags: ["quiet", "warm", "engaged"],
-    // ADR-190: 私聊低压力时提升匹配——凌晨安静场景应选中 calm 而非 missing/warm。
+    // ADR-190: улучшено совпадение при низком давлении в ЛС — тихий ночной сценарий должен выбирать calm, а не missing/warm.
     match: (ctx) => {
-      // api 低 = 低活跃度; 所有压力低
+      // api низкий = низкая активность; все давления низкие
       const allLow = 1 - Math.max(ctx.normalized.p1, ctx.normalized.p3, ctx.normalized.p5);
-      // 群聊 + 不熟时 calm 不适用（应该是 observing）
+      // группа + незнакомец — calm не подходит (должно быть observing)
       const unfamiliarGroupPenalty = ctx.isGroup && ctx.tier != null && ctx.tier > 80 ? 0.4 : 0;
-      // 私聊 + 低压力 = 安静舒适状态（基线提升 0.15）
+      // ЛС + низкое давление = тихое комфортное состояние (базовый уровень +0.15)
       const privateLowPressureBoost = !ctx.isGroup && ctx.normalized.api < 0.3 ? 0.15 : 0;
       return Math.max(
         0.1,
@@ -380,7 +380,7 @@ const FACETS: readonly PersonaFacet[] = [
     },
     exampleTags: ["restraint", "observing", "minimal"],
     match: (ctx) => {
-      // 群聊 + api 偏高; p5 存在但不极高
+      // группа + api умеренно высокий; p5 есть, но не экстремальный
       const groupFactor = ctx.isGroup ? 0.4 : 0;
       const p5Moderate = ctx.normalized.p5 > 0.1 && ctx.normalized.p5 < 0.7 ? 0.3 : 0;
       return groupFactor + ctx.normalized.api * 0.3 + p5Moderate + 0.1;
@@ -389,7 +389,7 @@ const FACETS: readonly PersonaFacet[] = [
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 注册表 — O(1) 查找
+// Реестр — поиск за O(1)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** facetId → PersonaFacet */
@@ -403,12 +403,12 @@ for (const f of FACETS) {
   FACETS_BY_VOICE.set(f.voice, arr);
 }
 
-/** 通过 ID 获取 facet。 */
+/** Получить facet по ID. */
 export function getFacet(id: string): PersonaFacet | undefined {
   return FACET_BY_ID.get(id);
 }
 
-/** 获取 facet 的 whisper（带 fallback）。 */
+/** Получить whisper для facet (с fallback). */
 export function getFacetWhisper(
   facetId: string | null | undefined,
   voice: string,
@@ -418,34 +418,34 @@ export function getFacetWhisper(
     const facet = FACET_BY_ID.get(facetId);
     if (facet) return isGroup ? facet.whisper.group : facet.whisper.dm;
   }
-  // fallback：voice 名称本身
+  // fallback: само имя голоса
   return voice;
 }
 
-/** 获取 facet 的 exampleTags。 */
+/** Получить exampleTags для facet. */
 export function getFacetTags(facetId: string | null | undefined): readonly string[] | undefined {
   if (!facetId) return undefined;
   return FACET_BY_ID.get(facetId)?.exampleTags;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// selectFacet — softmax 选择
+// selectFacet — выбор через softmax
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** softmax 温度。τ < 1 = 更确定（偏向最高分），τ > 1 = 更随机。 */
+/** Температура softmax. τ < 1 = детерминированнее (склон к высшему баллу), τ > 1 = случайнее. */
 const TAU = 0.5;
 
 /**
- * 从获胜声部的 4 个 facet 中 softmax 选择一个。
+ * Выбирает один из 4 facets победившего голоса через softmax.
  *
- * 1. 过滤该声部的所有 facets
- * 2. 对每个 facet 调用 match(ctx)
- * 3. softmax(scores / τ) 采样
+ * 1. Фильтрует все facets данного голоса
+ * 2. Вызывает match(ctx) для каждого facet
+ * 3. Сэмплирует softmax(scores / τ)
  */
 export function selectFacet(voice: VoiceAction, ctx: FacetContext): PersonaFacet {
   const candidates = FACETS_BY_VOICE.get(voice);
   if (!candidates || candidates.length === 0) {
-    // 不应该发生——每个声部都有 4 个 facet
+    // не должно происходить — у каждого голоса есть 4 faceta
     return FACETS[0];
   }
 
@@ -456,7 +456,7 @@ export function selectFacet(voice: VoiceAction, ctx: FacetContext): PersonaFacet
   const exps = scores.map((s) => Math.exp((s - maxScore) / TAU));
   const sumExp = exps.reduce((a, b) => a + b, 0);
 
-  // 加权采样
+  // взвешенная выборка
   const r = Math.random() * sumExp;
   let cumulative = 0;
   for (let i = 0; i < exps.length; i++) {
@@ -464,12 +464,12 @@ export function selectFacet(voice: VoiceAction, ctx: FacetContext): PersonaFacet
     if (r <= cumulative) return candidates[i];
   }
 
-  // 浮点尾巴 fallback
+  // fallback из-за хвоста числа с плавающей точкой
   return candidates[candidates.length - 1];
 }
 
 /**
- * 确定性版本（测试用）：返回最高匹配分的 facet。
+ * Детерминированная версия (для тестов): возвращает facet с наивысшей оценкой совпадения.
  */
 export function selectFacetDeterministic(voice: VoiceAction, ctx: FacetContext): PersonaFacet {
   const candidates = FACETS_BY_VOICE.get(voice);

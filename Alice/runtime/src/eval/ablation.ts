@@ -1,16 +1,16 @@
 /**
- * ADR-137: Pressure Field Ablation — 三条件消融实验。
+ * ADR-137: Pressure Field Ablation — трёхусловный ablation-эксперимент.
  *
- * 核心问题：压力场驱动的行为比简单规则 + 同样的 LLM 更好吗？
+ * Ключевой вопрос: поведение, управляемое полем давления, лучше, чем простые правила с тем же LLM?
  *
- * 三条件：
- * - Full: 当前系统（situation lines + voice instinct + gold examples）
- * - No-Pressure: 保留 gold examples + persona，移除 situation lines + voice instinct
- * - Baseline: 3 条 airi 风格规则 + function manual + timeline
+ * Три условия:
+ * - Full: текущая система (situation lines + voice instinct + gold examples)
+ * - No-Pressure: оставляем gold examples + persona, убираем situation lines + voice instinct
+ * - Baseline: 3 правила в стиле airi + function manual + timeline
  *
- * 实现策略：
- * - Full: 委托给真实 buildTickPrompt（由 TickDeps.buildPrompt = undefined 触发）
- * - No-Pressure / Baseline: 通过 TickDeps.buildPrompt 注入替代 prompt 构建器
+ * Стратегия реализации:
+ * - Full: делегируется реальному buildTickPrompt (срабатывает при TickDeps.buildPrompt = undefined)
+ * - No-Pressure / Baseline: альтернативный построитель prompt внедряется через TickDeps.buildPrompt
  *
  * @see docs/adr/137-pressure-field-ablation.md
  */
@@ -36,7 +36,7 @@ import type {
 } from "./types.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Baseline Prompt 模板（ADR-137 §D3）
+// Шаблон Baseline Prompt (ADR-137 §D3)
 // ═══════════════════════════════════════════════════════════════════════════
 
 const BASELINE_SYSTEM_TEMPLATE = `You are Alice, a companion AI living in Telegram.
@@ -48,15 +48,15 @@ const BASELINE_SYSTEM_TEMPLATE = `You are Alice, a companion AI living in Telegr
 - Otherwise, stay silent.`;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// buildAblationPrompt — 按条件构建 prompt
+// buildAblationPrompt — построение prompt по условию
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 构建消融条件 prompt。
+ * Построение prompt для ablation-условия.
  *
- * - full: 委托 buildTickPrompt（在调用方处理，此函数不涉及）
- * - no_pressure: persona + gold examples + manual + timeline，无 situation lines
- * - baseline: 3 条规则 + manual + timeline
+ * - full: делегируется buildTickPrompt (обрабатывается на стороне вызывающего, эта функция не участвует)
+ * - no_pressure: persona + gold examples + manual + timeline, без situation lines
+ * - baseline: 3 правила + manual + timeline
  */
 export async function buildAblationPrompt(
   condition: Exclude<AblationCondition, "full">,
@@ -72,10 +72,10 @@ export async function buildAblationPrompt(
       : "private";
   const isGroup = ChatTarget.isGroupChat(chatType);
 
-  // ADR-237: 简化场景判定（ablation 不需要 bot/channel 区分）
+  // ADR-237: упрощённое определение сценария (ablation не нуждается в разграничении bot/channel)
   const chatTargetType = isGroup ? "group" : ("private_person" as const);
 
-  // 工具手册（公平对比：所有条件都保留完整手册）
+  // Руководство по инструментам (честное сравнение: все условия сохраняют полное руководство)
   const manual = await generateShellManual(dispatcher.mods);
   const capGuide = buildCapabilityGuide(allTools, board.features);
 
@@ -84,21 +84,21 @@ export async function buildAblationPrompt(
   let renderedUser = "";
 
   if (condition === "baseline") {
-    // Baseline: 3 条规则 + manual + capGuide
+    // Baseline: 3 правила + manual + capGuide
     const parts = [BASELINE_SYSTEM_TEMPLATE, manual];
     if (capGuide) parts.push(capGuide);
     system = parts.join("\n\n");
   } else {
-    // No-Pressure: persona（mod contributions）+ gold examples + manual，无 situation lines
-    // 收集 mod contributions 但过滤掉 situation lines 的贡献
+    // No-Pressure: persona (mod contributions) + gold examples + manual, без situation lines
+    // Собираем mod contributions, но фильтруем вклад situation lines
     const contributions = dispatcher.collectContributions();
-    // 过滤：移除 SITUATION zone 的贡献（situation-lines 产出的内容）
+    // Фильтр: убираем вклады зоны SITUATION (контент, создаваемый situation-lines)
     const filteredContributions = contributions.filter((c) => classifyZone(c) !== "situation");
     const rendered = renderContributionsByZone(filteredContributions, 8000);
     const renderedSystem = rendered.system;
     renderedUser = rendered.user;
 
-    // Shell examples（保留，场景感知）
+    // Shell examples (сохраняются, учитывают контекст сценария)
     const scriptGuide = buildShellGuide({ chatTargetType });
 
     const parts = [renderedSystem, manual, scriptGuide];
@@ -107,10 +107,10 @@ export async function buildAblationPrompt(
   }
 
   // ── user prompt ──
-  // no_pressure 条件保留 mod 贡献的 user-part（如 memory zone 内容）
+  // Условие no_pressure сохраняет user-часть вклада mod (например, содержимое зоны memory)
   const userParts: string[] = renderedUser ? [renderedUser] : [];
 
-  // 上下文变量
+  // Переменные контекста
   if (board.contextVars && Object.keys(board.contextVars).length > 0) {
     const m = new PromptBuilder();
     m.blank();
@@ -120,7 +120,7 @@ export async function buildAblationPrompt(
     userParts.push(...m.build());
   }
 
-  // 轮次感知（expect_reply/stay 仍可触发多步）
+  // Учёт раунда (expect_reply/stay по-прежнему могут запускать несколько шагов)
   if (round > 0) {
     const maxSteps = board.budget.maxSteps;
     const remaining = maxSteps - round - 1;
@@ -134,7 +134,7 @@ export async function buildAblationPrompt(
     userParts.push(...rm.build());
   }
 
-  // 时间线（公平对比：所有条件都保留完整消息历史）
+  // Хронология (честное сравнение: все условия сохраняют полную историю сообщений)
   {
     const nowMs = ctx.nowMs ?? Date.now();
     const TEN_MINUTES_MS = 10 * 60 * 1000;
@@ -168,7 +168,7 @@ export async function buildAblationPrompt(
   if (condition === "baseline") {
     userParts.push("Decide what to do.");
   } else {
-    // No-Pressure: 通用 instinct（不含声部信息）
+    // No-Pressure: универсальный instinct (без информации о голосе)
     userParts.push("Your instinct: you received a message.");
     userParts.push("Decide what to do.");
   }
@@ -181,7 +181,7 @@ export async function buildAblationPrompt(
 // Ablation Suite Runner
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 消融对比报告（按场景配对）。 */
+/** Ablation-отчёт сравнения (попарно по сценариям). */
 export interface AblationPair {
   readonly scenarioId: string;
   readonly full: ScenarioAggregateResult;
@@ -189,7 +189,7 @@ export interface AblationPair {
   readonly baseline: ScenarioAggregateResult;
 }
 
-/** 消融实验完整报告。 */
+/** Полный отчёт ablation-эксперимента. */
 export interface AblationReport {
   readonly model: string;
   readonly timestamp: string;
@@ -197,24 +197,24 @@ export interface AblationReport {
   readonly summary: AblationSummary;
 }
 
-/** 消融实验汇总统计。 */
+/** Сводная статистика ablation-эксперимента. */
 export interface AblationSummary {
-  /** Full vs Baseline 结构性通过率差异 */
+  /** Разница в структурном pass rate между Full и Baseline */
   readonly deltaStructural: number;
-  /** Full vs Baseline 平均质量差异（如有 L2） */
+  /** Разница в среднем качестве между Full и Baseline (если есть L2) */
   readonly deltaQuality: number | null;
-  /** (Full - NoPressure) / (Full - Baseline)：压力场独立贡献占比 */
+  /** (Full - NoPressure) / (Full - Baseline): доля независимого вклада поля давления */
   readonly pressureLift: number | null;
-  /** 场景数 */
+  /** Количество сценариев */
   readonly scenarioCount: number;
-  /** Cohen's d 效应量（Full vs Baseline 结构性分数） */
+  /** Размер эффекта Cohen's d (структурные оценки Full vs Baseline) */
   readonly effectSize: number | null;
 }
 
 /**
- * 运行消融实验套件。
+ * Запуск набора ablation-экспериментов.
  *
- * 对每个场景创建 3 个条件变体，运行 eval，输出配对比较报告。
+ * Для каждого сценария создаёт 3 варианта условий, запускает eval и выводит попарный отчёт сравнения.
  */
 export async function runAblationSuite(
   scenarios: readonly EvalScenario[],
@@ -226,7 +226,7 @@ export async function runAblationSuite(
 ): Promise<AblationReport> {
   const { runEvalSuite } = await import("./runner.js");
 
-  // provider 初始化由 runEvalSuite 内部完成，此处不重复
+  // Инициализация provider выполняется внутри runEvalSuite, здесь не дублируем
 
   if (options?.dumpDir) {
     mkdirSync(options.dumpDir, { recursive: true });
@@ -239,12 +239,12 @@ export async function runAblationSuite(
     const conditionResults: Partial<Record<AblationCondition, ScenarioAggregateResult>> = {};
 
     for (const condition of conditions) {
-      // 为每个条件创建带标记的场景
+      // Создаём помеченный сценарий для каждого условия
       const condScenario: EvalScenario = {
         ...scenario,
         id: `${scenario.id}__${condition}`,
         tags: [...scenario.tags, "ablation"] as EvalScenario["tags"],
-        // 通过 contextOverrides 传递消融条件（runner 会读取）
+        // Передаём ablation-условие через contextOverrides (runner прочитает его)
         contextOverrides: {
           ...scenario.contextOverrides,
           __ablation_condition: condition,
@@ -254,7 +254,7 @@ export async function runAblationSuite(
       const report = await runEvalSuite(config, {
         scenarios: [condScenario],
         dumpDir: options?.dumpDir ? `${options.dumpDir}/${scenario.id}/${condition}` : undefined,
-        // 消融实验必须：不跳过缓存（每个条件独立评估）+ 不 fail-fast（需三条件完整数据）
+        // Ablation-эксперимент требует: не пропускать кеш (каждое условие оценивается независимо) + не fail-fast (нужны данные по всем трём условиям)
         skipPassed: false,
         runAll: true,
       });
@@ -285,7 +285,7 @@ export async function runAblationSuite(
     summary,
   };
 
-  // 输出 JSON 报告
+  // Вывод JSON-отчёта
   if (options?.dumpDir) {
     writeFileSync(
       `${options.dumpDir}/ablation-report.json`,
@@ -298,7 +298,7 @@ export async function runAblationSuite(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 统计汇总
+// Статистическая сводка
 // ═══════════════════════════════════════════════════════════════════════════
 
 function computeAblationSummary(pairs: readonly AblationPair[]): AblationSummary {
@@ -322,7 +322,7 @@ function computeAblationSummary(pairs: readonly AblationPair[]): AblationSummary
 
   const deltaStructural = meanFull - meanBaseline;
 
-  // Pressure Lift: (Full - NoPressure) / (Full - Baseline)
+  // Pressure Lift: (Full - NoPressure) / (Full - Baseline) — вклад поля давления
   const denominator = meanFull - meanBaseline;
   const pressureLift =
     Math.abs(denominator) > 0.001 ? (meanFull - meanNoPressure) / denominator : null;
@@ -332,7 +332,7 @@ function computeAblationSummary(pairs: readonly AblationPair[]): AblationSummary
 
   return {
     deltaStructural,
-    deltaQuality: null, // L2 待实现
+    deltaQuality: null, // L2 ещё не реализован
     pressureLift,
     scenarioCount: pairs.length,
     effectSize,
@@ -364,10 +364,10 @@ function cohensD(group1: number[], group2: number[]): number | null {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 终端报告
+// Вывод отчёта в терминал
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 打印消融实验报告到终端。 */
+/** Вывод отчёта ablation-эксперимента в терминал. */
 export function printAblationReport(report: AblationReport): void {
   console.log("\n═══════════════════════════════════════════════════");
   console.log("  ADR-137: Pressure Field Ablation Report");
@@ -376,7 +376,7 @@ export function printAblationReport(report: AblationReport): void {
   console.log(`Scenarios: ${report.summary.scenarioCount}`);
   console.log();
 
-  // 逐场景对比表
+  // Таблица сравнения по каждому сценарию
   console.log("┌────────────────────────────────────────┬──────┬───────────┬──────────┐");
   console.log("│ Scenario                               │ Full │ NoPressure│ Baseline │");
   console.log("├────────────────────────────────────────┼──────┼───────────┼──────────┤");
@@ -390,7 +390,7 @@ export function printAblationReport(report: AblationReport): void {
   console.log("└────────────────────────────────────────┴──────┴───────────┴──────────┘");
   console.log();
 
-  // 汇总
+  // Сводка
   const s = report.summary;
   console.log("Summary:");
   console.log(`  Δ_structural (Full - Baseline): ${(s.deltaStructural * 100).toFixed(1)}%`);
@@ -402,13 +402,13 @@ export function printAblationReport(report: AblationReport): void {
   }
   console.log();
 
-  // 解读
+  // Интерпретация
   if (s.deltaStructural < 0.05) {
-    console.log("⚠️  Δ_structural < 5% — 压力场对决策帮助不显著，需严肃审视 ROI");
+    console.log("⚠️  Δ_structural < 5% — поле давления не даёт значимого эффекта на принятие решений, ROI требует серьёзного пересмотра");
   } else if (s.deltaStructural < 0.15) {
-    console.log("📊 Δ_structural 5-15% — 中等效果，压力场有贡献但可能不是唯一因素");
+    console.log("📊 Δ_structural 5-15% — умеренный эффект, поле давления вносит вклад, но может быть не единственным фактором");
   } else {
-    console.log("✅ Δ_structural > 15% — 压力场对决策有显著帮助");
+    console.log("✅ Δ_structural > 15% — поле давления значительно улучшает принятие решений");
   }
 }
 

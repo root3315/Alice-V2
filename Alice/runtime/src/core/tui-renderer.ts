@@ -1,60 +1,60 @@
 /**
- * TUI 渲染层 — Section 行级分配 + overflow 裁剪。
+ * TUI-слой рендеринга — построчное распределение по секциям + обрезка при переполнении.
  *
- * 解决 prompt-builder 中 timeline 无限膨胀侵占其他 section 的问题。
- * Token 预算仍由 storyteller 管理（正交关系）。
+ * Решает проблему бесконечного роста timeline в prompt-builder, который вытесняет другие секции.
+ * Token-бюджет по-прежнему управляется storyteller (ортогональные отношения).
  *
  * @see docs/adr/209-tui-native-prompt.md
  */
 
-// ── 类型 ──────────────────────────────────────────────────────────────────
+// ── Типы ──────────────────────────────────────────────────────────────────
 
-/** Section 行数规格：固定行数 或 填充剩余空间 */
+/** Спецификация строк секции: фиксированное количество строк или заполнение оставшегося пространства */
 export type SizeSpec = { type: "fixed"; value: number } | { type: "fill" };
 
-/** 溢出策略：clip-top 保留最新（聊天历史），clip-bottom 保留开头（状态面板） */
+/** Политика переполнения: clip-top сохраняет последние строки (история чата), clip-bottom сохраняет начало (панель статуса) */
 export type OverflowPolicy = "clip-top" | "clip-bottom";
 
-/** Section 声明 — prompt-builder 用它描述 user prompt 的空间布局 */
+/** Объявление секции — prompt-builder использует его для описания пространственного расположения user prompt */
 export interface SectionSpec {
   id: string;
   size: SizeSpec;
   overflow: OverflowPolicy;
 }
 
-/** Section 内容 + 声明的配对 */
+/** Пара: содержимое секции + её объявление */
 export interface SectionInput {
   spec: SectionSpec;
   lines: string[];
 }
 
-/** 渲染结果中每个 section 的统计 */
+/** Статистика каждой секции в результате рендеринга */
 export interface SectionStats {
   id: string;
-  /** 原始内容行数 */
+  /** Количество строк исходного содержимого */
   originalLines: number;
-  /** 分配到的行数 */
+  /** Количество выделенных строк */
   allocatedRows: number;
-  /** 实际输出行数 */
+  /** Фактическое количество выходных строк */
   outputLines: number;
-  /** 被裁剪的行数 */
+  /** Количество обрезанных строк */
   clippedLines: number;
 }
 
-// ── 核心算法 ──────────────────────────────────────────────────────────────
+// ── Основной алгоритм ─────────────────────────────────────────────────────
 
 /**
- * 将多个 section 按声明的行级预算渲染为最终文本。
+ * Рендерит несколько секций в итоговый текст по объявленному построчному бюджету.
  *
- * 算法：
- * 1. 固定 section 分配 maxRows
- * 2. fill section 均分剩余行数
- * 3. 每个 section 按 overflow 策略裁剪
- * 4. 拼接输出（section 之间空行分隔）
+ * Алгоритм:
+ * 1. Фиксированным секциям выделяем maxRows
+ * 2. Fill-секции равномерно делят оставшиеся строки
+ * 3. Каждая секция обрезается по политике overflow
+ * 4. Результаты склеиваются (секции разделяются пустой строкой)
  *
- * @param sections - 按显示顺序排列的 section 列表
- * @param totalRows - 总行数预算（0 表示不限制）
- * @returns 渲染后的文本 + 统计信息
+ * @param sections - список секций в порядке отображения
+ * @param totalRows - общий бюджет строк (0 — без ограничений)
+ * @returns отрендеренный текст + статистика
  */
 export function renderSections(
   sections: SectionInput[],
@@ -62,10 +62,10 @@ export function renderSections(
 ): { text: string; stats: SectionStats[] } {
   if (sections.length === 0) return { text: "", stats: [] };
 
-  // ── Step 1: 行数分配 ──
+  // ── Шаг 1: Распределение строк ──
   const allocations = allocateRows(sections, totalRows);
 
-  // ── Step 2: 按 overflow 策略裁剪 + 拼接 ──
+  // ── Шаг 2: Обрезка по политике overflow + склейка ──
   const outputParts: string[] = [];
   const stats: SectionStats[] = [];
 
@@ -90,21 +90,21 @@ export function renderSections(
   return { text: outputParts.join("\n\n"), stats };
 }
 
-// ── 内部函数 ──────────────────────────────────────────────────────────────
+// ── Внутренние функции ─────────────────────────────────────────────────────
 
 /**
- * 按 SizeSpec 分配行数。
+ * Распределяет строки согласно SizeSpec.
  *
- * 1. fixed section 取 min(value, content.length)
- * 2. 剩余行数均分给 fill section
- * 3. totalRows=0 时不限制（fill section 取内容实际行数）
+ * 1. fixed-секция получает min(value, content.length)
+ * 2. Оставшиеся строки равномерно делятся между fill-секциями
+ * 3. При totalRows=0 ограничений нет (fill-секция берёт фактическое количество строк содержимого)
  */
 export function allocateRows(sections: SectionInput[], totalRows: number): number[] {
   const result = new Array<number>(sections.length);
   let usedFixed = 0;
   let fillCount = 0;
 
-  // 第一遍：分配固定 section
+  // Первый проход: распределяем фиксированные секции
   for (let i = 0; i < sections.length; i++) {
     const { spec, lines } = sections[i];
     if (spec.size.type === "fixed") {
@@ -115,7 +115,7 @@ export function allocateRows(sections: SectionInput[], totalRows: number): numbe
     }
   }
 
-  // 第二遍：分配 fill section
+  // Второй проход: распределяем fill-секции
   if (fillCount > 0) {
     if (totalRows <= 0) {
       for (let i = 0; i < sections.length; i++) {
@@ -142,10 +142,10 @@ export function allocateRows(sections: SectionInput[], totalRows: number): numbe
 }
 
 /**
- * 按 overflow 策略裁剪行。
+ * Обрезает строки согласно политике overflow.
  *
- * - clip-top: 保留最后 maxRows 行（最新内容）
- * - clip-bottom: 保留前 maxRows 行（开头内容）
+ * - clip-top: сохраняет последние maxRows строк (самый новый контент)
+ * - clip-bottom: сохраняет первые maxRows строк (контент с начала)
  */
 export function clipLines(lines: string[], maxRows: number, overflow: OverflowPolicy): string[] {
   if (lines.length <= maxRows) return lines;

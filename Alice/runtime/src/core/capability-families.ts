@@ -1,11 +1,11 @@
 import type { ToolCategory } from "../engine/tick/types.js";
 
 export interface CapabilityFamily {
-  /** shell manual / legacy category summary 中显示的「何时使用」描述 */
+  /** Описание «когда использовать» для shell manual / legacy category summary */
   whenToUse: string;
-  /** Activated Tools 段头部的简短描述 */
+  /** Краткое описание для заголовка раздела Activated Tools */
   label: string;
-  /** 展开态教程示例 */
+  /** Примеры из обучающего туториала (раскрытое состояние) */
   tutorials?: readonly string[];
 }
 

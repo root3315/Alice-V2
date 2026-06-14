@@ -1,8 +1,8 @@
 /**
- * ADR-118 统一时间线 — 4 源归并 + IRC 渲染。
+ * ADR-118 Единая временная линия — слияние 4 источников + IRC-рендеринг.
  *
- * 将消息流、action_log 思考、engagement session 动作、ReAct 观察
- * 按时间戳归并排序为单一时间线，供 prompt 组装使用。
+ * Поток сообщений, мысли из action_log, действия engagement session и наблюдения ReAct
+ * сортируются по временной метке и объединяются в единую временную линию для сборки prompt.
  *
  * @see docs/adr/118-unified-timeline.md
  */
@@ -11,25 +11,25 @@ import type { MessageRecord } from "./messages.js";
 import { computeChannelPresence, renderPresenceHint } from "./presence.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 类型
+// Типы
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 时间线条目的标签类型。 */
+/** Тип метки записи временной линии. */
 export type TimelineKind =
-  | "message" // Telegram 消息（incoming 或 outgoing）
-  | "thought" // 内心活动（reasoning from action_log）
-  | "action" // 已执行动作的摘要（当前 engagement session）
-  | "gap" // 时间间隔标记
-  | "context" // 上下文分隔符（reply chain / mention）
-  | "observation"; // ReAct 查询结果
+  | "message" // Telegram-сообщение (входящее или исходящее)
+  | "thought" // Внутренний монолог (reasoning из action_log)
+  | "action" // Сводка выполненного действия (текущий engagement session)
+  | "gap" // Маркер временного разрыва
+  | "context" // Разделитель контекста (reply chain / mention)
+  | "observation"; // Результат запроса ReAct
 
 export interface TimelineEntry {
-  /** 墙钟时间戳（毫秒）。 */
+  /** Настенное время в миллисекундах. */
   readonly ts: number;
   readonly kind: TimelineKind;
-  /** 渲染后的 IRC 风格文本行。 */
+  /** Отрендеренная текстовая строка в стиле IRC. */
   readonly rendered: string;
-  /** 可选元数据。 */
+  /** Опциональные метаданные. */
   readonly meta?: Record<string, unknown>;
 }
 
@@ -38,14 +38,14 @@ export interface TimelineSource {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 优先级感知的消息内容渲染
+// Рендеринг содержимого сообщения с учётом приоритета
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 优先级感知的消息内容渲染。
+ * Рендеринг содержимого сообщения с учётом приоритета.
  *
- * 有 segments 时：media/image 段不截断，link 段优先丢弃，body/meta 截断填充。
- * 无 segments 时：回退到 200 字符硬截断（DB 历史/eval fixture）。
+ * При наличии segments: media/image-сегменты не обрезаются, link-сегменты отбрасываются первыми, body/meta обрезаются по бюджету.
+ * Без segments: откат к жёсткому усечению до 200 символов (история DB / eval fixture).
  */
 export function renderMessageContent(record: MessageRecord, defaultBudget = 200): string {
   const segments = record.segments;
@@ -61,12 +61,12 @@ export function renderMessageContent(record: MessageRecord, defaultBudget = 200)
   const full = segments.map((s) => s.text).join(" ");
   if (full.length <= budget) return full;
 
-  // Phase 1: 丢弃 link segments
+  // Phase 1: Отбросить link-сегменты
   const withoutLinks = segments.filter((s) => s.kind !== "link");
   const reduced = withoutLinks.map((s) => s.text).join(" ");
   if (reduced.length <= budget) return reduced;
 
-  // Phase 2: 保留 essential (media/image)，截断其余
+  // Phase 2: Сохранить essential-сегменты (media/image), обрезать остальные
   const essential = withoutLinks.filter((s) => s.kind === "media" || s.kind === "image");
   const others = withoutLinks.filter((s) => s.kind !== "media" && s.kind !== "image");
   const essentialText = essential.map((s) => s.text).join(" ");
@@ -80,14 +80,14 @@ export function renderMessageContent(record: MessageRecord, defaultBudget = 200)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// MessageTimelineSource — 消息流 adapter
+// MessageTimelineSource — адаптер потока сообщений
 // ═══════════════════════════════════════════════════════════════════════════
-// 渲染逻辑移植自 prompt.ts L382-448
+// Логика рендеринга перенесена из prompt.ts L382-448
 
 /**
- * 转发记录注册表：msgId → 已转发到的目标名称列表。
- * 由 forward_message action 写入 graph dynamic property "forwarded_msgs"，
- * 由 buildTimelineSlot 传入。BT 反馈闭环——action 结果回流到观察层。
+ * Реестр записей о пересылке: msgId → список имён целей, куда переслано.
+ * Записывается действием forward_message в dynamic property графа "forwarded_msgs",
+ * передаётся через buildTimelineSlot. Цикл обратной связи BT — результаты действий возвращаются в слой наблюдения.
  */
 export type ForwardRegistry = Record<string, string[]>;
 
@@ -107,14 +107,14 @@ export class MessageTimelineSource implements TimelineSource {
       repliesByYou.set(msg.replyToId, replies);
     }
 
-    // ADR-97 + ADR-114 D2: 上下文分隔符状态
+    // ADR-97 + ADR-114 D2: Состояние разделителя контекста
     let contextType: "none" | "diffused" | "mention" = "none";
 
     for (let i = 0; i < this.messages.length; i++) {
       const msg = this.messages[i];
       const msgTs = msg.date.getTime();
 
-      // 上下文类型切换（reply chain / unanswered mention / 常规消息）
+      // Переключение типа контекста (reply chain / unanswered mention / обычное сообщение)
       const newCtx = msg.isMentionContext ? "mention" : msg.isDiffused ? "diffused" : "none";
       if (newCtx !== contextType) {
         if (contextType !== "none") {
@@ -132,7 +132,7 @@ export class MessageTimelineSource implements TimelineSource {
         contextType = newCtx;
       }
 
-      // IRC 风格消息行（时间戳由 renderTimeline 统一添加）
+      // Строка сообщения в стиле IRC (временная метка добавляется централизованно в renderTimeline)
       const senderTag = msg.senderId != null ? ` @${msg.senderId}` : "";
       const botTag = msg.isBot ? " [bot]" : "";
       const name = msg.isOutgoing ? "Alice (you)" : `${msg.senderName}${botTag}${senderTag}`;
@@ -155,7 +155,7 @@ export class MessageTimelineSource implements TimelineSource {
         }
       }
 
-      // BT 反馈闭环：已转发的消息标注目标（Alice 知道自己转过什么）
+      // Цикл обратной связи BT: помечать пересланные сообщения целью (Alice знает, что она пересылала)
       let sharedMark = "";
       if (this.forwardRegistry && msg.id != null) {
         const targets = this.forwardRegistry[String(msg.id)];
@@ -171,13 +171,13 @@ export class MessageTimelineSource implements TimelineSource {
       });
     }
 
-    // 尾部关闭
+    // Закрыть хвостовой контекст
     if (contextType !== "none" && this.messages.length > 0) {
       const lastTs = this.messages[this.messages.length - 1].date.getTime();
       result.push({ ts: lastTs + 1, kind: "context", rendered: "--- end context ---" });
     }
 
-    // ADR-118: 存在感低语（ADR-159: 扩展到私聊——私聊连发是实证重灾区）
+    // ADR-118: Подсказка о присутствии (ADR-159: расширено на личные чаты — там серийные ответы особенно проблематичны)
     if (this.messages.length > 0) {
       const presence = computeChannelPresence(this.messages);
       const hint = renderPresenceHint(presence);
@@ -192,16 +192,16 @@ export class MessageTimelineSource implements TimelineSource {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ThoughtTimelineSource — action_log 思考 adapter
+// ThoughtTimelineSource — адаптер мыслей action_log
 // ═══════════════════════════════════════════════════════════════════════════
-// @see docs/adr/117-*.md — D1: 跨 tick 连续性
+// @see docs/adr/117-*.md — D1: Непрерывность между тиками
 
 export class ThoughtTimelineSource implements TimelineSource {
   entries(target: string, sinceMs: number, _nowMs: number): TimelineEntry[] {
     const TEN_MINUTES_MS = 10 * 60 * 1000;
     const effectiveSince = Math.max(sinceMs, Date.now() - TEN_MINUTES_MS);
     const recentThoughts = getRecentActionsByChat(target, effectiveSince, 3);
-    // getRecentActionsByChat 返回 DESC 排序，需要 reverse
+    // getRecentActionsByChat возвращает порядок DESC, нужно reverse
     return recentThoughts.reverse().flatMap((thought) => {
       const reasoning = thought.reasoning
         ? [...thought.reasoning].slice(0, 120).join("")
@@ -220,34 +220,34 @@ export class ThoughtTimelineSource implements TimelineSource {
   }
 }
 
-// ADR-214 Wave A: PendingActionTimelineSource 和 renderPendingMessage 已删除。
-// shell-native 架构下 Blackboard.actions（RecordedAction[]）始终为空，
-// pending actions 不再通过此管线——Telegram 动作通过容器内 Engine API HTTP 直接执行。
+// ADR-214 Wave A: PendingActionTimelineSource и renderPendingMessage удалены.
+// В shell-native архитектуре Blackboard.actions (RecordedAction[]) всегда пуст,
+// pending actions больше не проходят через этот конвейер — Telegram-действия выполняются напрямую через Engine API HTTP внутри контейнера.
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ObservationTimelineSource — ReAct 查询结果 adapter
+// ObservationTimelineSource — адаптер результатов запросов ReAct
 // ═══════════════════════════════════════════════════════════════════════════
 // @see docs/adr/70-react-native-sandbox-architecture.md
 
 /**
- * ADR-160 Fix D: 跨聊天观察隔离。
+ * ADR-160 Fix D: Изоляция наблюдений из других чатов.
  *
- * 检测包含跨聊天内容的 observation（通过 `[recent_chat]` 标记
- * 和 `messages from` 模式识别），用 context 类型包裹。
- * context 类型不带 `[HH:MM]` 前缀，视觉上与当前对话明显区分。
+ * Обнаруживает наблюдения с содержимым из других чатов (по маркеру `[recent_chat]`
+ * и паттерну `messages from`) и оборачивает их в тип context.
+ * Тип context не имеет префикса `[HH:MM]`, визуально чётко отделяя их от текущего разговора.
  *
- * 对比：PeripheralTimelineSource 已正确使用 `kind: "context"` 包裹，
- * LLM 能正确理解其为外部参考。此处应用相同模式。
+ * Для сравнения: PeripheralTimelineSource уже корректно использует `kind: "context"`,
+ * и LLM правильно воспринимает это как внешний источник. Здесь применяется тот же паттерн.
  *
  * @see docs/adr/158-outbound-feedback-gap.md §Fix D
  */
 
-/** 检测 observation 文本是否包含跨聊天内容。 */
+/** Определяет, содержит ли текст наблюдения контент из другого чата. */
 function isCrossChatObservation(obs: string, target: string): boolean {
-  // recent_chat 的典型输出含 "[recent_chat]" 或 "messages from"
+  // Типичный вывод recent_chat содержит "[recent_chat]" или "messages from"
   if (!obs.includes("recent_chat") && !obs.includes("recentChat") && !obs.includes("messages from"))
     return false;
-  // 如果 observation 明确提到 target channel，不算跨聊天
+  // Если наблюдение явно упоминает target channel, это не межчатовый контент
   if (obs.includes(target)) return false;
   return true;
 }
@@ -261,7 +261,7 @@ export class ObservationTimelineSource implements TimelineSource {
 
     for (const obs of this.observations) {
       if (isCrossChatObservation(obs, target)) {
-        // 跨聊天观察：用 context 包裹，明确标记禁止回复
+        // Межчатовое наблюдение: обернуть в context, явно пометить как недопустимое для ответа
         result.push({
           ts: nowMs - 1,
           kind: "context",
@@ -282,7 +282,7 @@ export class ObservationTimelineSource implements TimelineSource {
       }
     }
 
-    // ADR-196 F16: 块级标记替代逐行 [observation] 前缀
+    // ADR-196 F16: Блочный маркер вместо построчного префикса [observation]
     if (normalObs.length > 0) {
       result.push({
         ts: nowMs - 1,
@@ -308,28 +308,28 @@ export class ObservationTimelineSource implements TimelineSource {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PeripheralTimelineSource — 社交余光 adapter
+// PeripheralTimelineSource — адаптер социальной периферии
 // ═══════════════════════════════════════════════════════════════════════════
 // @see docs/adr/121-social-peripheral-vision/README.md
 
-/** 社交余光配置。 */
+/** Конфигурация социальной периферии. */
 export interface PeripheralVisionConfig {
   contactId: string;
   contactName: string;
   currentChat: string;
-  /** 共享非私聊频道 Map<channelId, displayName>。 */
+  /** Общие не-личные каналы Map<channelId, displayName>. */
   sharedChats: Map<string, string>;
-  /** 每频道最大条数。 */
+  /** Максимум записей на канал. */
   perChannelCap: number;
-  /** 总最大条数。 */
+  /** Общий максимум записей. */
   totalCap: number;
-  /** 时间窗口（秒）。 */
+  /** Временное окно (секунды). */
   windowS: number;
-  /** 最短文本长度。 */
+  /** Минимальная длина текста. */
   minTextLength: number;
 }
 
-/** DB 返回行 — 类型收窄后的子类型在过滤阶段使用。 */
+/** Строка из DB — суженный подтип используется на этапе фильтрации. */
 interface PeripheralRow {
   chatId: string;
   text: string | null;
@@ -338,14 +338,14 @@ interface PeripheralRow {
   senderName: string | null;
 }
 
-/** text 已通过类型守卫收窄为非空。 */
+/** text сужен через type guard до непустого значения. */
 type ValidPeripheralRow = PeripheralRow & { text: string };
 
 export class PeripheralTimelineSource implements TimelineSource {
   constructor(private readonly config: PeripheralVisionConfig) {}
 
   entries(_target: string, _sinceMs: number, nowMs: number): TimelineEntry[] {
-    // 隐私屏障：无共享频道 或 窗口为 0 → 不激活
+    // Барьер приватности: нет общих каналов или окно = 0 → не активировать
     if (this.config.sharedChats.size === 0 || this.config.windowS <= 0) return [];
 
     const sinceMs = nowMs - this.config.windowS * 1000;
@@ -356,14 +356,14 @@ export class PeripheralTimelineSource implements TimelineSource {
         this.config.contactId,
         sinceMs,
         this.config.currentChat,
-        this.config.totalCap * 3, // over-fetch 以补偿应用层过滤
+        this.config.totalCap * 3, // over-fetch для компенсации фильтрации на прикладном уровне
       );
     } catch {
-      // DB 不可用时静默降级（匹配 Formative Memories 模式）
+      // DB недоступна — молча деградировать (по аналогии с паттерном Formative Memories)
       return [];
     }
 
-    // 应用层过滤 + 类型收窄 text → string
+    // Фильтрация на прикладном уровне + сужение типа text → string
     const filtered = rows.filter(
       (r): r is ValidPeripheralRow =>
         typeof r.text === "string" &&
@@ -372,17 +372,17 @@ export class PeripheralTimelineSource implements TimelineSource {
     );
     if (filtered.length === 0) return [];
 
-    // 双层 cap：每频道 K + 全局 M
+    // Двухуровневый cap: K на канал + M глобально
     const capped = this.applyCaps(filtered);
     if (capped.length === 0) return [];
 
-    // getPeripheralMessages 返回 DESC，反转为 ASC
+    // getPeripheralMessages возвращает DESC, перевернуть в ASC
     capped.reverse();
 
     return this.renderBlock(capped);
   }
 
-  /** 每频道 perChannelCap + 全局 totalCap 截断。 */
+  /** Усечение по perChannelCap на канал + totalCap глобально. */
   private applyCaps(rows: ValidPeripheralRow[]): ValidPeripheralRow[] {
     const counts = new Map<string, number>();
     const result: ValidPeripheralRow[] = [];
@@ -396,7 +396,7 @@ export class PeripheralTimelineSource implements TimelineSource {
     return result;
   }
 
-  /** 渲染为分隔的时间线块：开头标记 → 消息 → 结尾标记。 */
+  /** Рендеринг в разделённый блок временной линии: заголовочный маркер → сообщения → завершающий маркер. */
   private renderBlock(rows: ValidPeripheralRow[]): TimelineEntry[] {
     const { contactName, sharedChats } = this.config;
     const firstTs = rows[0].createdAt.getTime();
@@ -429,10 +429,10 @@ export class PeripheralTimelineSource implements TimelineSource {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 归并 + Gap 注入 + 渲染
+// Слияние + инъекция Gap + рендеринг
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 30 分钟静默 → gap 标记。与 ADR-85 D3 conversation break 阈值一致。 */
+/** 30 минут молчания → маркер gap. Соответствует порогу conversation break из ADR-85 D3. */
 const GAP_THRESHOLD_MS = 30 * 60_000;
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -451,10 +451,10 @@ const MONTH_NAMES = [
   "December",
 ];
 
-/** 墙钟时间格式化 — h:MM AM/PM，LLM 直觉友好。 */
+/** Форматирование настенного времени — h:MM AM/PM, удобно для восприятия LLM. */
 function formatTime(ts: number, timezoneOffset?: number): string {
-  // ADR-34: 使用配置的时区，而非系统时区
-  // 将 UTC 时间戳偏移到用户本地时间，然后用 UTC 时区显示
+  // ADR-34: Использовать настроенный часовой пояс, а не системный
+  // Сдвигаем UTC-метку к локальному времени пользователя, затем отображаем в часовом поясе UTC
   const adjustedTs = timezoneOffset != null ? ts + timezoneOffset * 60 * 60 * 1000 : ts;
   return new Date(adjustedTs).toLocaleTimeString("en-US", {
     hour: "numeric",
@@ -464,7 +464,7 @@ function formatTime(ts: number, timezoneOffset?: number): string {
   });
 }
 
-/** 人类可读的相对时间标签。 */
+/** Человекочитаемая метка относительного времени. */
 function relativeLabel(deltaMs: number): string {
   const min = Math.round(deltaMs / 60_000);
   if (min < 1) return "just now";
@@ -475,20 +475,20 @@ function relativeLabel(deltaMs: number): string {
   return `~${days}d ago`;
 }
 
-/** 时长格式化 — gap 标记和 tail gap 共用。 */
+/** Форматирование длительности — используется совместно в маркерах gap и tail gap. */
 function formatDuration(ms: number): string {
   const min = ms / 60_000;
   return min >= 120 ? `${Math.round(min / 60)}h` : `${Math.round(min)}m`;
 }
 
 /**
- * IRC 风格 day-change 分隔线 + 尾部 gap 注入。
+ * Разделитель смены дня в стиле IRC + инъекция хвостового gap.
  *
- * 真实 IRC 客户端在日期切换时插入：
+ * Настоящие IRC-клиенты вставляют при смене даты:
  *   --- Day changed to Wednesday March 12 ---
  *
- * 同时在最后一条条目与 nowMs 之间检测尾部静默，
- * 让 LLM 知道"最后一条消息到当前时间"隔了多久。
+ * Также обнаруживает хвостовое молчание между последней записью и nowMs,
+ * чтобы LLM знал, сколько прошло с последнего сообщения до текущего момента.
  */
 function injectDayChangesAndTailGap(entries: TimelineEntry[], nowMs: number): TimelineEntry[] {
   if (entries.length === 0) return entries;
@@ -506,11 +506,11 @@ function injectDayChangesAndTailGap(entries: TimelineEntry[], nowMs: number): Ti
   let prevDay = "";
 
   for (const e of entries) {
-    // gap/context 条目不触发 day change（它们是结构标记，不是时间事件）
+    // Записи gap/context не триггерят смену дня (они структурные маркеры, а не временные события)
     if (e.kind !== "gap" && e.kind !== "context") {
       const dk = dayKey(e.ts);
       if (dk !== prevDay) {
-        // 首条也插 day marker（让 LLM 知道消息是哪天的）
+        // Вставить day marker даже перед первой записью (чтобы LLM знал, к какому дню относятся сообщения)
         result.push({
           ts: e.ts - 1,
           kind: "context",
@@ -522,7 +522,7 @@ function injectDayChangesAndTailGap(entries: TimelineEntry[], nowMs: number): Ti
     result.push(e);
   }
 
-  // 尾部 gap：最后一条内容条目 → nowMs
+  // Хвостовой gap: последняя содержательная запись → nowMs
   const lastContent = result.findLast((e) => e.kind !== "gap" && e.kind !== "context");
   if (lastContent) {
     const tailGapMs = nowMs - lastContent.ts;
@@ -539,11 +539,11 @@ function injectDayChangesAndTailGap(entries: TimelineEntry[], nowMs: number): Ti
 }
 
 /**
- * 时间线级 gap 注入 — 在任意相邻条目之间检测 ≥30min 静默。
+ * Инъекция gap на уровне временной линии — обнаружение молчания ≥30 мин между любыми соседними записями.
  *
- * 与旧实现（MessageTimelineSource 内部仅检测消息间 gap）不同，
- * 这里在归并排序后的全局时间线上操作——消息、思考、动作、观察
- * 之间的时间断裂都会被捕获。
+ * В отличие от старой реализации (MessageTimelineSource обнаруживал только gap между сообщениями),
+ * здесь операция производится на глобальной временной линии после сортировки слиянием —
+ * временные разрывы между сообщениями, мыслями, действиями и наблюдениями фиксируются все.
  *
  * @see docs/adr/118-unified-timeline.md §2.2
  */
@@ -567,12 +567,12 @@ function injectGaps(entries: TimelineEntry[]): TimelineEntry[] {
 }
 
 /**
- * 多源归并排序 + gap 注入。
+ * Сортировка слиянием из нескольких источников + инъекция gap.
  *
- * 实现论文 T(v, [t₀, t]) = sort_τ(M ∪ R ∪ S ∪ O)：
- * 1. Collect — 从各 source 收集条目
- * 2. Sort — 按 ts 升序归并
- * 3. Enrich — 注入跨源 gap 标记
+ * Реализация T(v, [t₀, t]) = sort_τ(M ∪ R ∪ S ∪ O) из документации:
+ * 1. Collect — собрать записи из каждого source
+ * 2. Sort — отсортировать по ts по возрастанию
+ * 3. Enrich — внедрить межисточниковые маркеры gap
  *
  * @see docs/adr/118-unified-timeline.md §3.3
  */
@@ -592,16 +592,16 @@ export function buildTimeline(
 }
 
 /**
- * 渲染时间线为零缩进文本行。
+ * Рендеринг временной линии в строки текста с нулевым отступом.
  *
- * 统一时间戳脊柱：内容条目（message/thought/action/observation）添加 [HH:MM] 前缀，
- * 结构条目（gap/context）不添加——它们是视觉分隔符，不是体验内容。
+ * Единый временной хребет: содержательные записи (message/thought/action/observation) получают префикс [HH:MM],
+ * структурные записи (gap/context) — нет: они визуальные разделители, а не контент.
  *
- * 当 nowMs 提供且消息距今 ≥30min 时，追加相对时间标签（IRC inspired）：
+ * Если передан nowMs и сообщение старше ≥30 мин, добавляется метка относительного времени (вдохновлено IRC):
  *   [11:21, ~8h ago] Bob: hello
- * 让 LLM 在逐条阅读时直接感知时间距离，无需跨段推理。
+ * Это позволяет LLM чувствовать временную дистанцию при чтении каждой строки, без кросс-сегментного вывода.
  *
- * @see docs/adr/141-prompt-style-spec.md — 零缩进规范
+ * @see docs/adr/141-prompt-style-spec.md — спецификация нулевого отступа
  */
 export function renderTimeline(
   entries: TimelineEntry[],
@@ -613,7 +613,7 @@ export function renderTimeline(
       return e.rendered;
     }
     const time = formatTime(e.ts, timezoneOffset);
-    // ≥30min 距今才追加相对标签——近期消息不加噪声
+    // Добавлять относительную метку только при ≥30 мин — к свежим сообщениям шум не нужен
     if (nowMs != null && nowMs - e.ts >= GAP_THRESHOLD_MS) {
       return `[${time}, ${relativeLabel(nowMs - e.ts)}] ${e.rendered}`;
     }

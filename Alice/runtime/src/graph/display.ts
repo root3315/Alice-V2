@@ -1,8 +1,8 @@
 /**
- * ADR-172: 安全显示名解析 + 反向解析。
+ * ADR-172: безопасное разрешение отображаемого имени + обратное разрешение.
  *
- * safeDisplayName: nodeId → 人类可读名（永不返回 raw graph ID）。
- * resolveDisplayName: 人类可读名 → nodeId（safeDisplayName 的逆操作）。
+ * safeDisplayName: nodeId → читаемое имя (никогда не возвращает raw graph ID).
+ * resolveDisplayName: читаемое имя → nodeId (обратная операция к safeDisplayName).
  *
  * @see docs/adr/172-information-visibility-layer.md
  * @see docs/adr/204-consciousness-stream/ §3.10 C10
@@ -11,35 +11,36 @@ import { readDisplayName, readTitle } from "./dynamic-props.js";
 import type { WorldModel } from "./world-model.js";
 
 /**
- * 解析实体的安全显示名。
+ * Разрешает безопасное отображаемое имя сущности.
  *
- * **永不返回 raw graph ID**。当 display_name 和 title 都不存在时，
- * 返回基于节点类型的泛称（如 "(someone)"、"(a group)"）。
+ * **Никогда не возвращает raw graph ID**. Если display_name и title оба отсутствуют,
+ * возвращает обобщённое название по типу узла (например "(someone)", "(a group)").
  */
 /**
- * ADR-204 C10: 将人类可读名（display_name）解析为 graph nodeId。
+ * ADR-204 C10: разрешает человекочитаемое имя (display_name) в graph nodeId.
  *
- * safeDisplayName 的逆操作。LLM 只需提供人名，代码侧完成 → nodeId 映射。
- * 匹配规则：
- * 1. 已是 `contact:*` / `channel:*` 格式 → 验证存在后直接返回
- * 2. "self" / "alice" → 返回 "self"（特殊节点）
- * 3. 搜索 contact 节点的 display_name（大小写不敏感）
- * 4. 搜索 channel 节点的 display_name / title（大小写不敏感）
- * 5. 均未匹配 → null
+ * Обратная операция к safeDisplayName. LLM достаточно передать имя человека;
+ * код выполняет отображение → nodeId.
+ * Правила сопоставления:
+ * 1. Уже в формате `contact:*` / `channel:*` → проверить существование и вернуть напрямую
+ * 2. "self" / "alice" → вернуть "self" (специальный узел)
+ * 3. Поиск по display_name узлов contact (без учёта регистра)
+ * 4. Поиск по display_name / title узлов channel (без учёта регистра)
+ * 5. Ничего не совпало → null
  */
 export function resolveDisplayName(G: WorldModel, displayName: string): string | null {
-  // 1. 已是 nodeId 格式 → 验证存在
+  // 1. Уже в формате nodeId → проверить существование
   if (displayName.startsWith("contact:") || displayName.startsWith("channel:")) {
     return G.has(displayName) ? displayName : null;
   }
 
-  // 2. self / alice 特殊节点
+  // 2. Специальные узлы self / alice
   const lower = displayName.toLowerCase();
   if (lower === "self" || lower === "alice") {
     return G.has("self") ? "self" : null;
   }
 
-  // 3. 搜索 contact 节点
+  // 3. Поиск среди узлов contact
   for (const nodeId of G.getEntitiesByType("contact")) {
     const dn = readDisplayName(G, nodeId);
     if (dn != null && dn.toLowerCase() === lower) {
@@ -47,7 +48,7 @@ export function resolveDisplayName(G: WorldModel, displayName: string): string |
     }
   }
 
-  // 4. 搜索 channel 节点（display_name 或 title）
+  // 4. Поиск среди узлов channel (display_name или title)
   for (const nodeId of G.getEntitiesByType("channel")) {
     const dn = readDisplayName(G, nodeId);
     if (dn != null && dn.toLowerCase() === lower) {
@@ -71,7 +72,7 @@ export function safeDisplayName(G: WorldModel, nodeId: string): string {
   const title = readTitle(G, nodeId);
   if (title != null && title !== "") return title;
 
-  // 类型化泛称 — 永不泄漏 raw ID
+  // Типизированное обобщённое название — никогда не раскрывает raw ID
   const nodeType = G.getNodeType(nodeId);
   switch (nodeType) {
     case "contact":

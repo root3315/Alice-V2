@@ -1,36 +1,36 @@
 /**
- * CLI 类型定义 — IO 接口抽象（ADR-235 FP 改进）。
+ * CLI определения типов — абстракция IO-интерфейса (ADR-235 FP-улучшение).
  *
- * 将命令逻辑与 IO 实现解耦，使命令处理可单元测试。
+ * Разделяет логику команд и реализацию IO, делая обработку команд юнит-тестируемой.
  *
  * @see docs/adr/235-cli-human-readable-output.md
  */
 
-// ── Engine Client 接口 ──
+// ── Engine Client ──
 
-/** Engine API 客户端接口。 */
+/** Интерфейс клиента Engine API. */
 export interface EngineClient {
-  /** POST 请求，返回解析后的 JSON 或 null。 */
+  /** POST-запрос, возвращает разобранный JSON или null. */
   post: (path: string, body: unknown) => Promise<unknown | null>;
 
-  /** GET 请求，返回解析后的 JSON 或 null。 */
+  /** GET-запрос, возвращает разобранный JSON или null. */
   get: (path: string) => Promise<unknown | null>;
 
-  /** Query 端点专用 POST（自动解包 {ok, result}）。 */
+  /** POST для Query-эндпоинтов (автоматически распаковывает {ok, result}). */
   query: (path: string, body: unknown) => Promise<unknown | null>;
 }
 
-// ── Output 接口 ──
+// ── Output ──
 
-/** 输出接口。 */
+/** Интерфейс вывода. */
 export interface Output {
-  /** 标准输出。 */
+  /** Стандартный вывод. */
   log: (msg: string) => void;
 
-  /** 标准错误。 */
+  /** Стандартный поток ошибок. */
   error: (msg: string) => void;
 
-  /** 退出进程。 */
+  /** Завершение процесса. */
   exit: (code: number) => never;
 }
 
@@ -92,39 +92,39 @@ export function emitCliErrorDetail(output: Output, detail: CliErrorDetail): void
   output.error(`${CLI_ERROR_DETAIL_PREFIX}${JSON.stringify(detail)}`);
 }
 
-// ── Target Resolver 接口 ──
+// ── Target Resolver ──
 
-/** 解析目标聊天 ID（返回 number 供 Engine API 使用）。 */
+/** Разрешает ID целевого чата (возвращает number для Engine API). */
 export type TargetResolver = (target: string | undefined) => Promise<number>;
 
 // ── Command Context ──
 
-/** 命令执行上下文 — 包含所有 IO 依赖。 */
+/** Контекст выполнения команды — содержит все IO-зависимости. */
 export interface CliContext {
   engine: EngineClient;
   output: Output;
   resolveTarget: TargetResolver;
-  /** 当前执行上下文的聊天 ID；发送类命令用它阻止跨聊天主动发话。 */
+  /** ID чата текущего контекста выполнения; команды отправки используют его для блокировки межчатовых инициативных сообщений. */
   currentChatId?: number;
 }
 
 // ── Result Types ──
 
-/** 发送消息结果。 */
+/** Результат отправки сообщения. */
 export interface SendResult {
   msgId?: number;
   deliveredAs?: "voice" | "text";
   fallbackReason?: string;
 }
 
-/** 下载结果。 */
+/** Результат загрузки файла. */
 export interface DownloadResult {
   path?: string;
   mime?: string;
   size?: number;
 }
 
-/** 转发结果。 */
+/** Результат пересылки сообщения. */
 export interface ForwardResult {
   forwardedMsgId?: number;
   commentMsgId?: number;
@@ -132,12 +132,12 @@ export interface ForwardResult {
 
 // ── Error Formatting ──
 
-/** 格式化 CLI 错误（纯函数）。 */
+/** Форматирует ошибку CLI (чистая функция). */
 export function formatCliError(cliName: string, msg: string): string {
   return `✗ ${cliName}: ${msg}`;
 }
 
-/** 构造错误退出函数（闭包）。 */
+/** Создаёт функцию завершения с ошибкой (замыкание). */
 export function makeDie(
   output: Output,
   cliName: string,
@@ -152,7 +152,7 @@ export function makeDie(
 
 // ── Re-export Command Args Types ──
 
-// 这些类型在 cli-commands.ts 中定义，这里 re-export 方便使用
+// Эти типы определены в cli-commands.ts, re-export для удобства использования
 export type {
   CommandResult,
   JoinArgs,

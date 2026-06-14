@@ -1,43 +1,43 @@
 /**
- * ADR-23 Wave 2: Beat 类型驱动的多维人格反馈。
+ * ADR-23 Wave 2: Многомерная обратная связь личности, управляемая типами Beat.
  *
- * 替代 v4 的二值 success ? 0.7 : -0.5 反馈机制。
- * 每种 Beat 类型对应一组声部权重调整方向，
- * 使人格向量的演化更精确地反映 Alice 的社交行为模式。
+ * Заменяет бинарный механизм success ? 0.7 : -0.5 из v4.
+ * Каждый тип Beat соответствует набору направлений корректировки весов голосов,
+ * что позволяет эволюции вектора личности точнее отражать паттерны социального поведения Алисы.
  *
- * 有 BEAT → 用 BEAT_FEEDBACK_MAP 多维反馈
- * 无 BEAT → 退化到 v4 降权反馈（success ? 0.2 : -0.5）
+ * Есть BEAT → используем многомерную обратную связь BEAT_FEEDBACK_MAP
+ * Нет BEAT → деградация до понижающей обратной связи v4 (success ? 0.2 : -0.5)
  *
- * ADR-214 Wave B: 参数从 ExecutableResult 改为 ScriptExecutionResult。
- * shell-native 下 BEAT/rate_outcome 通过 Engine API dispatch 执行，
- * 不在 completedActions 中追踪。extractBeatTypes/extractOutcomeFeedback
- * 在当前架构下始终返回空——人格反馈退化到 v4 路径（success ? 0.3 : -0.3）。
- * 保留接口以便后续 completedActions 扩展。
+ * ADR-214 Wave B: параметр изменён с ExecutableResult на ScriptExecutionResult.
+ * В shell-native BEAT/rate_outcome выполняются через Engine API dispatch,
+ * не отслеживаются в completedActions. extractBeatTypes/extractOutcomeFeedback
+ * в текущей архитектуре всегда возвращают пустое значение — обратная связь деградирует до пути v4 (success ? 0.3 : -0.3).
+ * Интерфейс сохранён для последующего расширения completedActions.
  *
- * ADR-131: QUALITY_MAP 为 rate_outcome 的单一语义映射源。
- * observer.mod 和 extractOutcomeFeedback 共用，消除语义裂缝。
+ * ADR-131: QUALITY_MAP — единственный источник семантического отображения для rate_outcome.
+ * observer.mod и extractOutcomeFeedback используют совместно, устраняя семантические расхождения.
  */
 import type { ScriptExecutionResult } from "../core/script-execution.js";
 import type { BeatType } from "../mods/threads.mod.js";
 
-/** 单条声部反馈。 */
+/** Обратная связь по одному голосу. */
 export interface VoiceFeedback {
-  /** 声部索引: 0=Diligence, 1=Curiosity, 2=Sociability, 3=Caution。ADR-81: 4 维。 */
+  /** Индекс голоса: 0=Diligence, 1=Curiosity, 2=Sociability, 3=Caution. ADR-81: 4 измерения. */
   voice: number;
-  /** 反馈幅度（正=强化，负=抑制）。 */
+  /** Величина обратной связи (положительная = усиление, отрицательная = подавление). */
   magnitude: number;
 }
 
 /**
- * Beat 类型 → 人格向量反馈映射。
+ * Отображение типов Beat → обратная связь вектора личности.
  *
- * 设计原则：
- * - observation → 好奇心得到满足
- * - engagement → 社交能力得到锻炼
- * - assistance → 尽责性得到验证
- * - misstep → 谨慎性强化 + 社交性微抑制（从错误中学习）
- * - connection → 社交性强化（深度连接）
- * - insight → 洞察力验证（ADR-81: 映射到 Curiosity，反思是涌现属性）
+ * Принципы проектирования:
+ * - observation → любопытство получает удовлетворение
+ * - engagement → социальные навыки развиваются
+ * - assistance → добросовестность подтверждается
+ * - misstep → осторожность усиливается + социальность слегка подавляется (обучение на ошибках)
+ * - connection → социальность усиливается (глубокая связь)
+ * - insight → подтверждение проницательности (ADR-81: маппинг на Curiosity, рефлексия — эмерджентное свойство)
  */
 export const BEAT_FEEDBACK_MAP: Record<string, VoiceFeedback[]> = {
   observation: [{ voice: 1, magnitude: 0.3 }],
@@ -49,23 +49,23 @@ export const BEAT_FEEDBACK_MAP: Record<string, VoiceFeedback[]> = {
   ],
   connection: [{ voice: 2, magnitude: 0.5 }],
   insight: [{ voice: 1, magnitude: 0.4 }], // ADR-81: voice 4 (Reflection) → voice 1 (Curiosity)
-  // ADR-181: Caution 正向强化路径（RST BIS "relief" 信号）
+  // ADR-181: путь положительного усиления Caution (RST BIS сигнал "relief")
   prudence: [
-    { voice: 3, magnitude: 0.3 }, // 审慎评估成功 → Caution 正强化
-    { voice: 1, magnitude: 0.15 }, // 审慎带来洞察 → 轻微 Curiosity 强化
+    { voice: 3, magnitude: 0.3 }, // осторожная оценка успешна → положительное усиление Caution
+    { voice: 1, magnitude: 0.15 }, // осторожность даёт инсайт → лёгкое усиление Curiosity
   ],
   breakthrough: [
-    { voice: 2, magnitude: 0.4 }, // 社交冒险成功 → Sociability 强化
-    { voice: 3, magnitude: -0.2 }, // 成功趋近 → BAS 奖励抑制 BIS
+    { voice: 2, magnitude: 0.4 }, // социальный риск удался → усиление Sociability
+    { voice: 3, magnitude: -0.2 }, // успешное приближение → награда BAS подавляет BIS
   ],
-  // kernel 和 ambient 使用默认反馈
+  // kernel и ambient используют обратную связь по умолчанию
 };
 
 /**
- * ADR-131: LLM 语义标签 → 数值的单一映射源。
+ * ADR-131: Единственный источник маппинга семантических меток LLM → числа.
  *
- * rate_outcome 的 quality 参数是语义标签（ADR-50 原则），
- * 代码侧统一在此完成映射。observer.mod 和 extractOutcomeFeedback 共用。
+ * Параметр quality у rate_outcome является семантической меткой (принцип ADR-50),
+ * маппинг выполняется здесь на стороне кода. Используется совместно observer.mod и extractOutcomeFeedback.
  * @see docs/adr/131-feedback-loop-integrity.md §D1
  */
 export const QUALITY_MAP: Record<string, number> = {
@@ -77,26 +77,26 @@ export const QUALITY_MAP: Record<string, number> = {
 };
 
 /**
- * 从 ScriptExecutionResult 提取 BEAT 调用的 beatType。
+ * Извлекает beatType вызовов BEAT из ScriptExecutionResult.
  *
- * ADR-214 Wave B: shell-native 下 BEAT 通过 Engine API dispatch 执行，
- * 不在 completedActions 中追踪。当前始终返回空数组。
- * 保留接口以便后续 completedActions 格式扩展。
+ * ADR-214 Wave B: в shell-native BEAT выполняется через Engine API dispatch,
+ * не отслеживается в completedActions. В настоящее время всегда возвращает пустой массив.
+ * Интерфейс сохранён для последующего расширения формата completedActions.
  */
 export function extractBeatTypes(_result: ScriptExecutionResult): BeatType[] {
-  // shell-native: dispatch 动作不在 completedActions 中追踪
-  // completedActions 格式: "sent:chatId=X:msgId=Y", "sticker:...", "forwarded:..." 等
-  // BEAT dispatch 不输出 __ALICE_ACTION__ 控制行
+  // shell-native: dispatch-действия не отслеживаются в completedActions
+  // Формат completedActions: "sent:chatId=X:msgId=Y", "sticker:...", "forwarded:..." и т.д.
+  // BEAT dispatch не выводит управляющую строку __ALICE_ACTION__
   return [];
 }
 
 /**
- * 从 Beat 类型数组提取多维人格反馈。
+ * Извлекает многомерную обратную связь личности из массива типов Beat.
  *
- * 返回 null 表示无 Beat（应退化到 v4 反馈）。
- * 多个 Beat 的反馈叠加。
+ * Возвращает null, если Beat отсутствует (следует деградировать до обратной связи v4).
+ * Обратная связь нескольких Beat суммируется.
  *
- * ADR-214 Wave B: shell-native 下始终返回 null（无 BEAT 数据）。
+ * ADR-214 Wave B: в shell-native всегда возвращает null (нет данных BEAT).
  */
 export function extractBeatFeedback(result: ScriptExecutionResult): VoiceFeedback[] | null {
   const beatTypes = extractBeatTypes(result);
@@ -114,12 +114,12 @@ export function extractBeatFeedback(result: ScriptExecutionResult): VoiceFeedbac
 }
 
 /**
- * ADR-31: 从 rate_outcome 指令提取实时人格反馈。
+ * ADR-31: Извлекает обратную связь личности в реальном времени из инструкции rate_outcome.
  *
- * ADR-214 Wave B: shell-native 下 rate_outcome 通过 dispatch 执行，
- * 不在 completedActions 中追踪。当前始终返回 null。
+ * ADR-214 Wave B: в shell-native rate_outcome выполняется через dispatch,
+ * не отслеживается в completedActions. В настоящее время всегда возвращает null.
  */
 export function extractOutcomeFeedback(_result: ScriptExecutionResult): VoiceFeedback[] | null {
-  // shell-native: dispatch 动作不在 completedActions 中追踪
+  // shell-native: dispatch-действия не отслеживаются в completedActions
   return null;
 }

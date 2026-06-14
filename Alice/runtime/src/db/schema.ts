@@ -1,13 +1,13 @@
 /**
- * Drizzle ORM schema：graph_nodes, graph_edges, tick_log, action_log, mod_states 等。
+ * Drizzle ORM schema: graph_nodes, graph_edges, tick_log, action_log, mod_states и др.
  *
- * 表级数据语义的单一登记表在 `schema-classification.ts`。
- * 新增表时必须先补 `TABLE_CLASSIFICATIONS` 和 ADR-248 data-map，再写迁移。
+ * Единый реестр семантики данных на уровне таблиц — в `schema-classification.ts`.
+ * При добавлении таблицы сначала дополнить `TABLE_CLASSIFICATIONS` и ADR-248 data-map, затем писать миграцию.
  * @see docs/adr/248-dcp-reference-implementation-plan/data-map.md
  */
 import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
-/** 图快照：JSON 序列化的 WorldModel。 */
+/** Снимок графа: WorldModel, сериализованный в JSON. */
 export const graphSnapshots = sqliteTable(
   "graph_snapshots",
   {
@@ -21,7 +21,7 @@ export const graphSnapshots = sqliteTable(
   (t) => [index("idx_graph_snapshots_tick").on(t.tick)],
 );
 
-/** Tick 日志：每 tick 的压力值和选中行动。 */
+/** Лог тиков: значения давления и выбранное действие за каждый тик. */
 export const tickLog = sqliteTable(
   "tick_log",
   {
@@ -34,21 +34,21 @@ export const tickLog = sqliteTable(
     p5: real("p5").notNull(),
     p6: real("p6").notNull(),
     api: real("api").notNull(),
-    /** ADR-195: Peak-based API（驱动 tick 间隔）。 */
+    /** ADR-195: Peak-based API (управляет интервалом тиков). */
     apiPeak: real("api_peak"),
     action: text("action"),
     target: text("target"),
-    /** ADR-115: V(a,n) 最终净社交价值。 */
+    /** ADR-115: V(a,n) итоговая чистая социальная ценность. */
     netValue: real("net_value"),
-    /** ADR-115: ΔP 预期压力降低量。 */
+    /** ADR-115: ΔP ожидаемое снижение давления. */
     deltaP: real("delta_p"),
-    /** ADR-115: C_social 社交成本。 */
+    /** ADR-115: C_social социальная стоимость. */
     socialCost: real("social_cost"),
-    /** ADR-115: softmax 选中概率。 */
+    /** ADR-115: вероятность выбора по softmax. */
     selectedProbability: real("selected_probability"),
-    /** ADR-115: 统一决策结果标签 (enqueue|system1:ACTION|silent:LEVEL|skip:REASON)。 */
+    /** ADR-115: унифицированная метка результата решения (enqueue|system1:ACTION|silent:LEVEL|skip:REASON). */
     gateVerdict: text("gate_verdict"),
-    /** ADR-115: Agent Mode (patrol|conversation|consolidation)。 */
+    /** ADR-115: Agent Mode (patrol|conversation|consolidation). */
     mode: text("mode"),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
@@ -57,7 +57,7 @@ export const tickLog = sqliteTable(
   (t) => [index("idx_tick_log_tick").on(t.tick)],
 );
 
-/** 行动日志：LLM 生成的行动执行记录。 */
+/** Лог действий: записи о выполнении действий, сгенерированных LLM. */
 export const actionLog = sqliteTable(
   "action_log",
   {
@@ -71,33 +71,33 @@ export const actionLog = sqliteTable(
     confidence: real("confidence"),
     reasoning: text("reasoning"),
     success: integer("success", { mode: "boolean" }).notNull().default(false),
-    /** ADR-43 P0 第二层: send_message 后是否缺少 feel() (1=缺失, 0=正常, null=非 send_message 行动) */
+    /** ADR-43 P0 второй слой: отсутствует ли feel() после send_message (1=отсутствует, 0=норма, null=не send_message) */
     observationGap: integer("observation_gap"),
-    /** D4 ClosureDepth: 行动到图结构变化的反馈路径深度。 */
+    /** D4 ClosureDepth: глубина пути обратной связи от действия до изменения структуры графа. */
     closureDepth: integer("closure_depth"),
-    /** ADR-69: 有效推进代理指标。@see docs/adr/69-llm-cognitive-loop-gravity-well.md */
+    /** ADR-69: прокси-показатель эффективного продвижения агента. @see docs/adr/69-llm-cognitive-loop-gravity-well.md */
     eaProxy: real("ea_proxy"),
-    /** ADR-108: Engagement session 子周期数。1 = 单次执行（无 expect_reply/stay）。 */
+    /** ADR-108: число подциклов engagement-сессии. 1 = одиночное выполнение (без expect_reply/stay). */
     engagementSubcycles: integer("engagement_subcycles"),
-    /** ADR-108: Engagement session 挂钟时间 (ms)。 */
+    /** ADR-108: настенное время engagement-сессии (мс). */
     engagementDurationMs: integer("engagement_duration_ms"),
-    /** ADR-108: Engagement session 结束原因: complete/timeout/preempted/limit。 */
+    /** ADR-108: причина завершения engagement-сессии: complete/timeout/preempted/limit. */
     engagementOutcome: text("engagement_outcome"),
-    /** ADR-199: 自动状态回写记录 JSON: {"feel":"positive","advance_topic":"conv:xxx"}。 */
+    /** ADR-199: JSON-запись автоматической обратной записи состояния: {"feel":"positive","advance_topic":"conv:xxx"}. */
     autoWriteback: text("auto_writeback"),
-    /** ADR-235: TC 循环工具调用次数。 */
+    /** ADR-235: число вызовов инструментов в TC-цикле. */
     tcToolCallCount: integer("tc_tool_call_count"),
-    /** ADR-235: 是否触及 TC_MAX_TOOL_CALLS 预算上限。 */
+    /** ADR-235: достигнут ли бюджетный лимит TC_MAX_TOOL_CALLS. */
     tcBudgetExhausted: integer("tc_budget_exhausted", { mode: "boolean" }),
-    /** ADR-235: signal 工具的 afterward 值（done/waiting_reply/watching/resting/fed_up/cooling_down）。 */
+    /** ADR-235: значение afterward инструмента signal (done/waiting_reply/watching/resting/fed_up/cooling_down). */
     tcAfterward: text("tc_afterward"),
-    /** ADR-235: 聚合的 $ cmd\noutput 块（截断到 4KB）。 */
+    /** ADR-235: агрегированные блоки $ cmd\noutput (обрезаны до 4 КБ). */
     tcCommandLog: text("tc_command_log"),
-    /** ADR-247: host 同一 tick 内触发续轮的原因序列 JSON。 */
+    /** ADR-247: JSON-последовательность причин, по которым host инициировал продолжение в рамках одного тика. */
     tcHostContinuationTrace: text("tc_host_continuation_trace"),
-    /** tick 入口实际选中的 LLM provider 名。 */
+    /** Фактически выбранное имя LLM-провайдера на входе тика. */
     llmProvider: text("llm_provider"),
-    /** tick 入口实际选中的模型 ID。 */
+    /** Фактически выбранный ID модели на входе тика. */
     llmModel: text("llm_model"),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
@@ -110,10 +110,11 @@ export const actionLog = sqliteTable(
 );
 
 /**
- * 沉默日志（ADR-64 II-2）：记录被门控跳过的行动决策。
+ * Лог молчания (ADR-64 II-2): записи о решениях, пропущенных через gate.
  *
- * 沉默发生在 EVOLVE 线程（声部已选中、目标已确定后的 skip 出口），
- * 与 action_log（ACT 线程执行记录）分表，对应不同的审计维度。
+ * Молчание происходит в потоке EVOLVE (точка выхода skip после выбора голоса и цели);
+ * хранится отдельно от action_log (записи выполнения потока ACT), так как относится
+ * к другому аудиторскому измерению.
  *
  * @see docs/adr/64 §II-2: Silence as Information Gathering
  */
@@ -122,21 +123,21 @@ export const silenceLog = sqliteTable(
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     tick: integer("tick").notNull(),
-    /** 选中的声部 */
+    /** Выбранный голос */
     voice: text("voice").notNull(),
-    /** 目标实体 */
+    /** Целевая сущность */
     target: text("target"),
-    /** 沉默原因：rate_cap | active_cooling | svg_negative | api_floor | all_candidates_negative */
+    /** Причина молчания: rate_cap | active_cooling | svg_negative | api_floor | all_candidates_negative */
     reason: text("reason").notNull(),
-    /** V(a, n) 净社交价值 */
+    /** V(a, n) чистая социальная ценность */
     netValue: real("net_value"),
-    /** ΔP(a, n) 预期压力降低量 */
+    /** ΔP(a, n) ожидаемое снижение давления */
     deltaP: real("delta_p"),
-    /** C_social(a, n) 社交成本 */
+    /** C_social(a, n) социальная стоимость */
     socialCost: real("social_cost"),
-    /** 当前 API 值 */
+    /** Текущее значение API */
     apiValue: real("api_value"),
-    /** D5 沉默五级谱层级：L1~L5。 */
+    /** D5 уровень пятиступенчатой шкалы молчания: L1~L5. */
     silenceLevel: text("silence_level"),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
@@ -146,10 +147,10 @@ export const silenceLog = sqliteTable(
 );
 
 /**
- * ADR-248 W1: Decision Trace 审计事实。
+ * ADR-248 W1: аудиторские факты Decision Trace.
  *
- * 记录 EVOLVE/ACT 在某个 tick 看到什么、选择什么、为什么停止或继续。
- * 这是 append-only audit fact，不允许作为 gate/pressure/control 的输入。
+ * Фиксирует, что EVOLVE/ACT наблюдали на конкретном тике, что выбрали и почему остановились или продолжили.
+ * Это append-only audit fact; нельзя использовать как входные данные для gate/pressure/control.
  * @see docs/adr/248-dcp-reference-implementation-plan/README.md
  */
 export const decisionTrace = sqliteTable(
@@ -160,12 +161,12 @@ export const decisionTrace = sqliteTable(
     /** evolve | act */
     phase: text("phase").notNull(),
     target: text("target"),
-    /** 可选关联 action_log.id；EVOLVE 沉默/入队前可为空。 */
+    /** Опциональная ссылка на action_log.id; может быть null до молчания/постановки в очередь в EVOLVE. */
     actionLogId: integer("action_log_id"),
     /** enqueue | silence | defer | execute | continue | stop | fail */
     finalDecision: text("final_decision").notNull(),
     reason: text("reason").notNull(),
-    /** JSON: DecisionTracePayload，审计细节，不是控制契约。 */
+    /** JSON: DecisionTracePayload, аудиторские детали — не контрактный контроль. */
     payloadJson: text("payload_json").notNull().default("{}"),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
@@ -283,7 +284,7 @@ export const actionResult = sqliteTable(
     failureCode: text("failure_code").notNull(),
     externalMessageId: text("external_message_id"),
     completedActionRefsJson: text("completed_action_refs_json").notNull().default("[]"),
-    /** ADR-266 Wave 4: ScriptExecutionResult.observations 的 typed execution facts。 */
+    /** ADR-266 Wave 4: типизированные факты выполнения из ScriptExecutionResult.observations. */
     executionObservationsJson: text("execution_observations_json").notNull().default("[]"),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
@@ -422,7 +423,7 @@ export const pressureDelta = sqliteTable(
   ],
 );
 
-/** 人格向量快照。 */
+/** Снимок вектора личности. */
 export const personalitySnapshots = sqliteTable("personality_snapshots", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   tick: integer("tick").notNull(),
@@ -435,8 +436,9 @@ export const personalitySnapshots = sqliteTable("personality_snapshots", {
 /**
  * ADR-248 W3: Canonical event fact stream.
  *
- * 平台事件被解析后的稳定事实形态。append-only；当前先由测试/helper 写入，
- * 后续再接 Telegram ingress。projection/rendering 从该事实流重放。
+ * Стабильная форма фактов после разбора платформенных событий. Append-only;
+ * пока записывается тестами/хелперами, впоследствии подключается Telegram ingress.
+ * Projection/rendering воспроизводится из этого потока фактов.
  * @see docs/adr/248-dcp-reference-implementation-plan/README.md
  */
 export const canonicalEvents = sqliteTable(
@@ -450,9 +452,9 @@ export const canonicalEvents = sqliteTable(
     contactId: text("contact_id"),
     directed: integer("directed", { mode: "boolean" }).notNull().default(false),
     novelty: real("novelty"),
-    /** 事实来源：message_log / telegram / runtime / action_result。 */
+    /** Источник факта: message_log / telegram / runtime / action_result. */
     source: text("source"),
-    /** 来源内稳定 ID。Telegram ingress 使用平台事件身份。 */
+    /** Стабильный ID внутри источника. Telegram ingress использует идентичность платформенного события. */
     sourceId: text("source_id"),
     payloadJson: text("payload_json").notNull(),
     createdAt: integer("created_at", { mode: "timestamp" })
@@ -467,29 +469,29 @@ export const canonicalEvents = sqliteTable(
   ],
 );
 
-/** 消息日志：收到和发出的消息。 */
+/** Лог сообщений: входящие и исходящие сообщения. */
 export const messageLog = sqliteTable(
   "message_log",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     tick: integer("tick").notNull(),
-    /** 多平台来源。当前首批为 telegram / qq。 */
+    /** Источник с поддержкой нескольких платформ. Первые платформы: telegram / qq. */
     platform: text("platform").notNull().default("telegram"),
     chatId: text("chat_id").notNull(),
     /** UI-local numeric ref used by current chat tools. Null when unavailable or non-numeric. */
     msgId: integer("msg_id"),
-    /** 平台原生聊天 ID。Telegram 为 chat id，QQ 为群号/QQ号。 */
+    /** Нативный ID чата на платформе. Для Telegram — chat id, для QQ — номер группы/QQ-номер. */
     nativeChatId: text("native_chat_id"),
-    /** 平台原生消息 ID。可为数字或字符串，不参与 Telegram-only reply API。 */
+    /** Нативный ID сообщения на платформе. Может быть числом или строкой; не участвует в Telegram reply API. */
     nativeMsgId: text("native_msg_id"),
-    /** 跨平台稳定消息 ID：message:<platform>:<nativeChatId>:<nativeMsgId>。 */
+    /** Кроссплатформенный стабильный ID сообщения: message:<platform>:<nativeChatId>:<nativeMsgId>. */
     stableMessageId: text("stable_message_id"),
-    /** 回复目标的当前聊天可见数字 ref。用于回复链逸散上下文（ADR-97）。 */
+    /** Числовая ссылка на сообщение-цель в текущем чате. Используется для контекста диффузии цепочки ответов (ADR-97). */
     replyToMsgId: integer("reply_to_msg_id"),
     senderId: text("sender_id"),
     senderName: text("sender_name"),
     text: text("text"),
-    /** ADR-119: 媒体类型（sticker/photo/voice/video/document）。纯文本消息为 null。 */
+    /** ADR-119: Тип медиа (sticker/photo/voice/video/document). Для текстовых сообщений — null. */
     mediaType: text("media_type"),
     isOutgoing: integer("is_outgoing", { mode: "boolean" }).notNull().default(false),
     isDirected: integer("is_directed", { mode: "boolean" }).notNull().default(false),
@@ -509,8 +511,8 @@ export const messageLog = sqliteTable(
 );
 
 /**
- * ADR-260: 群聊照片相册资产投影。
- * source_chat_id/source_msg_id 是发送权威；file_unique_id 只负责去重和语义合并。
+ * ADR-260: Проекция активов группового фотоальбома.
+ * source_chat_id/source_msg_id — авторитетный источник отправки; file_unique_id отвечает только за дедупликацию и семантическое слияние.
  * @see docs/adr/260-group-photo-album-affordance/README.md
  */
 export const albumPhotos = sqliteTable(
@@ -545,7 +547,7 @@ export const albumPhotos = sqliteTable(
   ],
 );
 
-/** ADR-260: 相册发送结果事实，append-only。 */
+/** ADR-260: Факты результата отправки из альбома, append-only. */
 export const albumUsage = sqliteTable(
   "album_usage",
   {
@@ -569,8 +571,9 @@ export const albumUsage = sqliteTable(
 );
 
 /**
- * ADR-261: 可重建节律画像投影。
- * 从 message_log / canonical_events 这类事实源重建；不作为历史活跃事实权威。
+ * ADR-261: Восстанавливаемая проекция ритмического профиля.
+ * Восстанавливается из источников фактов типа message_log / canonical_events;
+ * не является авторитетом истории активности.
  * @see docs/adr/261-rhythm-profile-projection.md
  */
 export const rhythmProfiles = sqliteTable(
@@ -605,8 +608,8 @@ export const rhythmProfiles = sqliteTable(
 );
 
 /**
- * ADR-255: 群聊介入结果证据。
- * 一条 Alice 出站消息最多评价一次；graph social_reception 只是后续状态投影。
+ * ADR-255: Свидетельства результата группового вмешательства.
+ * Одно исходящее сообщение Alice оценивается не более одного раза; graph social_reception — лишь проекция последующего состояния.
  * @see docs/adr/255-intervention-outcome-truth-model/README.md
  */
 export const interventionOutcomeEvidence = sqliteTable(
@@ -758,34 +761,34 @@ export const socialEvents = sqliteTable(
 );
 
 /**
- * 叙事线程（简化 Arc）。
- * 追踪持续的话题、关系动态和因果链。
+ * Нарративные потоки (упрощённый Arc).
+ * Отслеживают продолжающиеся темы, динамику отношений и причинно-следственные цепочки.
  */
 export const narrativeThreads = sqliteTable(
   "narrative_threads",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     title: text("title").notNull(),
-    tensionFrame: text("tension_frame"), // 叙事张力的框架描述
-    tensionStake: text("tension_stake"), // 赌注/重要性描述
-    // 叙事读模型投影: open|active|resolved|abandoned|expired_unresolved。
-    // 图线程状态可用 "expired" 表示内存压力投影已离开 P4-open；
-    // narrative 状态保留明确的生命周期结果。
+    tensionFrame: text("tension_frame"), // Описание рамки нарративной напряжённости
+    tensionStake: text("tension_stake"), // Описание ставки/важности
+    // Проекция читаемой модели нарратива: open|active|resolved|abandoned|expired_unresolved.
+    // Состояние потока в графе может быть "expired", означающее, что проекция давления памяти покинула P4-open;
+    // статус narrative сохраняет явные результаты жизненного цикла.
     status: text("status").notNull().default("open"),
     weight: text("weight").notNull().default("minor"), // trivial|minor|major|critical
-    /** ADR-190: 线程来源，区分系统线程和对话线程。 */
+    /** ADR-190: источник потока, различает системные и диалоговые потоки. */
     source: text("source").default("conversation"), // "conversation" | "system"
     involves: text("involves"), // JSON: Involvement[]
     createdTick: integer("created_tick").notNull(),
     lastBeatTick: integer("last_beat_tick"),
     resolvedTick: integer("resolved_tick"),
-    /** 前瞻范围（ticks），用于 P_prospect 计算。 */
+    /** Горизонт прогноза (в тиках), используется для вычисления P_prospect. */
     horizon: integer("horizon"),
-    /** 绝对截止 tick = createdTick + horizon。 */
+    /** Абсолютный дедлайн-тик = createdTick + horizon. */
     deadlineTick: integer("deadline_tick"),
-    /** ADR-64 VI-2: 线程叙事摘要（LLM 通过 THREAD_REVIEW 生成）。 */
+    /** ADR-64 VI-2: нарративный конспект потока (генерируется LLM через THREAD_REVIEW). */
     summary: text("summary"),
-    /** ADR-64 VI-2: 摘要上次更新的 tick。 */
+    /** ADR-64 VI-2: тик последнего обновления конспекта. */
     summaryTick: integer("summary_tick"),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
@@ -795,12 +798,12 @@ export const narrativeThreads = sqliteTable(
 );
 
 /**
- * ADR-262 Wave 4D: 线程生命周期事实。
+ * ADR-262 Wave 4D: факты жизненного цикла потока.
  *
- * append-only authority: 记录线程为什么离开或延长 open 生命周期。
- * `narrative_threads.status` 和图线程 attrs 都是这些事件的投影。
- * 图 `expired` 表示“不再贡献 P4-open”；narrative `expired_unresolved`
- * 表示“没有 resolving action，但已离开 open 生命周期”。
+ * Append-only authority: фиксирует, почему поток покинул или продлил open-жизненный цикл.
+ * `narrative_threads.status` и атрибуты потока в графе — проекции этих событий.
+ * Граф `expired` означает «больше не вносит вклад в P4-open»; narrative `expired_unresolved`
+ * означает «нет resolving action, но open-жизненный цикл завершён».
  * @see docs/adr/262-social-case-management/README.md
  */
 export const threadLifecycleEvent = sqliteTable(
@@ -830,8 +833,8 @@ export const threadLifecycleEvent = sqliteTable(
 );
 
 /**
- * Mod 状态持久化（ADR-33 Phase 1）。
- * 每个 Mod 的 state 序列化为 JSON，UPSERT by mod_name。
+ * Персистентность состояния Mod (ADR-33 Phase 1).
+ * State каждого Mod сериализуется в JSON, UPSERT по mod_name.
  */
 export const modStates = sqliteTable("mod_states", {
   modName: text("mod_name").primaryKey(),
@@ -843,22 +846,22 @@ export const modStates = sqliteTable("mod_states", {
 });
 
 /**
- * 图节点（ADR-33 Phase 2: Write-Back Cache）。
- * 替代 graph_snapshots 的全量 JSON 序列化。
+ * Узлы графа (ADR-33 Phase 2: Write-Back Cache).
+ * Замена полной JSON-сериализации graph_snapshots.
  */
 export const graphNodes = sqliteTable(
   "graph_nodes",
   {
     id: text("id").primaryKey(),
     entityType: text("entity_type").notNull(),
-    attrs: text("attrs").notNull(), // JSON: 节点属性
+    attrs: text("attrs").notNull(), // JSON: атрибуты узла
     updatedTick: integer("updated_tick").notNull(),
   },
   (t) => [index("idx_graph_nodes_type").on(t.entityType)],
 );
 
 /**
- * 图边（ADR-33 Phase 2: Write-Back Cache）。
+ * Рёбра графа (ADR-33 Phase 2: Write-Back Cache).
  */
 export const graphEdges = sqliteTable(
   "graph_edges",
@@ -868,7 +871,7 @@ export const graphEdges = sqliteTable(
     dst: text("dst").notNull(),
     label: text("label").notNull(),
     category: text("category").notNull(),
-    attrs: text("attrs"), // JSON: 边附加属性（可为空）
+    attrs: text("attrs"), // JSON: дополнительные атрибуты ребра (может быть null)
   },
   (t) => [
     index("idx_graph_edges_src").on(t.src),
@@ -878,19 +881,19 @@ export const graphEdges = sqliteTable(
 );
 
 /**
- * 定时任务（Scheduler Mod）。
- * 支持 at（一次性定时）和 every（周期性）两种类型。
+ * Запланированные задачи (Scheduler Mod).
+ * Поддерживаются два типа: at (однократный) и every (периодический).
  */
 export const scheduledTasks = sqliteTable(
   "scheduled_tasks",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     type: text("type").notNull(), // "at" | "every"
-    targetMs: integer("target_ms"), // 绝对墙钟 ms（何时触发）
-    intervalMs: integer("interval_ms"), // 墙钟 ms 间隔（every 类型）
-    action: text("action").notNull(), // 触发时的动作描述（LLM 可读）
-    target: text("target"), // 目标 chatId（可选）
-    payload: text("payload"), // JSON 附加数据
+    targetMs: integer("target_ms"), // Абсолютное настенное время в мс (когда сработать)
+    intervalMs: integer("interval_ms"), // Интервал настенного времени в мс (тип every)
+    action: text("action").notNull(), // Описание действия при срабатывании (читаемо LLM)
+    target: text("target"), // Целевой chatId (опционально)
+    payload: text("payload"), // JSON-дополнительные данные
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
       .$defaultFn(() => new Date()),
@@ -900,8 +903,8 @@ export const scheduledTasks = sqliteTable(
 );
 
 /**
- * 叙事节拍（简化 Beat）。
- * 线程中的关键事件，支持因果链。
+ * Нарративные биты (упрощённый Beat).
+ * Ключевые события в потоке, поддерживают причинно-следственные цепочки.
  */
 export const narrativeBeats = sqliteTable(
   "narrative_beats",
@@ -911,8 +914,8 @@ export const narrativeBeats = sqliteTable(
     tick: integer("tick").notNull(),
     content: text("content").notNull(),
     beatType: text("beat_type").notNull().default("ambient"), // kernel|ambient
-    causedBy: text("caused_by"), // JSON: string[] (thread/beat ids)
-    spawns: text("spawns"), // JSON: string[] (new thread ids)
+    causedBy: text("caused_by"), // JSON: string[] (id потоков/битов)
+    spawns: text("spawns"), // JSON: string[] (id новых потоков)
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
       .$defaultFn(() => new Date()),
@@ -921,8 +924,8 @@ export const narrativeBeats = sqliteTable(
 );
 
 /**
- * 人格演化归因日志（ADR-53 #2）。
- * 记录每次人格向量变化的来源，支持审计"因为什么漂移"。
+ * Лог атрибуции эволюции личности (ADR-53 #2).
+ * Фиксирует источник каждого изменения вектора личности — для аудита «из-за чего дрейф».
  * @see docs/adr/53-audit-gap-closure.md
  */
 export const personalityEvolutionLog = sqliteTable(
@@ -930,15 +933,15 @@ export const personalityEvolutionLog = sqliteTable(
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     tick: integer("tick").notNull(),
-    /** 人格维度：diligence|curiosity|sociability|caution */
+    /** Измерение личности: diligence|curiosity|sociability|caution */
     dimension: text("dimension").notNull(),
-    /** 权重变化量（归一化前） */
+    /** Величина изменения веса (до нормализации) */
     delta: real("delta").notNull(),
-    /** 触发来源：beat|outcome|decay */
+    /** Источник изменения: beat|outcome|decay */
     source: text("source").notNull(),
-    /** Beat 类型（仅 source=beat 时有值） */
+    /** Тип бита (только когда source=beat) */
     beatType: text("beat_type"),
-    /** 关联的实体 ID（联系人/频道） */
+    /** ID связанной сущности (контакт/канал) */
     targetEntity: text("target_entity"),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
@@ -948,9 +951,9 @@ export const personalityEvolutionLog = sqliteTable(
 );
 
 /**
- * ADR-82: Alice 的私人日记。
- * 持久化情感记忆、欲望/意图、自我反思。
- * LLM 通过 diary() 语法糖写入，diary Mod 的 contribute() 读取并注入 system prompt。
+ * ADR-82: Личный дневник Alice.
+ * Хранит эмоциональную память, желания/намерения и саморефлексию.
+ * LLM записывает через синтаксический сахар diary(), contribute() Mod-дневника читает и инжектирует в system prompt.
  * @see docs/adr/82-diary-inner-world.md
  */
 export const diaryEntries = sqliteTable(
@@ -958,9 +961,9 @@ export const diaryEntries = sqliteTable(
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     tick: integer("tick").notNull(),
-    /** 日记内容（自由文本，最长 200 字符） */
+    /** Содержимое записи дневника (произвольный текст, не более 200 символов) */
     content: text("content").notNull(),
-    /** 关联实体 ID（联系人/频道，可选） */
+    /** ID связанной сущности (контакт/канал, опционально) */
     about: text("about"),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
@@ -970,12 +973,13 @@ export const diaryEntries = sqliteTable(
 );
 
 /**
- * 审计事件表（ADR-54）。
+ * Таблица аудиторских событий (ADR-54).
  *
- * 关键运行时异常和系统事件写入此表，支持 SQL 结构化查询。
- * 用途：事后排查（比 grep 日志更精准）、异常趋势分析。
+ * Критические исключения времени выполнения и системные события записываются сюда
+ * для структурированного SQL-запроса. Назначение: постмортем-анализ (точнее grep по логам)
+ * и отслеживание трендов аномалий.
  *
- * 示例查询：
+ * Примеры запросов:
  *   SELECT tick, level, source, message FROM audit_events WHERE level='fatal' ORDER BY tick DESC LIMIT 20;
  *   SELECT source, COUNT(*) FROM audit_events WHERE tick > 1000 GROUP BY source ORDER BY COUNT(*) DESC;
  *
@@ -988,11 +992,11 @@ export const auditEvents = sqliteTable(
     tick: integer("tick").notNull(),
     /** fatal | error | warn */
     level: text("level").notNull(),
-    /** 来源模块（logger tag：act, evolve, events, sandbox 等） */
+    /** Исходный модуль (logger tag: act, evolve, events, sandbox и др.) */
     source: text("source").notNull(),
-    /** 事件描述 */
+    /** Описание события */
     message: text("message").notNull(),
-    /** 附加细节 JSON（错误堆栈、参数快照等） */
+    /** Дополнительные детали JSON (стек ошибки, снимок параметров и т.д.) */
     details: text("details"),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
@@ -1006,8 +1010,8 @@ export const auditEvents = sqliteTable(
 );
 
 /**
- * ADR-199: 延迟评估审计日志。
- * 记录 Alice 发消息后、系统延迟评估外部反馈的结果。
+ * ADR-199: Аудиторский лог отложенной оценки.
+ * Фиксирует результаты отложенной оценки внешней обратной связи после отправки сообщений Alice.
  * @see runtime/src/engine/deferred-outcome.ts
  */
 export const deferredOutcomeLog = sqliteTable(
@@ -1016,17 +1020,17 @@ export const deferredOutcomeLog = sqliteTable(
     id: integer("id").primaryKey({ autoIncrement: true }),
     tick: integer("tick").notNull(),
     channelId: text("channel_id").notNull(),
-    /** Alice 发送消息的墙钟时间（ms）。 */
+    /** Настенное время отправки сообщения Alice (мс). */
     actionMs: integer("action_ms").notNull(),
-    /** 延迟评估执行的墙钟时间（ms）。 */
+    /** Настенное время выполнения отложенной оценки (мс). */
     evaluationMs: integer("evaluation_ms").notNull(),
-    /** 延迟时长（ms）= evaluationMs - actionMs。 */
+    /** Задержка (мс) = evaluationMs - actionMs. */
     delayMs: integer("delay_ms").notNull(),
-    /** 外部反馈分数 [-1, 1]。 */
+    /** Оценка внешней обратной связи [-1, 1]. */
     score: real("score").notNull(),
-    /** 置信度 [0, 1]。 */
+    /** Уверенность [0, 1]. */
     confidence: real("confidence").notNull(),
-    /** 信号 JSON: string[]。 */
+    /** JSON-сигналы: string[]. */
     signals: text("signals"),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
@@ -1038,26 +1042,26 @@ export const deferredOutcomeLog = sqliteTable(
   ],
 );
 
-/** 贴纸语义调色板：label → fileId 映射。Phase 1 手动维护，Phase 2 VLM 自动填充。 */
+/** Семантическая палитра стикеров: маппинг label → fileId. Phase 1 — ручное обслуживание, Phase 2 — авто-заполнение VLM. */
 export const stickerPalette = sqliteTable(
   "sticker_palette",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
-    /** 中文语义标签 = VLM summary（LLM 可见） */
+    /** Семантическая метка = VLM summary (видна LLM) */
     label: text("label").notNull(),
-    /** Telegram sticker file ID（发送用，可刷新）。 */
+    /** Telegram sticker file ID (для отправки, может обновляться). */
     fileId: text("file_id").notNull().unique(),
-    /** Telegram file_unique_id — 永久唯一，去重键。 */
+    /** Telegram file_unique_id — постоянный уникальный, ключ дедупликации. */
     fileUniqueId: text("file_unique_id").notNull().unique(),
-    /** 辅助 emoji（可选） */
+    /** Вспомогательный emoji (опционально) */
     emoji: text("emoji"),
-    /** 贴纸集短名（来源追踪） */
+    /** Короткое имя набора стикеров (для отслеживания источника) */
     setName: text("set_name"),
-    /** 情绪维度（Phase 2 VLM 填充） */
+    /** Измерение эмоции (заполняется VLM в Phase 2) */
     emotion: text("emotion"),
-    /** 动作维度（Phase 2 VLM 填充） */
+    /** Измерение действия (заполняется VLM в Phase 2) */
     action: text("action"),
-    /** 强度维度（Phase 2 VLM 填充） */
+    /** Измерение интенсивности (заполняется VLM в Phase 2) */
     intensity: text("intensity"),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
@@ -1069,20 +1073,20 @@ export const stickerPalette = sqliteTable(
   ],
 );
 
-/** 贴纸使用频率追踪：per sticker × per chat。 */
+/** Отслеживание частоты использования стикеров: per sticker × per chat. */
 export const stickerUsage = sqliteTable(
   "sticker_usage",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     /** sticker_palette.file_unique_id */
     fileUniqueId: text("file_unique_id").notNull(),
-    /** 使用该贴纸的聊天 ID */
+    /** ID чата, в котором использовался стикер */
     chatId: text("chat_id").notNull(),
-    /** 聊天类型（由 chatId 符号派生：正=private，负=group） */
+    /** Тип чата (определяется по знаку chatId: положительный=private, отрицательный=group) */
     chatType: text("chat_type").notNull(),
-    /** 使用次数（累加） */
+    /** Счётчик использований (накапливается) */
     count: integer("count").notNull().default(1),
-    /** 最后使用时间 */
+    /** Время последнего использования */
     lastUsedAt: integer("last_used_at", { mode: "timestamp" })
       .notNull()
       .$defaultFn(() => new Date()),
@@ -1095,9 +1099,9 @@ export const stickerUsage = sqliteTable(
 );
 
 /**
- * ADR-204: 意识流事件。
- * 持久化 tick 循环产生的执行痕迹（情绪、指令、观察、Skill 输出），
- * 下一 tick 通过 surface() 浮现到 prompt，reinforce() 闭合反馈环。
+ * ADR-204: События потока сознания.
+ * Хранит следы выполнения тик-цикла (эмоции, инструкции, наблюдения, вывод Skill),
+ * в следующем тике всплывают в prompt через surface(), reinforce() замыкает петлю обратной связи.
  * @see docs/adr/204-consciousness-stream/
  */
 export const consciousnessEvents = sqliteTable(
@@ -1106,40 +1110,40 @@ export const consciousnessEvents = sqliteTable(
     id: integer("id").primaryKey({ autoIncrement: true }),
     tick: integer("tick").notNull(),
     timestampMs: integer("timestamp_ms").notNull(),
-    /** 事件类别：act:feel | act:diary | evolve:tier | evolve:enqueue 等。 */
+    /** Категория события: act:feel | act:diary | evolve:tier | evolve:enqueue и т.д. */
     kind: text("kind").notNull(),
-    /** 关联实体 ID JSON 数组（联系人/频道）。 */
+    /** JSON-массив ID связанных сущностей (контакты/каналы). */
     entityIds: text("entity_ids").notNull().default("[]"),
-    /** 人类可读的事件摘要。 */
+    /** Человекочитаемый конспект события. */
     summary: text("summary").notNull(),
-    /** 显著性 [0,1]，驱动 surface() 排序。 */
+    /** Заметность [0,1], управляет сортировкой surface(). */
     salience: real("salience").notNull().default(0.5),
-    /** 展开提示（可选，供 contribute 渲染更丰富的上下文）。 */
+    /** Подсказка для раскрытия (опционально, для более богатого контекста при contribute). */
     expandHint: text("expand_hint"),
   },
   (t) => [index("idx_ce_tick").on(t.tick), index("idx_ce_salience").on(t.salience)],
 );
 
 /**
- * Bio 缓存：按需获取的 Telegram 实体 bio/description。
- * 联系人 → users.getFullUser.about，群组/频道 → channels.getFullChannel.about。
- * TTL 3 天，cache miss 时异步获取，下次 tick 生效。
+ * Кэш Bio: получаемые по запросу bio/description Telegram-сущностей.
+ * Контакты → users.getFullUser.about, группы/каналы → channels.getFullChannel.about.
+ * TTL 3 дня, при cache miss запрашивается асинхронно, вступает в силу со следующего тика.
  */
 export const bioCache = sqliteTable("bio_cache", {
-  /** 实体 ID（如 contact:telegram:123 或 channel:telegram:-100xxx）。 */
+  /** ID сущности (например contact:telegram:123 или channel:telegram:-100xxx). */
   entityId: text("entity_id").primaryKey(),
-  /** bio/about 文本（Telegram 用户签名或群组简介）。 */
+  /** Текст bio/about (подпись Telegram-пользователя или описание группы). */
   bio: text("bio"),
-  /** 用户个人频道 ID（仅 contact，可用于探索发现）。 */
+  /** ID личного канала пользователя (только для contact, может использоваться для обнаружения). */
   personalChannelId: integer("personal_channel_id"),
-  /** 获取时间（ms）。 */
+  /** Время получения (мс). */
   fetchedAt: integer("fetched_at", { mode: "timestamp_ms" }).notNull(),
 });
 
 /**
- * ADR-215: Cognitive Episode Graph — 认知片段。
- * Episode = 一段连贯认知活动（从 engagement 开始到自然中断）。
- * 自动分割，不需要 LLM 声明。Residue 编码未消解张力，参与压力竞争。
+ * ADR-215: Cognitive Episode Graph — когнитивный эпизод.
+ * Episode = отрезок связной когнитивной активности (от начала engagement до естественного прерывания).
+ * Разделяется автоматически, объявление LLM не требуется. Residue кодирует неразрешённое напряжение и участвует в конкуренции давлений.
  * @see docs/adr/215-cognitive-episode-graph.md
  */
 export const episodes = sqliteTable(
@@ -1156,9 +1160,9 @@ export const episodes = sqliteTable(
     triggerEvent: text("trigger_event"),
     entityIds: text("entity_ids").notNull().default("[]"), // JSON string[]
     residue: text("residue"), // JSON EpisodeResidue | null
-    causedBy: text("caused_by"), // JSON string[] episode IDs
-    consults: text("consults"), // JSON string[] episode IDs
-    resolves: text("resolves"), // JSON string[] episode IDs
+    causedBy: text("caused_by"), // JSON string[] ID эпизодов
+    consults: text("consults"), // JSON string[] ID эпизодов
+    resolves: text("resolves"), // JSON string[] ID эпизодов
     createdMs: integer("created_ms").notNull(),
   },
   (t) => [index("idx_episodes_tick").on(t.tickStart), index("idx_episodes_target").on(t.target)],

@@ -1,5 +1,5 @@
 /**
- * moderation 类别动作：pin_message, delete_message, unpin_message。
+ * Действия категории moderation: pin_message, delete_message, unpin_message.
  *
  * @see docs/adr/149-define-action-builder.md
  */

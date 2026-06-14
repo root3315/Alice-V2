@@ -1,15 +1,15 @@
 /**
- * Alice Runtime 入口。
+ * Точка входа Alice Runtime.
  *
- * 启动流程：
- * 1. 加载配置
- * 2. 初始化数据库
- * 3. 连接 Telegram
- * 4. 恢复/构建图 + 人格
- * 5. 恢复 Mod 状态 + lastActionTick（ADR-33）
- * 6. 安全网预检（LLM 连通 + Telegram 自检 + 贴纸同步 + Skill 同步 + 压力管线 dry-run）
- * 7. 绑定事件 → 启动 EVOLVE 循环 + ACT 循环
- * 8. 优雅退出
+ * Последовательность запуска:
+ * 1. Загрузка конфигурации
+ * 2. Инициализация базы данных
+ * 3. Подключение к Telegram
+ * 4. Восстановление/построение графа + личности
+ * 5. Восстановление состояния Mod + lastActionTick (ADR-33)
+ * 6. Предстартовая проверка страховочной сети (связность LLM + самодиагностика Telegram + синхронизация стикеров + синхронизация Skill + dry-run конвейера давлений)
+ * 7. Привязка событий → запуск цикла EVOLVE + цикла ACT
+ * 8. Graceful shutdown
  */
 
 import { writeFileSync } from "node:fs";
@@ -111,10 +111,10 @@ function recordRuntimeHeartbeat(G: WorldModel, nowMs = Date.now()): void {
 async function main() {
   log.info("Alice Runtime starting...");
 
-  // 1. 配置
+  // 1. Конфигурация
   const config = loadConfig();
 
-  // 2. 数据库
+  // 2. База данных
   ensureParentDir(ALICE_DB_PATH);
   ensureParentDir(ALICE_MEDIA_CACHE_DB_PATH);
   ensureParentDir(ALICE_GROUP_CACHE_DB_PATH);
@@ -123,7 +123,7 @@ async function main() {
   initGroupCache(ALICE_GROUP_CACHE_DB_PATH);
   log.info("Database initialized");
 
-  // 3. Telegram 连接
+  // 3. Подключение к Telegram
   const client = createClient(config);
   const dp = createDispatcher(client);
   await startClient(client, config.telegramPhone);
@@ -131,14 +131,14 @@ async function main() {
   const selfId = String(self.id);
   log.info("Logged in", { selfId, username: self.username });
 
-  // ADR-33 Phase 2: 从旧 graph_snapshots 迁移到 graph_nodes/graph_edges（一次性）
+  // ADR-33 Phase 2: одноразовая миграция со старых graph_snapshots на graph_nodes/graph_edges
   migrateFromSnapshots();
 
-  // 4. 恢复或构建图
+  // 4. Восстановление или построение графа
   let G = loadGraphFromDb();
   if (G) {
     log.info("Graph restored from DB", { tick: G.tick, nodes: G.size });
-    // ADR-206: 清理历史幽灵联系人（频道以自身身份发消息产生的 contact 镜像）
+    // ADR-206: очистка исторических фантомных контактов (зеркала contact, созданные каналом при отправке сообщений от своего имени)
     const phantomCount = cleanupPhantomContacts(G);
     if (phantomCount > 0) {
       log.info("Cleaned up phantom contacts", { count: phantomCount });
@@ -160,10 +160,10 @@ async function main() {
     flushGraph(G);
   }
 
-  // ADR-123 D2: 注册域衰减参数（在 evolve 前、所有 graph 路径后）
+  // ADR-123 D2: регистрация параметров затухания доменов (до evolve, после всех путей graph)
   // @see docs/adr/123-crystallization-substrate-generalization.md §D2
   G.beliefs.registerDomainDecay("trait:", TRAIT_BELIEF_DECAY);
-  // ADR-123 §D3/D4: jargon 和 expression 域衰减参数
+  // ADR-123 §D3/D4: параметры затухания доменов jargon и expression
   G.beliefs.registerDomainDecay("jargon:", {
     halfLife: 720,
     muPrior: 0,
@@ -176,19 +176,19 @@ async function main() {
     sigma2Inf: 1.0,
     theta: 0.001,
   });
-  // ADR-208: interest 域 — 复用 trait 的未结晶衰减参数（8h 半衰期，等待结晶期间快速衰减）
+  // ADR-208: домен interest — повторно используются параметры затухания до кристаллизации из trait (полупериод 8ч, быстрое затухание в ожидании кристаллизации)
   // @see docs/adr/208-cognitive-label-interest-domain.md
   G.beliefs.registerDomainDecay("interest:", TRAIT_BELIEF_DECAY);
 
-  // 恢复或创建人格
-  // M7: 单一引用对象——所有消费者通过 personalityRef.current 访问，
-  // onPersonalityUpdate 只需更新一处，不再需要同步多个字段。
+  // Восстановление или создание личности
+  // M7: единый объект-ссылка — все потребители обращаются через personalityRef.current,
+  // onPersonalityUpdate обновляет только одно место, синхронизация нескольких полей больше не нужна.
   const personalityRef = {
     current: loadLatestPersonality() ?? new PersonalityVector(config.piHome),
   };
   log.info("Personality loaded", personalityRef.current.toString());
 
-  // 同步人格信息到图节点（供 strategy.mod 漂移审计使用）
+  // Синхронизация данных личности в узел графа (для аудита дрейфа в strategy.mod)
   if (G.has(ALICE_SELF)) {
     G.updateAgent(ALICE_SELF, {
       personality_weights: JSON.stringify(personalityRef.current.weights),
@@ -196,8 +196,8 @@ async function main() {
     });
   }
 
-  // 5. 初始化运行时组件
-  // Mod 系统：加载所有 Mods → 创建 Dispatcher
+  // 5. Инициализация runtime-компонентов
+  // Система Mod: загрузка всех Mod → создание Dispatcher
   const mods = loadAllMods();
   const dispatcher = createAliceDispatcher({
     graph: G,
@@ -210,17 +210,17 @@ async function main() {
     queries: dispatcher.getQueryNames(),
   });
 
-  // D3 Axiom 3: 工具面完整性检查（启动诊断，不阻塞）
+  // D3 Axiom 3: проверка полноты инструментальной поверхности (стартовая диагностика, не блокирует)
   // @see paper/ §Axiom 3 "Tool Surface Completeness"
   checkToolSurfaceCompleteness(dispatcher);
 
-  // ADR-33: 恢复 Mod 状态（重启后不丢失 memorizedFacts/outcomeHistory/strategy 缓存）
+  // ADR-33: восстановление состояния Mod (memorizedFacts/outcomeHistory/strategy-кэш не теряются после перезапуска)
   const modStatesRestored = dispatcher.loadModStatesFromDb();
   if (modStatesRestored) {
     log.info("Mod states restored from DB");
   }
 
-  // ADR-33: 恢复 lastActionTick（避免重启后立即触发空闲自启动）
+  // ADR-33: восстановление lastActionTick (предотвращает немедленный автозапуск по простою после перезапуска)
   const lastActionTick = recoverLastActionTick();
 
   const clock = new TickClock({
@@ -235,7 +235,7 @@ async function main() {
   const recentEventCounts: number[] = [];
   const recentActions: EvolveState["recentActions"] = [];
 
-  // 绑定管理员命令（group=-1，在 EventBuffer handler 之前执行）
+  // Привязка команд администратора (group=-1, выполняется до обработчика EventBuffer)
   const adminCtx = {
     config,
     client,
@@ -250,11 +250,11 @@ async function main() {
   };
   bindAdminCommands(dp, adminCtx);
 
-  // ADR-90 W1: 启动预热 outgoing message cache — reply directed 检测重启恢复
+  // ADR-90 W1: предварительный прогрев кэша исходящих сообщений при запуске — восстановление обнаружения reply directed после перезапуска
   const warmedCount = warmOutgoingCache();
   log.info("Outgoing message cache warmed from DB", { count: warmedCount });
 
-  // 绑定 Telegram 事件 → EventBuffer
+  // Привязка Telegram-событий → EventBuffer
   const selfUsername = self.username ?? undefined;
   bindEvents(
     dp,
@@ -281,14 +281,14 @@ async function main() {
     log.info("OneBot event receiver started");
   }
 
-  // EVOLVE 状态
-  // ADR-33/110: lastActionTick → lastActionMs。
-  // 尝试从图中任意节点读取 last_alice_action_ms（墙钟直读）；
-  // 不存在时回退到 tick 差值估算；全无则用 Date.now()。
+  // Состояние EVOLVE
+  // ADR-33/110: lastActionTick → lastActionMs.
+  // Пытаемся прочитать last_alice_action_ms из любого узла графа (прямое чтение настенного времени);
+  // при отсутствии — fallback на оценку по разности tick; если нет ни того ни другого — Date.now().
   const startupNowMs = Date.now();
   let estimatedLastActionMs = startupNowMs;
   if (lastActionTick > 0) {
-    // 搜索图中最近的 last_alice_action_ms（任一 channel/contact 节点）
+    // Поиск наиболее свежего last_alice_action_ms в графе (любой узел channel/contact)
     let bestMs = 0;
     for (const nid of [...G.getEntitiesByType("channel"), ...G.getEntitiesByType("contact")]) {
       const ms = Number(G.getDynamic(nid, "last_alice_action_ms") ?? 0);
@@ -357,19 +357,19 @@ async function main() {
     attentionDebtMap: new Map(),
     lastSelectedTarget: null,
     lastSelectedCandidate: null,
-    // Agent Mode FSM — ADR-190: 根据离线时长决定初始模态
+    // Agent Mode FSM — ADR-190: начальный режим определяется длительностью офлайна
     mode: initialMode,
     focusTarget: undefined,
     modeEnteredMs: startupNowMs,
     adaptiveKappa: new AdaptiveKappa(config.kappa),
     channelRateEma: new Map(),
-    // ADR-191: spike 信号数据源（perceiveTick 产物）
+    // ADR-191: источник данных spike-сигналов (продукт perceiveTick)
     lastChannelCounts: new Map(),
-    // ADR-147 D2: 事件计数 EMA 初始值（冷启动）
+    // ADR-147 D2: начальное значение EMA счётчика событий (холодный старт)
     eventCountEma: 10,
-    // ADR-147 D12: 连续洪水 tick 计数
+    // ADR-147 D12: счётчик последовательных flood-тиков
     floodTickCount: 0,
-    // ADR-190: Wakeup 状态
+    // ADR-190: состояние Wakeup
     wakeupTicksElapsed: 0,
     wakeupEngagedTargets: new Set(),
     // Runtime restart also resets queue/engagement context; use the same recovery control loop.
@@ -380,13 +380,13 @@ async function main() {
     lastAPIPeak: 0,
     lastFlushMs: startupNowMs,
     currentDt: 0,
-    // ADR-190: LLM 失败指数退避初始状态
+    // ADR-190: начальное состояние экспоненциального отступа при сбое LLM
     llmBackoff: { consecutiveFailures: 0, lastFailureMs: 0 },
-    // ADR-215: Cognitive Episode Graph
+    // ADR-215: граф когнитивных эпизодов
     episodeState: initEpisodeState(),
   };
 
-  // ACT 上下文
+  // Контекст ACT
   const actCtx: ActContext = {
     client,
     G,
@@ -396,7 +396,7 @@ async function main() {
       return personalityRef.current;
     },
     dispatcher,
-    buffer, // ADR-107: EventBuffer 引用
+    buffer, // ADR-107: ссылка на EventBuffer
     getCurrentTick: () => clock.tick,
     getCurrentPressures: () => {
       const p = computeAllPressures(G, clock.tick, {
@@ -409,17 +409,17 @@ async function main() {
       });
       return [p.P1, p.P2, p.P3, p.P4, p.P5, p.P6];
     },
-    // ADR-173: 延迟记录——act 确认真实 Telegram 行动后写入 recentActions
+    // ADR-173: отложенная запись — recentActions пишется после подтверждения реального Telegram-действия на этапе act
     recordAction: (action: string, target: string | null) => {
       const nowMs = Date.now();
       recentActions.push({ tick: clock.tick, action, ms: nowMs, target });
-      // 窗口清理（与旧 enqueueAndRecord 逻辑一致）
+      // Очистка окна (согласуется с логикой старого enqueueAndRecord)
       const windowStartMs = nowMs - config.actionRateWindow * 1000;
       while (recentActions.length > 0 && recentActions[0].ms <= windowStartMs) {
         recentActions.shift();
       }
     },
-    // ADR-190: LLM 调用结果通知——驱动 evolve 调度层指数退避
+    // ADR-190: уведомление о результате LLM-вызова — управляет экспоненциальным отступом на уровне планировщика evolve
     reportLLMOutcome: (success: boolean) => {
       if (success) {
         evolveState.llmBackoff.consecutiveFailures = 0;
@@ -429,22 +429,22 @@ async function main() {
       }
     },
     onPersonalityUpdate: (pv) => {
-      // M7: 单点更新——所有消费者通过 getter 自动获取最新值
+      // M7: единая точка обновления — все потребители автоматически получают актуальное значение через getter
       personalityRef.current = pv;
-      // 同步到图节点（供 strategy.mod 人格漂移审计读取）
+      // Синхронизация в узел графа (для чтения аудита дрейфа личности в strategy.mod)
       if (G.has(ALICE_SELF)) {
         G.updateAgent(ALICE_SELF, { personality_weights: JSON.stringify(pv.weights) });
       }
-      // 人格快照由 snapshotAndMaintain 定时器统一保存（墙钟间隔），
-      // 此处不再使用 tick % snapshotIntervalS（tick 计数 vs 秒数语义不匹配）。
-      // @see F8 fix: ADR-113 遗留项
+      // Снимок личности сохраняется централизованно таймером snapshotAndMaintain (интервал по настенному времени);
+      // tick % snapshotIntervalS здесь больше не используется (несоответствие семантики счётчика tick и секунд).
+      // @see F8 fix: ADR-113 незакрытый пункт
     },
   };
 
-  // ── ADR-54 安全网：启动预检 ──────────────────────────────────────────────
+  // ── ADR-54 страховочная сеть: предстартовая проверка ──────────────────────────────────────────────
 
-  // S2: mtcute 连接监控 — 注册 error/connectionState 处理器
-  // mtcute 内部自动重连，这里做日志记录以便排查
+  // S2: мониторинг подключения mtcute — регистрация обработчиков error/connectionState
+  // mtcute переподключается внутренне, здесь ведётся журнал для диагностики
   // @see docs/adr/54-pre-mortem-safety-net.md §S2
   client.onError.add((err: Error) => {
     log.error("mtcute connection error", { error: err.message });
@@ -452,10 +452,10 @@ async function main() {
       error: err.message,
     });
   });
-  // ADR-147 D4: mtcute 重连状态感知 — 精确标记积压期
-  // `updating` = 正在追赶积压 updates，`connected` = 追赶完成。
-  // 首次连接: onUsable → connected（无 updating 阶段，recoveringStartMs=0 不触发）
-  // 重连恢复: connected → onCatchingUp(true) → updating → ... → onCatchingUp(false) → connected
+  // ADR-147 D4: отслеживание состояния переподключения mtcute — точная маркировка периода накопленных обновлений
+  // `updating` = догоняем накопленные updates, `connected` = догонка завершена.
+  // Первое подключение: onUsable → connected (фазы updating нет, recoveringStartMs=0, не срабатывает)
+  // Восстановление после переподключения: connected → onCatchingUp(true) → updating → ... → onCatchingUp(false) → connected
   // @see docs/adr/147-flood-backlog-recovery.md §D4
   let recoveringStartMs = 0;
   client.onConnectionState.add((state: string) => {
@@ -477,19 +477,19 @@ async function main() {
     }
   });
 
-  // D5: 初始化 provider fallback 链（ADR-123 §D5）
+  // D5: инициализация цепочки fallback провайдеров (ADR-123 §D5)
   initProviders(config);
 
-  // ADR-263: group reception Ax shadow judge 只做旁路诊断，不接管 evidence/control。
+  // ADR-263: теневой судья Ax group reception — только параллельная диагностика, не перехватывает evidence/control.
   const { initGroupReceptionShadowJudge } = await import("./mods/observer/group-reception.js");
   initGroupReceptionShadowJudge(config);
 
-  // S-EA: 启动 Engine API（TCP）
-  // Skill CLI 脚本通过 TCP 读取 config / graph 属性。
+  // S-EA: запуск Engine API (TCP)
+  // Скрипты Skill CLI читают атрибуты config / graph через TCP.
   // @see docs/adr/202-engine-api.md
   let engineApiCleanup: (() => Promise<void>) | null = null;
   let enginePort = 0;
-  // deps 引用保持可变——S8 syncEnv 完成后注入 registry + 收紧 strict 模式
+  // deps — мутируемая ссылка; после завершения S8 syncEnv в неё инжектируется registry и включается strict-режим
   const engineApiDeps: Parameters<typeof startEngineApi>[0] = {
     config: {
       timezoneOffset: config.timezoneOffset,
@@ -511,23 +511,23 @@ async function main() {
       : undefined,
     telegramSend: async ({ chatId, text, replyTo }) => {
       const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
-      // Typing indicator + 自然延迟（对齐 action-executor 行为）。
-      // irc say/reply 通过 Engine API 发送，不经过 action-executor 的 typing 管线，
-      // 需要在此处补偿，否则对端看不到"正在输入"。
+      // Typing indicator + естественная задержка (выравнивание с поведением action-executor).
+      // irc say/reply отправляется через Engine API, минуя конвейер typing action-executor;
+      // здесь требуется компенсация, иначе собеседник не увидит "печатает".
       try {
         await setTyping(client, rawChatId);
         const charCount = [...text].length;
         const delayMs = Math.min(Math.max(charCount * 80, 800), 8000);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       } catch {
-        // typing 失败不阻断发送
+        // ошибка typing не блокирует отправку
       }
       // Forum: отвечаем в топик канала (current_topic_id), если он известен; иначе обычная отправка.
       const graphId = telegramChannelId(rawChatId);
       const topicId =
         graphId && G.has(graphId) ? G.getChannel(graphId).current_topic_id : undefined;
       const msgId = await sendText(client, rawChatId, text, { replyToMsgId: replyTo, topicId });
-      // 显式取消 typing 定时器（mtcute 5s 自动续发，不取消会残留）
+      // Явная отмена таймера typing (mtcute автоматически обновляет каждые 5с; без отмены остаётся активным)
       setTyping(client, rawChatId, true).catch(() => {});
       if (msgId != null && graphId) {
         cacheOutgoingMsg(graphId, msgId);
@@ -570,16 +570,16 @@ async function main() {
     },
     telegramSticker: async ({ chatId, sticker: keyword }) => {
       const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
-      // Typing indicator（sticker 也需要短暂的"正在输入"模拟自然感）
+      // Typing indicator (стикеры тоже требуют краткого "печатает" для естественности)
       try {
         await setTyping(client, rawChatId);
         await new Promise((resolve) => setTimeout(resolve, 600));
       } catch {
-        // typing 失败不阻断发送
+        // ошибка typing не блокирует отправку
       }
       const graphId = telegramChannelId(rawChatId);
       const db = getDb();
-      // 多层解析：维度关键词 → emoji → raw fileId
+      // Многоуровневый поиск: ключевое слово измерения → emoji → raw fileId
       let fileId: string | null = resolveLabel(db, keyword, graphId ?? undefined);
       if (!fileId) fileId = resolveByEmoji(db, keyword, graphId ?? undefined);
       if (!fileId && keyword.startsWith("CAACAgI")) fileId = keyword;
@@ -601,7 +601,7 @@ async function main() {
       }
       return { msgId: msgId ?? null };
     },
-    // TTS 语音消息：textToSpeech → sendVoice → fallback sendText
+    // TTS голосовое сообщение: textToSpeech → sendVoice → fallback sendText
     telegramVoice: async ({ chatId, text, emotion, replyTo }) => {
       const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
       const graphId = telegramChannelId(rawChatId);
@@ -617,7 +617,7 @@ async function main() {
       if (!isTTSEnabled(ttsConfig)) {
         throw new Error("TTS not configured (set TTS_BASE_URL and TTS_API_KEY in .env)");
       }
-      // 情感验证
+      // Проверка эмоции
       const VALID_EMOTIONS = new Set([
         "happy",
         "sad",
@@ -637,7 +637,7 @@ async function main() {
       try {
         await setTyping(client, rawChatId);
       } catch {
-        /* typing 失败不阻断 */
+        /* сбой typing не блокирует отправку */
       }
       const audioBuffer = await textToSpeech(text.slice(0, 1000), ttsConfig, validEmotion);
       let sentMsgId: number | undefined;
@@ -657,7 +657,7 @@ async function main() {
           fallbackReason = "voice_messages_forbidden";
         }
       } else {
-        // TTS 合成失败 → 回退为文本消息
+        // Сбой синтеза TTS → откат к текстовому сообщению
         log.warn("TTS synthesis failed, falling back to text", { chatId: rawChatId });
         sentMsgId =
           (await sendText(client, rawChatId, text, { replyToMsgId: replyTo })) ?? undefined;
@@ -676,7 +676,7 @@ async function main() {
       }
       return { msgId: sentMsgId ?? null, deliveredAs, fallbackReason };
     },
-    // ADR-206 W8: 跨聊天转发 + 可选附加评论
+    // ADR-206 W8: переадресация между чатами + необязательный дополнительный комментарий
     telegramForward: async ({ fromChatId, msgId, toChatId, comment }) => {
       const fwdMsgId = await forwardMessage(client, fromChatId, msgId, toChatId);
       const toGraphId = telegramChannelId(toChatId);
@@ -684,7 +684,7 @@ async function main() {
         cacheOutgoingMsg(toGraphId, fwdMsgId);
         dispatcher.dispatch("DECLARE_ACTION", { target: toGraphId });
       }
-      // 附加评论：转发成功后，以 reply 形式发送评论
+      // Дополнительный комментарий: после успешного переадресования отправляется как reply
       let commentMsgId: number | null = null;
       if (comment?.trim() && fwdMsgId != null) {
         commentMsgId =
@@ -723,9 +723,9 @@ async function main() {
         },
       });
     },
-    // ADR-204 W2: Telegram 文件下载回调
+    // ADR-204 W2: callback загрузки Telegram-файла
     telegramDownload: async ({ chatId, msgId, output }) => {
-      // 安全约束：output 路径必须在 ALICE_HOME 下
+      // Ограничение безопасности: путь output должен находиться под ALICE_HOME
       const resolved = resolve(output);
       if (!resolved.startsWith(ALICE_HOME)) {
         throw new Error(`output path must be under ALICE_HOME (${ALICE_HOME})`);
@@ -736,7 +736,7 @@ async function main() {
       if (!msg) throw new Error(`message ${msgId} not found in chat ${chatId}`);
       const media = msg.media;
       if (!media) throw new Error(`message ${msgId} has no media`);
-      // 排除不可下载的 media 类型（Dice, Contact, Location 等）
+      // Исключаем неподдерживаемые для скачивания типы media (Dice, Contact, Location и т.п.)
       const downloadable =
         "type" in media
           ? [
@@ -754,20 +754,20 @@ async function main() {
       const buffer = Buffer.from(
         await client.downloadAsBuffer(media as Parameters<typeof client.downloadAsBuffer>[0]),
       );
-      // 确保目标目录存在
+      // Убеждаемся, что целевой каталог существует
       const { mkdirSync } = await import("node:fs");
       mkdirSync(dirname(resolved), { recursive: true });
       writeFileSync(resolved, buffer);
-      // 推断 MIME type（从 mtcute media 类型或扩展名）
+      // Определяем MIME type (из типа mtcute media или расширения файла)
       const mime =
         "mimeType" in media
           ? String(media.mimeType ?? "application/octet-stream")
           : "application/octet-stream";
       return { path: resolved, mime, size: buffer.length };
     },
-    // ADR-204 W2: Telegram 文件上传回调
+    // ADR-204 W2: callback загрузки файла в Telegram
     telegramUpload: async ({ chatId, path: filePath, caption, replyTo }) => {
-      // 安全约束：path 必须在 ALICE_HOME 下
+      // Ограничение безопасности: path должен находиться под ALICE_HOME
       const resolved = resolve(filePath);
       if (!resolved.startsWith(ALICE_HOME)) {
         throw new Error(`file path must be under ALICE_HOME (${ALICE_HOME})`);
@@ -777,7 +777,7 @@ async function main() {
       const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
       const fileBuffer = readFileSync(resolved);
       const fileName = resolved.split("/").pop() ?? "file";
-      // 使用 InputMedia.auto 构建媒体
+      // Строим медиа через InputMedia.auto
       const { InputMedia } = await import("@mtcute/node");
       const inputMedia = InputMedia.auto(fileBuffer, { fileName });
       const sent = await client.sendMedia(rawChatId, inputMedia, {
@@ -799,14 +799,14 @@ async function main() {
       return undefined;
     },
     getMods: () => dispatcher.mods,
-    // S8 完成后收紧为 strict（注入 registry + 翻转开关）
+    // После завершения S8 переходим в strict-режим (инжектируем registry + переключаем флаг)
     strictCapabilities: false,
   };
   try {
     const engineResult = await startEngineApi(engineApiDeps);
     engineApiCleanup = engineResult.cleanup;
     enginePort = engineResult.port;
-    // 注入端口到 shell-executor 模块变量
+    // инжектируем порт в переменную модуля shell-executor
     const { setEnginePort } = await import("./core/shell-executor.js");
     setEnginePort(enginePort);
     log.info("Engine API started", { port: enginePort });
@@ -816,7 +816,7 @@ async function main() {
     });
   }
 
-  // ADR-129: 熔断器 → Admin 通知
+  // ADR-129: размыкатель → уведомление Admin
   initAdminNotify({ client });
   onBreakerStateChange((providerName, event) => {
     if (event === "open") {
@@ -829,7 +829,7 @@ async function main() {
     }
   });
 
-  // S1: LLM 连通性预检 — 失败重试 3 次再 exit，网络瞬态超时不应杀进程
+  // S1: предстартовая проверка связности LLM — при сбое повторяем 3 раза перед exit; мгновенный таймаут сети не должен убивать процесс
   // @see docs/adr/54-pre-mortem-safety-net.md §S1
   {
     const S1_MAX_ATTEMPTS = 3;
@@ -866,7 +866,7 @@ async function main() {
     if (!s1Passed) process.exit(1);
   }
 
-  // S5: 启动自检消息 — 向 Telegram 收藏夹发送自检，验证 mtcute + Telegram API 可用
+  // S5: самодиагностическое сообщение при запуске — отправляется в Telegram Избранное, проверяет доступность mtcute + Telegram API
   // @see docs/adr/54-pre-mortem-safety-net.md §S5
   try {
     const startupMsg = `[Alice] Runtime started — ${new Date().toISOString()} — tick #${clock.tick}`;
@@ -874,11 +874,11 @@ async function main() {
     log.info("Startup self-check message sent to Saved Messages");
   } catch (err) {
     log.error("Failed to send startup self-check message", { error: err });
-    // 不 exit — Telegram 连接已通过 getMe() 验证，sendText 失败可能是临时问题
+    // exit не вызываем — подключение к Telegram проверено через getMe(), сбой sendText может быть временным
   }
 
-  // S7: 贴纸调色板同步 — 增量同步已安装贴纸集到 palette
-  // 幂等：新贴纸入库 + 过期贴纸清理 + fileId 刷新。VLM 贴纸不受影响。
+  // S7: синхронизация стикер-палитры — инкрементальная синхронизация установленных стикер-паков в palette
+  // Идемпотентно: добавление новых стикеров + очистка устаревших + обновление fileId. VLM-стикеры не затрагиваются.
   try {
     const stats = await syncInstalledSets(client, getDb());
     if (stats.added > 0 || stats.removed > 0) {
@@ -888,7 +888,7 @@ async function main() {
     log.warn("Sticker palette sync failed (non-fatal)", { error: e });
   }
 
-  // S8: Skill 包同步 — 收敛到 alice-env.yaml 声明的期望状态
+  // S8: синхронизация пакетов Skill — сходимость к желаемому состоянию, объявленному в alice-env.yaml
   // @see docs/adr/201-os-for-llm.md
   try {
     // fileURLToPath (не .pathname): на Windows URL.pathname даёт "/C:/..." с
@@ -898,8 +898,8 @@ async function main() {
     if (skillSync.installed.length > 0 || skillSync.upgraded.length > 0) {
       log.info("Skills synced", skillSync);
     }
-    // Skill 同步完成后注入 registry + 收紧 strict 模式
-    // deps 是引用类型——修改后 route() 的每次请求都会读到最新值
+    // После завершения синхронизации Skill инжектируем registry + включаем strict-режим
+    // deps — ссылочный тип; каждый последующий запрос route() будет читать актуальные значения
     engineApiDeps.registry = loadRegistry();
     const artifactsResult = ensureAllArtifacts();
     if (artifactsResult.synced > 0 || artifactsResult.fixed > 0) {
@@ -922,8 +922,8 @@ async function main() {
     });
   }
 
-  // S6: 压力管线 dry-run — 跑一遍 pressures → tensionMap → loudness → selectAction
-  // 不推进 tick、不写 DB、不入队，只验证计算管线无异常 / 无 NaN
+  // S6: dry-run конвейера давлений — прогон pressures → tensionMap → loudness → selectAction
+  // Не продвигает tick, не пишет в DB, не ставит в очередь; только проверяет, что конвейер не вызывает исключений / NaN
   // @see docs/adr/54-pre-mortem-safety-net.md §S6
   try {
     const dryPressures = computeAllPressures(G, clock.tick, {
@@ -949,7 +949,7 @@ async function main() {
     );
     const [, dryAction] = selectAction(dryLoudness);
 
-    // 验证无 NaN
+    // Проверяем отсутствие NaN
     const pValues = [
       dryPressures.P1,
       dryPressures.P2,
@@ -988,8 +988,8 @@ async function main() {
     process.exit(1);
   }
 
-  // S7: Docker sandbox session 预热 — 在第一个 tick 前创建容器，消除冷启动延迟
-  // 致命：sandbox 起不来 = 所有 shell 命令都无法执行，runtime 无意义
+  // S7: предварительный прогрев Docker sandbox session — создаём контейнер до первого tick, устраняя задержку холодного старта
+  // Критично: если sandbox не запускается = все shell-команды недоступны, runtime бессмысленен
   try {
     const { warmupSandboxSession } = await import("./skills/container-runner.js");
     await warmupSandboxSession(enginePort);
@@ -1004,9 +1004,9 @@ async function main() {
     process.exit(1);
   }
 
-  // ── 安全网预检完成 ─────────────────────────────────────────────────────────
+  // ── Предстартовые проверки страховочной сети завершены ─────────────────────────────────────────────────────────
 
-  // 6. 启动三线程
+  // 6. Запуск трёх потоков
   const evolveController = startEvolveLoop(evolveState);
   const actPromise = startActLoop(actCtx);
   log.info("EVOLVE + ACT loops started", {
@@ -1024,16 +1024,16 @@ async function main() {
     }
   }, RUNTIME_HEARTBEAT_INTERVAL_MS);
 
-  // ADR-33: 定期保存 Mod 状态 + 维护（与图快照对齐）
-  // 使用 snapshotIntervalS 的墙钟秒数作为 setInterval 间隔
+  // ADR-33: периодическое сохранение состояния Mod + обслуживание (выровнено со снимками графа)
+  // Используем настенные секунды snapshotIntervalS в качестве интервала setInterval
   let stickerSyncCounter = 0;
   const snapshotAndMaintain = setInterval(() => {
     try {
       const tick = clock.tick;
       dispatcher.saveModStatesToDb(tick);
-      // F8 fix: 人格快照随墙钟定时器保存，不依赖 tick 计数
+      // F8 fix: снимок личности сохраняется таймером настенного времени, не зависит от счётчика tick
       savePersonalitySnapshot(tick, personalityRef.current);
-      // 每次快照间隔执行日志清理
+      // Очистка журналов при каждом интервале снимка
       if (tick > 0) {
         const alerts = runMaintenance(tick, G, {
           rhythmProfileRebuild: {
@@ -1045,7 +1045,7 @@ async function main() {
           dispatcher.dispatch("UPDATE_ANOMALIES", { anomalies: alerts });
         }
       }
-      // ADR-168 Wave 2: 贴纸同步（每 5 次快照间隔 = snapshotIntervalS × 5 秒）
+      // ADR-168 Wave 2: синхронизация стикеров (каждые 5 интервалов снимка = snapshotIntervalS × 5 секунд)
       stickerSyncCounter++;
       if (stickerSyncCounter >= 5) {
         stickerSyncCounter = 0;
@@ -1058,19 +1058,19 @@ async function main() {
     }
   }, config.snapshotIntervalS * 1000);
 
-  // 7. 优雅退出
+  // 7. Завершение работы
   let shutdownInProgress = false;
   const shutdown = async () => {
     if (shutdownInProgress) return;
     shutdownInProgress = true;
     log.info("Shutting down...");
 
-    // 停定期任务
+    // Останавливаем периодические задачи
     clearInterval(runtimeHeartbeat);
     clearInterval(snapshotAndMaintain);
     oneBotReceiver?.close();
 
-    // 关闭 Engine API
+    // Закрываем Engine API
     if (engineApiCleanup) {
       try {
         await engineApiCleanup();
@@ -1079,14 +1079,14 @@ async function main() {
       }
     }
 
-    // 停 EVOLVE
+    // Останавливаем EVOLVE
     evolveController.abort();
 
-    // 停 ACT
+    // Останавливаем ACT
     queue.close();
     await actPromise;
 
-    // 保存最终状态
+    // Сохраняем финальное состояние
     if (G.has(ALICE_SELF)) {
       const shutdownMs = Date.now();
       G.updateAgent(ALICE_SELF, {
@@ -1099,14 +1099,14 @@ async function main() {
     dispatcher.saveModStatesToDb(clock.tick);
     log.info("Final snapshot saved", { tick: clock.tick });
 
-    // 清理
+    // Очистка
     await destroyClient();
     closeGroupCache();
     closeMediaCache();
     closeDb();
     log.info("Shutdown complete");
-    // P1-3: 给予 I/O 回调缓冲时间（TCP FIN、MTProto session 保存等），
-    // 避免 process.exit(0) 截断异步清理。
+    // P1-3: даём буфер I/O-коллбэкам (TCP FIN, сохранение MTProto-сессии и т.д.),
+    // чтобы process.exit(0) не обрезал асинхронную очистку.
     const SHUTDOWN_IO_BUFFER_MS = 2000;
     setTimeout(() => process.exit(0), SHUTDOWN_IO_BUFFER_MS);
   };

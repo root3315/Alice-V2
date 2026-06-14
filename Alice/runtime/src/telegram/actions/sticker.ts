@@ -1,8 +1,8 @@
 /**
- * sticker 类别动作：send_sticker, list_stickers, get_sticker_set。
+ * Действия категории sticker: send_sticker, list_stickers, get_sticker_set.
  *
- * send_sticker 与 reply 平级——一步完成，LLM 只需描述情绪/动作。
- * list_stickers / get_sticker_set 是高级 API，浏览用，通常不需要。
+ * send_sticker равнозначен reply — выполняется за один шаг, LLM описывает только эмоцию/действие.
+ * list_stickers / get_sticker_set — продвинутые API для обзора, обычно не нужны.
  *
  * @see docs/adr/149-define-action-builder.md
  */
@@ -55,37 +55,37 @@ export const stickerActions: TelegramActionDef[] = [
 
       const db = getDb();
 
-      // 三级降级链：
-      // Tier 1: resolveLabel(palette) — 语义维度匹配（最优）
-      // Tier 2: keyword → emoji → palette.emoji 列匹配
-      // Tier 3: 结构化失败 + 可操作指引
+      // Трёхуровневая цепочка деградации:
+      // Tier 1: resolveLabel(palette) — семантическое сопоставление по измерению (оптимально)
+      // Tier 2: keyword → emoji → совпадение по столбцу palette.emoji
+      // Tier 3: структурированный сбой + рекомендации
 
       let fileId: string | null = null;
       let tier = 0;
 
-      // Tier 1: 语义维度匹配
+      // Tier 1: семантическое сопоставление по измерению
       fileId = resolveLabel(db, args.sticker, graphId);
       if (fileId) {
         tier = 1;
       }
 
-      // Tier 2: emoji 列匹配（palette 有数据但维度列缺失时，如 bootstrap 阶段）
+      // Tier 2: сопоставление по столбцу emoji (когда palette содержит данные, но столбец измерения отсутствует — например, на этапе bootstrap)
       if (!fileId) {
         fileId = resolveByEmoji(db, args.sticker, graphId);
         if (fileId) tier = 2;
       }
 
-      // raw fileId 兜底 — LLM 可能从聊天记录复制了 raw fileId
+      // запасной вариант с raw fileId — LLM мог скопировать raw fileId из истории чата
       if (!fileId && typeof args.sticker === "string" && args.sticker.startsWith("CAACAgI")) {
         fileId = args.sticker;
         tier = 0;
       }
 
-      // Tier 3: emoji 兜底 → 结构化失败
+      // Tier 3: запасной emoji → структурированный сбой
       if (!fileId) {
         const emoji = KEYWORD_TO_EMOJI[args.sticker.toLowerCase()];
         if (emoji) {
-          // emoji 兜底：发送纯文本 emoji
+          // запасной emoji: отправляем чистый текстовый emoji
           const msgId = await sendText(ctx.client, rawId, emoji, { replyToMsgId: args.replyTo });
           if (msgId != null) {
             cacheOutgoingMsg(graphId, msgId);
@@ -99,7 +99,7 @@ export const stickerActions: TelegramActionDef[] = [
           return { success: true, obligationsConsumed: 1 };
         }
 
-        // 完全失败：结构化错误信息
+        // полный сбой: структурированное сообщение об ошибке
         const available = getAvailableKeywords(db);
         const errorMsg = `No sticker matches "${args.sticker}". Valid: ${available}`;
         ctx.log.warn("send_sticker: all tiers failed", { input: args.sticker });
@@ -108,7 +108,7 @@ export const stickerActions: TelegramActionDef[] = [
 
       const msgId = await sendSticker(ctx.client, rawId, fileId, { replyToMsgId: args.replyTo });
 
-      // 主动缓存 outgoing msg_id — reply directed 检测需要（与 send_message 对齐）
+      // явно кешируем исходящий msg_id — нужен для определения направленных ответов (аналогично send_message)
       if (msgId != null) {
         cacheOutgoingMsg(graphId, msgId);
       }

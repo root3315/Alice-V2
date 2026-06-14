@@ -1,9 +1,9 @@
 /**
- * Engine API 路由 — Skill 包管理。
+ * Engine API маршруты — управление Skill-пакетами.
  *
- * alice-pkg CLI 通过这些端点管理 Skill 安装/卸载/搜索。
- * 所有变更操作（install/remove/upgrade/rollback）在引擎进程内执行，
- * 确保热加载和注册表更新的原子性。
+ * alice-pkg CLI управляет установкой/удалением/поиском Skill через эти эндпоинты.
+ * Все изменяющие операции (install/remove/upgrade/rollback) выполняются внутри процесса движка,
+ * гарантируя атомарность горячей загрузки и обновления реестра.
  *
  * @see docs/adr/201-ai-native-os.md
  * @see docs/adr/202-engine-api.md
@@ -32,12 +32,12 @@ import {
 } from "../../skills/remote-store.js";
 import { checkForUpgrades } from "../../skills/upgrade-checker.js";
 
-/** 默认 skills 源目录（本地 manifest 发现）。 */
+/** Каталог источника skills по умолчанию (обнаружение локальных manifest). */
 const SKILLS_ROOT = resolve(import.meta.dirname ?? ".", "../../../skills");
 
 /**
- * 扫描 skills/ 目录下所有 manifest.yaml。
- * 跳过内部目录（_lib, store, system-bin, man）。
+ * Сканирует все manifest.yaml в директории skills/.
+ * Пропускает внутренние директории (_lib, store, system-bin, man).
  */
 function discoverManifests(): Array<{ manifest: SkillManifest; path: string }> {
   if (!existsSync(SKILLS_ROOT)) return [];
@@ -56,14 +56,14 @@ function discoverManifests(): Array<{ manifest: SkillManifest; path: string }> {
       const manifest = ManifestSchema.parse(parseYaml(raw));
       results.push({ manifest, path: manifestPath });
     } catch {
-      // 跳过无效 manifest
+      // Пропускаем невалидный manifest
     }
   }
 
   return results;
 }
 
-/** 模糊匹配：query 在 name/description/whenToUse 中出现。 */
+/** Нечёткое совпадение: query встречается в name/description/whenToUse. */
 function matchesQuery(manifest: SkillManifest, query: string): boolean {
   const q = query.toLowerCase();
   const searchable = [
@@ -75,7 +75,7 @@ function matchesQuery(manifest: SkillManifest, query: string): boolean {
   return searchable.some((s) => s.toLowerCase().includes(q));
 }
 
-/** 读取 JSON body。 */
+/** Читает JSON body. */
 function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -103,7 +103,7 @@ function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
 /**
  * GET /skills/search?query=...
  *
- * 搜索 Skill Store。先查本地，再查远程（如有配置），合并去重。
+ * Поиск в Skill Store. Сначала локально, затем удалённо (если настроено), результаты объединяются без дубликатов.
  */
 export async function handleSkillSearch(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
@@ -136,11 +136,11 @@ export async function handleSkillSearch(req: IncomingMessage, res: ServerRespons
     };
   });
 
-  // 合并远程结果（如果配置了 ALICE_STORE_URL）
+  // Объединяем удалённые результаты (если настроен ALICE_STORE_URL)
   const remoteResults = await searchRemoteStore(query);
   if (remoteResults) {
     for (const remote of remoteResults) {
-      if (localNames.has(remote.name)) continue; // 本地优先
+      if (localNames.has(remote.name)) continue; // локальное имеет приоритет
       skills.push({
         name: remote.name,
         version: remote.version,
@@ -159,7 +159,7 @@ export async function handleSkillSearch(req: IncomingMessage, res: ServerRespons
 /**
  * GET /skills/list
  *
- * 列出已安装 Skill。
+ * Перечисляет установленные Skill-ы.
  */
 export function handleSkillList(_req: IncomingMessage, res: ServerResponse): void {
   const skills = listSkills();
@@ -170,7 +170,7 @@ export function handleSkillList(_req: IncomingMessage, res: ServerResponse): voi
 /**
  * GET /skills/info/:name
  *
- * 查看指定 Skill 详情（manifest + 安装状态）。
+ * Просматривает детали указанного Skill (manifest + статус установки).
  */
 export async function handleSkillInfo(
   name: string,
@@ -180,7 +180,7 @@ export async function handleSkillInfo(
   const registry = loadRegistry();
   const installed = registry[name] ?? null;
 
-  // 查找本地 manifest
+  // Ищем локальный manifest
   const manifestPath = resolve(SKILLS_ROOT, name, "manifest.yaml");
   let manifest: SkillManifest | null = null;
   if (existsSync(manifestPath)) {
@@ -191,7 +191,7 @@ export async function handleSkillInfo(
     }
   }
 
-  // 本地找不到时查远程
+  // Если локально не найдено — запрашиваем удалённо
   let remoteInfo: RemoteSkillSummary | null = null;
   if (!manifest && !installed) {
     const remote = await getRemoteSkillInfo(name);
@@ -213,7 +213,7 @@ export async function handleSkillInfo(
 /**
  * POST /skills/install   { "name": "weather" }
  *
- * 先找本地 skills/<name>/manifest.yaml，找不到则尝试从远程 Store 下载。
+ * Сначала ищет локально skills/<name>/manifest.yaml, при отсутствии — пытается загрузить из удалённого Store.
  */
 export async function handleSkillInstall(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readBody(req);
@@ -227,7 +227,7 @@ export async function handleSkillInstall(req: IncomingMessage, res: ServerRespon
 
   let manifestPath = resolve(SKILLS_ROOT, name, "manifest.yaml");
 
-  // 本地找不到 → 尝试从远程 Store 下载
+  // Локально не найдено → пытаемся загрузить из удалённого Store
   if (!existsSync(manifestPath)) {
     try {
       manifestPath = await downloadAndExtractRemoteSkill(name, SKILLS_ROOT);
@@ -276,7 +276,7 @@ export async function handleSkillRemove(req: IncomingMessage, res: ServerRespons
 /**
  * POST /skills/upgrade   { "name": "weather" }
  *
- * 先找本地 skills/<name>/manifest.yaml，找不到则尝试从远程 Store 下载最新版。
+ * Сначала ищет локально skills/<name>/manifest.yaml, при отсутствии — пытается загрузить последнюю версию из удалённого Store.
  */
 export async function handleSkillUpgrade(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readBody(req);
@@ -290,7 +290,7 @@ export async function handleSkillUpgrade(req: IncomingMessage, res: ServerRespon
 
   let manifestPath = resolve(SKILLS_ROOT, name, "manifest.yaml");
 
-  // 本地找不到 → 尝试从远程 Store 下载最新版
+  // Локально не найдено → пытаемся загрузить последнюю версию из удалённого Store
   if (!existsSync(manifestPath)) {
     try {
       manifestPath = await downloadAndExtractRemoteSkill(name, SKILLS_ROOT);
@@ -342,8 +342,8 @@ export async function handleSkillRollback(
 /**
  * POST /skills/publish   { "dir": "./path/to/skill" }
  *
- * 打包并发布 Skill 到远程 Store。
- * 需要 ALICE_STORE_URL 和 ALICE_STORE_TOKEN 环境变量。
+ * Упаковывает и публикует Skill в удалённый Store.
+ * Требует переменные окружения ALICE_STORE_URL и ALICE_STORE_TOKEN.
  */
 export async function handleSkillPublish(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readBody(req);
@@ -360,7 +360,7 @@ export async function handleSkillPublish(req: IncomingMessage, res: ServerRespon
     const raw = readFileSync(manifestPath, "utf-8");
     const manifest = ManifestSchema.parse(parseYaml(raw));
 
-    // 创建临时 tarball（使用 execFileSync 避免 shell injection）
+    // Создаём временный tarball (используем execFileSync во избежание shell injection)
     const { execFileSync } = await import("node:child_process");
     const { tmpdir } = await import("node:os");
     const { mkdirSync, rmSync } = await import("node:fs");
@@ -388,7 +388,7 @@ export async function handleSkillPublish(req: IncomingMessage, res: ServerRespon
 /**
  * GET /skills/upgrades
  *
- * 检查已安装 Skill 的可用升级（结果缓存 1 小时）。
+ * Проверяет доступные обновления для установленных Skill-ов (результаты кэшируются на 1 час).
  */
 export async function handleSkillUpgrades(
   _req: IncomingMessage,

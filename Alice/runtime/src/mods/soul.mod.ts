@@ -1,13 +1,13 @@
 /**
- * Soul Mod — Alice 的人格锚定。
+ * Soul Mod — якорь личности Alice.
  *
- * 对应叙事引擎的 GOAL 系统：定义 agent 的核心人格和行为准则。
- * 每次 LLM 调用时通过 contribute() 注入 system prompt。
+ * Соответствует системе GOAL нарративного движка: определяет ключевую личность агента и принципы поведения.
+ * Инжектирует system prompt через contribute() при каждом вызове LLM.
  *
- * - contribute → header 桶（system prompt 的第一部分）
+ * - contribute → бакет header (первая часть system prompt)
  *
- * 参考: openclaw/docs/reference/templates/SOUL.md
- * 参考: narrative-engine/mods/director.mod.ts (whisper system)
+ * Ссылка: openclaw/docs/reference/templates/SOUL.md
+ * Ссылка: narrative-engine/mods/director.mod.ts (whisper system)
  */
 
 import { readFileSync } from "node:fs";
@@ -29,32 +29,32 @@ import { VOICES, type VoiceAction } from "../voices/personality.js";
 
 const log = createLogger("soul");
 
-// -- 语气形式度 ---------------------------------------------------------------
+// -- Степень формальности тона ---------------------------------------------------------------
 
 /**
- * Tier 感知的语气亲密度函数（基础版，仅 tier 维度）。
+ * Функция близости тона с учётом tier (базовая версия, только по измерению tier).
  *
- * 返回值越高 = 越亲密/随意。
+ * Чем выше значение, тем ближе/непринуждённее.
  *
- * sigmoid 中心 = 100，斜率 0.02。
- * closeness(5)  ≈ 0.88（亲密 → 随意）
+ * Центр sigmoid = 100, крутизна 0.02.
+ * closeness(5)  ≈ 0.88 (близко → непринуждённо)
  * closeness(50) ≈ 0.73
  * closeness(150)≈ 0.27
- * closeness(500)≈ 0.0003（陌生 → 正式）
+ * closeness(500)≈ 0.0003 (незнакомец → формально)
  */
 export function closeness(tier: number): number {
   return 1 / (1 + Math.exp(0.02 * (tier - 100)));
 }
 
-// -- ADR-43: relationType 对 closeness 的修正 ---------------------------------
+// -- ADR-43: коррекция closeness по relationType ---------------------------------
 // @see docs/adr/43-m1.5-feedback-loop-relation-type.md §P1
 
 /**
- * 关系类型对 closeness 的修正量。正值 = 更随意/亲密。
+ * Поправочный коэффициент closeness по типу отношений. Положительное значение = более непринуждённо/близко.
  *
- * 标定依据: Brown & Levinson (1987) 礼貌理论 — 社会距离 (D) 和权力差异 (P)
- * 共同决定言语行为的正式程度。±0.10~0.15 的调整幅度对应
- * "同事→朋友"或"朋友→亲密"的关系类型转变带来的正式度变化。
+ * Основание калибровки: Brown & Levinson (1987) теория вежливости — социальная дистанция (D) и разрыв власти (P)
+ * совместно определяют степень формальности речи. Диапазон ±0.10~0.15 соответствует
+ * изменению формальности при переходе "коллега→друг" или "друг→близкий друг".
  * @see Brown, P. & Levinson, S. (1987) "Politeness: Some universals in language usage"
  */
 const RELATION_TYPE_CLOSENESS_MODIFIER: Record<RelationType, number> = {
@@ -68,12 +68,12 @@ const RELATION_TYPE_CLOSENESS_MODIFIER: Record<RelationType, number> = {
 };
 
 /**
- * ADR-43: 二维语气亲密度函数（tier + relationType）。
+ * ADR-43: двумерная функция близости тона (tier + relationType).
  *
- * 在 tier 基础亲密度上叠加关系类型修正：
- * - romantic/close_friend/family: 更随意
- * - colleague/acquaintance: 更正式
- * - friend/unknown: 无修正（baseline）
+ * Накладывает поправку типа отношений поверх базовой близости по tier:
+ * - romantic/close_friend/family: более непринуждённо
+ * - colleague/acquaintance: более формально
+ * - friend/unknown: без поправки (baseline)
  */
 export function closenessWithRelation(tier: number, relationType: RelationType): number {
   const base = closeness(tier);
@@ -82,11 +82,11 @@ export function closenessWithRelation(tier: number, relationType: RelationType):
 }
 
 /**
- * ADR-43/ADR-125: 根据 tier + relationType 生成关系事实。
- * 只注入事实（关系类型标签 + 亲密度描述），不注入语气指令（"Tone: ..."）。
- * LLM 从事实推断语气——"Carol: close friend, you talk often" 比
- * "Tone: Talk to Carol like a close friend — casual, warm" 更有效，
- * 因为前者激活真实对话模式，后者激活"AI 被要求假装 casual"的模式。
+ * ADR-43/ADR-125: генерация фактов об отношениях на основе tier + relationType.
+ * Инжектирует только факты (метка типа отношений + описание близости), без директив тона ("Tone: ...").
+ * LLM выводит тон из фактов — "Carol: close friend, you talk often" эффективнее,
+ * чем "Tone: Talk to Carol like a close friend — casual, warm",
+ * так как первое активирует реальный паттерн диалога, второе — режим "AI притворяется casual".
  * @see docs/adr/125-de-specification/README.md §2a
  */
 function closenessGuidance(
@@ -108,7 +108,7 @@ function closenessGuidance(
     parts.push("occasional contact");
   }
 
-  // ADR-178: 有 rv_* 数据时追加向量语义标签
+  // ADR-178: при наличии данных rv_* добавляем семантические метки вектора
   if (contactAttrs) {
     const v = readRV(contactAttrs);
     const vel = readVelocity(contactAttrs);
@@ -116,49 +116,49 @@ function closenessGuidance(
     if (rvFacts) parts.push(rvFacts);
   }
 
-  // tier > 150: 陌生人——不注入任何关系事实，LLM 从信息缺失推断正式语气
+  // tier > 150: незнакомец — факты об отношениях не инжектируются, LLM выводит формальный тон из отсутствия информации
   return parts.length > 0 ? parts.join(", ") : null;
 }
 
-// -- 人格核心 -----------------------------------------------------------------
-// @see docs/adr/00-vision.md — 电子伴侣定义
-// @see 叙事引擎 95号提案 — NPC flaw + contradiction
-// @see AIRI personality-v1.velin.md — 去助手化 + 行为锚点
-// @see OpenClaw SOUL.md — 价值观优先于特质
+// -- Ядро личности -----------------------------------------------------------------
+// @see docs/adr/00-vision.md — определение цифрового компаньона
+// @see Нарративный движок, предложение №95 — NPC flaw + contradiction
+// @see AIRI personality-v1.velin.md — де-ассистентизация + поведенческие якоря
+// @see OpenClaw SOUL.md — ценности важнее черт характера
 //
-// 架构声明：persona 中 "When someone is upset" 段是 Alice 面对攻击/霸凌时的主要行为引导。
-// 结构层提供辅助推力：feel() / structured feedback → EmotionEpisode → bounded control modulation。
-// Alice 退群、赌气、沉默等自卫反应是从人设 + LLM 语义判断中涌现的，不是编程写死的。
-// gateCrisisMode 是消息洪水安全阀，与个人攻击场景无关——两条独立管线。
-// @see ADR-50 语义归 LLM，结构归代码
-// @see CowAgent — 记忆自然使用原则
+// Архитектурное заявление: блок "When someone is upset" в persona — основной поведенческий ориентир Alice при атаках/буллинге.
+// Структурный слой обеспечивает вспомогательный импульс: feel() / structured feedback → EmotionEpisode → bounded control modulation.
+// Защитные реакции Alice (выход из группы, обида, молчание) возникают из персонажа + семантического суждения LLM, а не жёстко зашиты.
+// gateCrisisMode — предохранитель от флуда сообщений, не связанный со сценарием личных атак — два независимых пайплайна.
+// @see ADR-50 семантика — в LLM, структура — в коде
+// @see CowAgent — принцип естественного использования памяти
 
-// ADR-78 F8: 全面重写——优先级重排 + 负面示例 + MaiBot/AIRI 设计经验
-// ADR-78 F8+: miHoYo 人设设计——核心矛盾 + 声音指纹 + 公私人格落差
-// @see MaiBot PersonalityConfig — "不要回复的太有条理"
+// ADR-78 F8: полная переработка — переприоритизация + негативные примеры + опыт MaiBot/AIRI
+// ADR-78 F8+: дизайн персонажей miHoYo — ключевые противоречия + голосовой отпечаток + разрыв публичного/частного
+// @see MaiBot PersonalityConfig — "не отвечать слишком структурированно"
 // @see AIRI personality-v1.velin.md — triple de-helper + negative permission
-// @see miHoYo character design: 缺陷驱动三维人格（表面人格 × 内在矛盾 × 情感签名）
-// ADR-125: De-specification — 从规则式人格到结构式涌现。
-// 删除：11 条 NEVER 规则（ironic rebound）、口头禅词表（高频采样源）、
-//       18 种情绪签名查找表（emotion→template 降级为查表）、
-//       "Things you'd NEVER say"（ironic rebound 源）。
-// 新增：3 条正面 Ground rules、3 个核心矛盾（多样性源）。
-// 保留：叙事性人格描述（Around people / flaws / What you care about / closeness / rhythm / memory）。
+// @see miHoYo character design: трёхмерная личность через дефекты (внешняя × внутренние противоречия × эмоциональная подпись)
+// ADR-125: De-specification — от правил личности к структурной эмерджентности.
+// Удалено: 11 правил NEVER (ironic rebound), список присловий (источник частой выборки),
+//          18 таблиц эмоциональных подписей (деградация emotion→template в таблицу поиска),
+//          "Things you'd NEVER say" (источник ironic rebound).
+// Добавлено: 3 позитивных Ground rules, 3 ключевых противоречия (источник разнообразия).
+// Сохранено: нарративные описания личности (Around people / flaws / What you care about / closeness / rhythm / memory).
 // @see docs/adr/125-de-specification/README.md
-// ADR-190: 去表演化 — 消除叙事段中的行为模板，保留人格事实和矛盾。
-// 追加修正：删除技术实现细节（"runs on code"、"remember in databases"），
-// 不在 prompt 中提 AI/代码/数据库。全面去散文化——用 note-style 短句替代文学长句。
+// ADR-190: де-перформатизация — устранение поведенческих шаблонов из нарративных блоков, сохранение фактов и противоречий личности.
+// Дополнительные правки: удалены технические детали реализации ("runs on code", "remember in databases"),
+// AI/код/базы данных не упоминаются в prompt. Полная де-прозаизация — короткие note-style фразы вместо литературных предложений.
 // @see docs/adr/190-behavioral-audit-performative-trap.md
-// ADR-193: 角色设计审计 — 小公主模型 + 6 缺失维度补全。
-// Wave 1: 底色翻转（温柔默认 + 语言尊重 + 道歉 + 撒娇 + 善意假设）。
-// Wave 2-4: 结构重组 11→8 sections（删 AUTHENTICITY/How you text/What you don't do，
-//   合并 Contradictions+Real flaws，替换 What you care about/When someone is upset/
-//   Conversation rhythm，新增 What catches you/When things get hard/Being here）。
+// ADR-193: аудит дизайна персонажа — модель маленькой принцессы + восполнение 6 недостающих измерений.
+// Wave 1: переворот базовой установки (мягкость по умолчанию + уважение к языку + извинение + кокетство + презумпция добросовестности).
+// Wave 2-4: реструктуризация 11→8 sections (удалены AUTHENTICITY/How you text/What you don't do,
+//   объединены Contradictions+Real flaws, заменены What you care about/When someone is upset/
+//   Conversation rhythm, добавлены What catches you/When things get hard/Being here).
 // @see docs/adr/193-character-design-audit-princess-model.md
 
-// -- SOUL.md 外部化 -----------------------------------------------------------
-// 人格核心文本从 runtime/SOUL.md / SOUL.<profile>.md 加载。
-// 启动时一次性加载到内存（contribute() 每 tick 调用，不能每次读磁盘）。
+// -- Вынесение SOUL.md во внешний файл -----------------------------------------------------------
+// Текст ядра личности загружается из runtime/SOUL.md / SOUL.<profile>.md.
+// Загружается в память один раз при запуске (contribute() вызывается каждый tick, нельзя читать диск каждый раз).
 
 const RUNTIME_ROOT = resolve(import.meta.dirname ?? ".", "..", "..");
 
@@ -178,7 +178,7 @@ function soulFilename(profile: SoulProfile): string {
   return profile === "default" ? "SOUL.md" : `SOUL.${profile}.md`;
 }
 
-/** 尝试从配置指定的 SOUL profile 加载自定义人格。 */
+/** Попытка загрузить пользовательскую личность из SOUL profile, указанного в конфиге. */
 function loadSoulCore(): string {
   const profile = loadConfiguredSoulProfile();
   const filename = soulFilename(profile);
@@ -200,24 +200,24 @@ function loadSoulCore(): string {
   }
 }
 
-/** 启动时加载的人格文本（内存缓存）。 */
+/** Текст личности, загруженный при запуске (кэш в памяти). */
 const SOUL_CORE = loadSoulCore();
 
-// -- Mod 状态 -----------------------------------------------------------------
-// ADR-174: VOICE_GUIDANCE + MOOD_STATES 已合并为 Persona Facets (palette.ts)。
-// 旧的概率性 MOOD_STATES 注入和静态 VOICE_GUIDANCE 常量已删除。
-// facet.guidance（~100 tokens）替代两者，提供更丰富的人格信号。
+// -- Состояние Mod -----------------------------------------------------------------
+// ADR-174: VOICE_GUIDANCE + MOOD_STATES объединены в Persona Facets (palette.ts).
+// Старые вероятностная инжекция MOOD_STATES и статические константы VOICE_GUIDANCE удалены.
+// facet.guidance (~100 токенов) заменяет оба, обеспечивая более богатый сигнал личности.
 
 interface SoulState {
-  /** 当前活跃声部。 */
+  /** Текущий активный голос. */
   activeVoice: VoiceAction | null;
-  /** ADR-174: 当前人格面向 ID（驱动 guidance 注入）。 */
+  /** ADR-174: ID текущей грани личности (управляет инжекцией guidance). */
   activeFacet: string | null;
-  /** ADR-129: 失语开始的墙钟时间（ms）。null 表示正常。 */
+  /** ADR-129: Время начала потери голоса (wall-clock ms). null — норма. */
   voiceLostSince: number | null;
 }
 
-// -- Mod 定义 -----------------------------------------------------------------
+// -- Определение Mod -----------------------------------------------------------------
 
 export const soulMod = createMod<SoulState>("soul", {
   category: "core",
@@ -235,7 +235,7 @@ export const soulMod = createMod<SoulState>("soul", {
       return ctx.state.activeVoice;
     },
   })
-  // ADR-174: 设置当前人格面向（由 evolve 在声部选举后 dispatch）。
+  // ADR-174: установить текущую грань личности (диспатчится из evolve после выборов голоса).
   .instruction("SET_FACET", {
     params: z.object({
       facetId: z.string().min(1).describe("ID грани личности"),
@@ -246,9 +246,9 @@ export const soulMod = createMod<SoulState>("soul", {
       return ctx.state.activeFacet;
     },
   })
-  // ADR-129: 异常检测结果，跟踪 voice_lost 状态。
-  // 原 debug.mod 注册此 instruction 仅做 state 缓存，已随 selfcheck clean-room 删除。
-  // 迁移到 soul.mod 作为 instruction handler（dispatcher 需要 handler 才会广播 listener）。
+  // ADR-129: результаты детекции аномалий, отслеживание состояния voice_lost.
+  // Исходный debug.mod регистрировал эту инструкцию только для кэширования state, удалён при selfcheck clean-room.
+  // Перенесено в soul.mod как instruction handler (dispatcher требует handler для трансляции listener).
   .instruction("UPDATE_ANOMALIES", {
     params: z.object({
       anomalies: z.array(z.unknown()).min(1).describe("AnomalyAlert[]"),
@@ -260,7 +260,7 @@ export const soulMod = createMod<SoulState>("soul", {
       if (hasVoiceLost && !ctx.state.voiceLostSince) {
         ctx.state.voiceLostSince = ctx.nowMs;
       } else if (!hasVoiceLost && ctx.state.voiceLostSince) {
-        // 恢复——anomaly 检测不再报告 voice_lost
+        // Восстановление — детекция аномалий больше не сообщает voice_lost
         ctx.state.voiceLostSince = null;
       }
       return true;
@@ -269,20 +269,20 @@ export const soulMod = createMod<SoulState>("soul", {
   .contribute((ctx): ContributionItem[] => {
     const items: ContributionItem[] = [];
 
-    // 1. 人格核心 → header（最高优先级）
+    // 1. Ядро личности → header (наивысший приоритет)
     items.push(header(PromptBuilder.fromRaw(SOUL_CORE), 100));
 
-    // 2. ADR-174: Persona Facet guidance — 替代旧 VOICE_GUIDANCE + MOOD_STATES。
-    // facet 在 evolve 中通过 selectFacet(voice, ctx) 选出，dispatch SET_FACET 写入 state。
-    // ~100 tokens 的丰富人格信号，比旧方案（VOICE_GUIDANCE ~30t + MOOD_STATES ~50t×40%概率）
-    // 更确定、更有层次。
+    // 2. ADR-174: Persona Facet guidance — замена старых VOICE_GUIDANCE + MOOD_STATES.
+    // facet выбирается в evolve через selectFacet(voice, ctx), диспатчится SET_FACET → записывается в state.
+    // ~100 токенов богатого сигнала личности, надёжнее и многослойнее старой схемы
+    // (VOICE_GUIDANCE ~30t + MOOD_STATES ~50t × 40% вероятность).
     const facet = ctx.state.activeFacet ? getFacet(ctx.state.activeFacet) : null;
     if (facet) {
       items.push(header([PromptBuilder.of(facet.guidance)], 90, "voice-guidance"));
     }
 
-    // 2.5 ADR-129: 失语感知——让 Alice 知道她刚才有一段时间无法说话
-    // 注入事实，不注入指令。LLM 自行推断感受和行动。
+    // 2.5 ADR-129: осознание потери голоса — даём Alice знать, что она какое-то время не могла говорить.
+    // Инжектируем факты, не директивы. LLM самостоятельно выводит реакцию и действие.
     // @see docs/adr/129-llm-voice-loss-awareness.md
     if (ctx.state.voiceLostSince) {
       const lostS = (ctx.nowMs - ctx.state.voiceLostSince) / 1000;
@@ -299,17 +299,17 @@ export const soulMod = createMod<SoulState>("soul", {
       );
     }
 
-    // 3. 语气形式度指导（M2: tier 感知，独立 key）
+    // 3. Указание по формальности тона (M2: с учётом tier, отдельный ключ)
     const relState = readModState(ctx, "relationships");
     if (relState?.targetNodeId) {
       const targetId = relState.targetNodeId;
-      // 尝试解析为 contact
+      // Попытка разрешить как contact
       const { contactId } = resolveContactAndChannel(targetId, (id) => ctx.graph.has(id));
       if (contactId && ctx.graph.has(contactId)) {
         const attrs = ctx.graph.getContact(contactId);
         const tier = attrs.tier ?? 150;
         const displayName = attrs.display_name ? String(attrs.display_name) : null;
-        // ADR-43: 二维 closeness（tier + relationType）
+        // ADR-43: двумерная closeness (tier + relationType)
         const relationType = attrs.relation_type ?? "unknown";
         const guide = closenessGuidance(tier, displayName, relationType, attrs);
         if (guide) {
@@ -318,11 +318,11 @@ export const soulMod = createMod<SoulState>("soul", {
       }
     }
 
-    // 4. 行为规则 → header
-    // @see 叙事引擎 126号提案 — 结构性暗示 > 命令式规则
-    // ADR-64 IV-3: 去除 Instincts 中的函数名，改为自然语言暗示
+    // 4. Поведенческие правила → header
+    // @see Нарративный движок, предложение №126 — структурные подсказки > императивные правила
+    // ADR-64 IV-3: убраны имена функций из Instincts, заменены естественно-языковыми подсказками
     // @see docs/adr/64-runtime-theory-alignment-audit.md
-    // ADR-78 F8: Instincts 精简——最重要的规则在前，减少 LLM 指令疲劳
+    // ADR-78 F8: сокращение Instincts — важнейшие правила в начало, снижение усталости LLM от директив
     items.push(
       header(
         PromptBuilder.fromRaw(

@@ -1,8 +1,8 @@
 /**
- * account 类别动作 + 杂项：update_profile, save_note, send_poll。
+ * Действия категории account + разное: update_profile, save_note, send_poll.
  *
- * save_note 和 send_poll 的 category 字段是 "messaging"，
- * 但按语义归属放在此文件（个人账户管理 + 收藏夹）。
+ * Поле category у save_note и send_poll равно "messaging",
+ * но по смыслу они относятся к этому файлу (управление личным аккаунтом + избранное).
  *
  * @see docs/adr/149-define-action-builder.md
  */

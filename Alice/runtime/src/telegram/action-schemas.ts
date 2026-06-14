@@ -1,21 +1,21 @@
 /**
- * CQRS 结果 Zod Schemas — 查询动作结果的单一真相来源。
+ * CQRS result Zod Schemas — единый источник истины для результатов query-действий.
  *
- * 每个 schema 匹配对应 impl 存入图属性的数据形状。
- * safeParse 失败 → formatResult 返回 null（安全降级，不生成 observation）。
+ * Каждая схема соответствует форме данных, которые impl записывает в атрибут графа.
+ * Ошибка safeParse → formatResult возвращает null (безопасная деградация, observation не генерируется).
  *
- * schema 同时服务于：
- * - impl 写入（编译期类型检查）
- * - formatResult 读取（运行时 safeParse 验证）
+ * Схема обслуживает одновременно:
+ * - запись в impl (проверка типов на этапе компиляции)
+ * - чтение в formatResult (runtime safeParse-валидация)
  *
  * @see docs/adr/105-react-cqrs-read-during-next.md
  */
 
 import { z } from "zod";
 
-// ── Bot 交互 ──
+// ── Bot-взаимодействие ──
 
-/** click_inline_button: 回调应答 */
+/** click_inline_button: ответ на callback */
 export const CallbackAnswerResult = z.object({
   msgId: z.number(),
   message: z.string().nullish(),
@@ -24,7 +24,7 @@ export const CallbackAnswerResult = z.object({
 });
 export type CallbackAnswerResult = z.infer<typeof CallbackAnswerResult>;
 
-/** inline_query: 单条结果 */
+/** inline_query: один результат */
 export const InlineResultItem = z.object({
   id: z.string(),
   title: z.string().nullish(),
@@ -32,7 +32,7 @@ export const InlineResultItem = z.object({
 });
 export type InlineResultItem = z.infer<typeof InlineResultItem>;
 
-/** inline_query: 结果集 */
+/** inline_query: набор результатов */
 export const InlineQueryResult = z.object({
   botUsername: z.string(),
   query: z.string(),
@@ -41,9 +41,9 @@ export const InlineQueryResult = z.object({
 });
 export type InlineQueryResult = z.infer<typeof InlineQueryResult>;
 
-// ── 贴纸 ──
+// ── Стикеры ──
 
-/** list_stickers: 贴纸集摘要 */
+/** list_stickers: сводка набора стикеров */
 export const StickerSetSummary = z.object({
   shortName: z.string(),
   title: z.string(),
@@ -51,7 +51,7 @@ export const StickerSetSummary = z.object({
 });
 export type StickerSetSummary = z.infer<typeof StickerSetSummary>;
 
-/** get_sticker_set: 贴纸集详情 */
+/** get_sticker_set: детали набора стикеров */
 export const StickerSetDetail = z.object({
   shortName: z.string(),
   title: z.string(),
@@ -64,22 +64,22 @@ export const StickerSetDetail = z.object({
 });
 export type StickerSetDetail = z.infer<typeof StickerSetDetail>;
 
-// ── 搜索 ──
+// ── Поиск ──
 
-/** ADR-145: search() 本地 FTS 搜索结果条目 */
+/** ADR-145: элемент результата локального FTS-поиска search() */
 export const LocalSearchResultItem = z.object({
   msgId: z.number().nullable(),
   chatId: z.string(),
   sender: z.string(),
   text: z.string(),
-  /** FTS5 snippet — 命中关键词的上下文片段（»关键词«）。 */
+  /** FTS5 snippet — контекстный фрагмент с подсвеченными ключевыми словами (»ключевое слово«). */
   snippet: z.string().optional(),
   date: z.string(),
   isOutgoing: z.boolean(),
 });
 export type LocalSearchResultItem = z.infer<typeof LocalSearchResultItem>;
 
-/** ADR-145 W2: 日记搜索结果条目 */
+/** ADR-145 W2: элемент результата поиска по дневнику */
 export const DiarySearchResultItem = z.object({
   id: z.number(),
   content: z.string(),
@@ -88,7 +88,7 @@ export const DiarySearchResultItem = z.object({
 });
 export type DiarySearchResultItem = z.infer<typeof DiarySearchResultItem>;
 
-/** ADR-145 W2: 线程搜索结果条目 */
+/** ADR-145 W2: элемент результата поиска по тредам */
 export const ThreadSearchResultItem = z.object({
   id: z.number(),
   title: z.string(),
@@ -98,7 +98,7 @@ export const ThreadSearchResultItem = z.object({
 });
 export type ThreadSearchResultItem = z.infer<typeof ThreadSearchResultItem>;
 
-/** ADR-145 W3: 图记忆融合 — spreading activation 关联事实。 */
+/** ADR-145 W3: слияние памяти графа — связанные факты через spreading activation. */
 export const RelatedFactItem = z.object({
   entity: z.string(),
   fact: z.string(),
@@ -106,19 +106,19 @@ export const RelatedFactItem = z.object({
 });
 export type RelatedFactItem = z.infer<typeof RelatedFactItem>;
 
-/** ADR-145 W3: 统一搜索结果（多源联合） */
+/** ADR-145 W3: объединённый результат поиска (несколько источников) */
 export const UnifiedSearchResult = z.object({
   expression: z.string(),
   source: z.enum(["messages", "diary", "threads", "all"]),
   messages: z.array(LocalSearchResultItem).optional(),
   diary: z.array(DiarySearchResultItem).optional(),
   threads: z.array(ThreadSearchResultItem).optional(),
-  /** 图记忆融合：从搜索结果中提取 sender → spreading activation → 关联事实。 */
+  /** Слияние памяти графа: из результатов поиска извлекается sender → spreading activation → связанные факты. */
   relatedFacts: z.array(RelatedFactItem).optional(),
 });
 export type UnifiedSearchResult = z.infer<typeof UnifiedSearchResult>;
 
-/** search_public: 公共搜索结果 */
+/** search_public: результаты публичного поиска */
 export const SearchPublicResult = z.object({
   query: z.string(),
   users: z.array(z.object({ id: z.number(), name: z.string() })),
@@ -126,7 +126,7 @@ export const SearchPublicResult = z.object({
 });
 export type SearchPublicResult = z.infer<typeof SearchPublicResult>;
 
-/** preview_chat: 聊天预览 */
+/** preview_chat: предпросмотр чата */
 export const ChatPreviewResult = z.object({
   title: z.string(),
   type: z.string(),
@@ -136,14 +136,14 @@ export const ChatPreviewResult = z.object({
 });
 export type ChatPreviewResult = z.infer<typeof ChatPreviewResult>;
 
-/** get_similar_channels: 相似频道条目 */
+/** get_similar_channels: элемент похожего канала */
 export const SimilarChannelItem = z.object({
   id: z.number(),
   title: z.string(),
 });
 export type SimilarChannelItem = z.infer<typeof SimilarChannelItem>;
 
-/** get_bot_commands: Bot 命令列表 */
+/** get_bot_commands: список команд бота */
 export const BotCommandsResult = z.object({
   botId: z.string(),
   commands: z.array(
@@ -155,9 +155,9 @@ export const BotCommandsResult = z.object({
 });
 export type BotCommandsResult = z.infer<typeof BotCommandsResult>;
 
-// ── 笔记 ──
+// ── Заметки ──
 
-/** read_notes: 笔记条目 */
+/** read_notes: элемент заметки */
 export const NoteItem = z.object({
   id: z.number(),
   text: z.string(),
@@ -165,16 +165,16 @@ export const NoteItem = z.object({
 });
 export type NoteItem = z.infer<typeof NoteItem>;
 
-// ── 知识 ──
+// ── Знания ──
 
-/** google: 搜索 → 提取 → 合成 管线结果 */
+/** google: результат конвейера поиск → извлечение → синтез */
 export const GoogleResult = z.object({
   answer: z.string(),
   sources: z.array(z.object({ title: z.string(), url: z.string() })),
 });
 export type GoogleResult = z.infer<typeof GoogleResult>;
 
-/** visit: URL 阅读摘要 */
+/** visit: краткое содержание прочитанного по URL */
 export const VisitResult = z.object({
   title: z.string(),
   url: z.string(),
@@ -191,7 +191,7 @@ export type CommandOutputResult = z.infer<typeof CommandOutputResult>;
 
 // ── ADR-132: Calendar App ──
 
-/** use_calendar_app: 日历结果 */
+/** use_calendar_app: результат календаря */
 export const CalendarResultSchema = z.object({
   datetime: z.string(),
   timezone: z.string(),
@@ -210,7 +210,7 @@ export type CalendarResultSchema = z.infer<typeof CalendarResultSchema>;
 
 // ── ADR-132: Countdown App ──
 
-/** use_countdown_app: 倒计时结果 */
+/** use_countdown_app: результат обратного отсчёта */
 export const CountdownResultSchema = z.object({
   target: z.string(),
   days: z.number(),
@@ -220,7 +220,7 @@ export type CountdownResultSchema = z.infer<typeof CountdownResultSchema>;
 
 // ── ADR-133 Wave 5: Selfcheck App ──
 
-/** use_selfcheck_app: 自检维度段 */
+/** use_selfcheck_app: раздел измерения самопроверки */
 export const SelfcheckSectionSchema = z.object({
   dimension: z.string(),
   label: z.string(),
@@ -228,7 +228,7 @@ export const SelfcheckSectionSchema = z.object({
 });
 export type SelfcheckSectionSchema = z.infer<typeof SelfcheckSectionSchema>;
 
-/** use_selfcheck_app: 自检结果 */
+/** use_selfcheck_app: результат самопроверки */
 export const SelfcheckResultSchema = z.object({
   sections: z.array(SelfcheckSectionSchema),
 });

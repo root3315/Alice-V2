@@ -1,8 +1,8 @@
 /**
- * CLI IO 实现 — 真实环境绑定（ADR-235 FP 改进）。
+ * CLI IO реализация — привязка к реальной среде (улучшение FP в ADR-235).
  *
- * 提供 EngineClient 和 Output 的真实实现，
- * 用于生产环境 CLI 入口。
+ * Предоставляет реальные реализации EngineClient и Output
+ * для production-точки входа CLI.
  *
  * @see docs/adr/235-cli-human-readable-output.md
  */
@@ -18,18 +18,18 @@ function currentChatIdFromEnv(): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
-// ── Engine Client 实现 ──
+// ── Реализация Engine Client ──
 
-/** 真实 Engine API 客户端。 */
+/** Реальный клиент Engine API. */
 export const realEngine: EngineClient = {
   post: enginePost,
   get: engineGet,
   query: engineQuery,
 };
 
-// ── Output 实现 ──
+// ── Реализация Output ──
 
-/** 真实控制台输出。 */
+/** Реальный вывод в консоль. */
 export const realOutput: Output = {
   log: (msg: string) => console.log(msg),
   error: (msg: string) => console.error(msg),
@@ -39,18 +39,18 @@ export const realOutput: Output = {
   },
 };
 
-// ── Target Resolver 实现 ──
+// ── Реализация Target Resolver ──
 
-/** 真实目标解析器（返回 number ID 供 Engine API 使用）。 */
+/** Реальный резолвер цели (возвращает числовой ID для Engine API). */
 export const realResolveTarget: TargetResolver = async (target) => {
   return resolveTarget(target);
 };
 
-// ── Command Context 工厂 ──
+// ── Фабрика контекста команды ──
 
 import type { CliContext } from "./cli-types.js";
 
-/** 创建真实命令上下文。 */
+/** Создаёт реальный контекст команды. */
 export function createRealContext(): CliContext {
   return {
     engine: realEngine,

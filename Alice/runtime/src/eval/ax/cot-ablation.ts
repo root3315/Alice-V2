@@ -1,7 +1,7 @@
 /**
  * ADR-269 Wave 0: DeepSeek CoT marker offline ablation.
  *
- * 这个 CLI 只评估 provider-specific marker variants，不改生产 prompt。
+ * Этот CLI оценивает только варианты маркеров, специфичных для провайдера, и не изменяет продакшн-prompt.
  *
  * @see docs/adr/269-deepseek-cot-marker-ablation/README.md
  */

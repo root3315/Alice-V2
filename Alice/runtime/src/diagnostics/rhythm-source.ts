@@ -1,8 +1,9 @@
 /**
  * ADR-261: message_log -> rhythm events extraction.
  *
- * 这里是事实源卫生层：chat_id 生成 channel event；sender_id 只有正数用户 ID
- * 才生成 contact event。负数 / -100... 是 Telegram 群组或频道 ID，不能当联系人。
+ * Слой санитизации источника данных: chat_id порождает channel event; sender_id порождает
+ * contact event только при положительном числовом ID пользователя. Отрицательные / -100... —
+ * это ID групп или каналов Telegram, их нельзя использовать как контакты.
  *
  * @see docs/adr/261-rhythm-profile-projection.md
  */

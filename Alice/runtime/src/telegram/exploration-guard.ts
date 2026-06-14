@@ -1,8 +1,8 @@
 /**
- * ExplorationGuard — L2 代码级探索保护。
+ * ExplorationGuard — защита исследования на уровне кода L2.
  *
- * 滑动窗口 budget + cooldown + 观察窗口 + circuit breaker，
- * 防止 Alice 在探索新群组/频道时触发 Telegram 限流或社交越界。
+ * Скользящее окно бюджета + cooldown + окно наблюдения + circuit breaker,
+ * предотвращает триггер ограничений Telegram или социальные нарушения при исследовании новых групп/каналов Алисой.
  *
  * @see docs/adr/53-audit-gap-closure.md §ExplorationGuard
  * @see OpenClaw circuit breaker (nostr-bus.ts)
@@ -10,29 +10,29 @@
  */
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 配置
+// Конфигурация
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface ExplorationConfig {
-  /** 24h 内最大 join 次数 */
+  /** Максимальное число join за 24ч */
   maxJoinsPerDay: number;
-  /** 1h 内最大 search 次数 */
+  /** Максимальное число search за 1ч */
   maxSearchPerHour: number;
-  /** 两次 join 之间的冷却（ms） */
+  /** Пауза между двумя join (мс) */
   joinCooldownMs: number;
-  /** 两次 search 之间的冷却（ms） */
+  /** Пауза между двумя search (мс) */
   searchCooldownMs: number;
-  /** join 后搜索冷却（ms）：刚加入群组后不立即搜索 */
+  /** Пауза поиска после join (мс): не искать сразу после вступления в группу */
   postJoinSearchCooldownMs: number;
-  /** 加入新频道后的静默观察期（秒） */
+  /** Период молчаливого наблюдения после вступления в канал (секунды) */
   silentDurationS: number;
-  /** 静默期后的学徒期（秒，从 join 开始计） */
+  /** Период ученичества после тишины (секунды, отсчёт от join) */
   apprenticeDurationS: number;
-  /** 学徒期内最大消息数 */
+  /** Максимальное число сообщений в период ученичества */
   apprenticeMaxMessages: number;
-  /** Circuit breaker: 连续失败阈值 */
+  /** Circuit breaker: порог последовательных сбоев */
   circuitBreakerThreshold: number;
-  /** Circuit breaker: open 持续时间（ms） */
+  /** Circuit breaker: длительность состояния open (мс) */
   circuitBreakerOpenMs: number;
 }
 
@@ -42,15 +42,15 @@ const DEFAULT_CONFIG: ExplorationConfig = {
   joinCooldownMs: 3_600_000, // 1h
   searchCooldownMs: 300_000, // 5min
   postJoinSearchCooldownMs: 1_800_000, // 30min
-  silentDurationS: 600, // 10 分钟
-  apprenticeDurationS: 1800, // 30 分钟
+  silentDurationS: 600, // 10 минут
+  apprenticeDurationS: 1800, // 30 минут
   apprenticeMaxMessages: 3,
   circuitBreakerThreshold: 3,
   circuitBreakerOpenMs: 3_600_000, // 1h
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Circuit Breaker 内部状态
+// Внутреннее состояние Circuit Breaker
 // ═══════════════════════════════════════════════════════════════════════════
 
 type CircuitState = "closed" | "open" | "half-open";
@@ -68,18 +68,18 @@ interface CircuitBreaker {
 export class ExplorationGuard {
   readonly config: ExplorationConfig;
 
-  // 滑动窗口 budget
+  // Бюджет скользящего окна
   private joinTimestamps: number[] = [];
   private searchTimestamps: number[] = [];
 
-  // Cooldown（-1 = 尚未发生过）
+  // Cooldown (-1 = ещё не происходило)
   private lastJoinTime = -1;
   private lastSearchTime = -1;
 
   // Per-action circuit breakers
   private breakers = new Map<string, CircuitBreaker>();
 
-  // 时间源（测试可注入）
+  // Источник времени (инжектируется в тестах)
   private _now: () => number;
 
   constructor(config?: Partial<ExplorationConfig>, now?: () => number) {
@@ -87,9 +87,9 @@ export class ExplorationGuard {
     this._now = now ?? (() => Date.now());
   }
 
-  // ── Budget 检查 ──────────────────────────────────────────────────────────
+  // ── Проверка бюджета ──────────────────────────────────────────────────────────
 
-  /** 检查是否可以 join chat */
+  /** Проверяет, можно ли выполнить join chat */
   canJoin(): { allowed: boolean; reason?: string } {
     const now = this._now();
 
@@ -103,7 +103,7 @@ export class ExplorationGuard {
       }
     }
 
-    // 滑动窗口：24h 内 join 次数
+    // Скользящее окно: число join за 24ч
     this.pruneTimestamps(this.joinTimestamps, 24 * 60 * 60 * 1000, now);
     if (this.joinTimestamps.length >= this.config.maxJoinsPerDay) {
       return {
@@ -112,7 +112,7 @@ export class ExplorationGuard {
       };
     }
 
-    // Cooldown：上次 join 距今
+    // Cooldown: время с последнего join
     if (this.lastJoinTime >= 0 && now - this.lastJoinTime < this.config.joinCooldownMs) {
       const remainMs = this.config.joinCooldownMs - (now - this.lastJoinTime);
       return { allowed: false, reason: `join cooldown (${Math.ceil(remainMs / 1000)}s remaining)` };
@@ -121,7 +121,7 @@ export class ExplorationGuard {
     return { allowed: true };
   }
 
-  /** 检查是否可以搜索 */
+  /** Проверяет, можно ли выполнить поиск */
   canSearch(type: "public" | "global"): { allowed: boolean; reason?: string } {
     const now = this._now();
 
@@ -135,7 +135,7 @@ export class ExplorationGuard {
       }
     }
 
-    // 滑动窗口：1h 内 search 次数
+    // Скользящее окно: число search за 1ч
     this.pruneTimestamps(this.searchTimestamps, 60 * 60 * 1000, now);
     if (this.searchTimestamps.length >= this.config.maxSearchPerHour) {
       return {
@@ -144,7 +144,7 @@ export class ExplorationGuard {
       };
     }
 
-    // Cooldown：上次 search 距今
+    // Cooldown: время с последнего search
     if (this.lastSearchTime >= 0 && now - this.lastSearchTime < this.config.searchCooldownMs) {
       const remainMs = this.config.searchCooldownMs - (now - this.lastSearchTime);
       return {
@@ -153,7 +153,7 @@ export class ExplorationGuard {
       };
     }
 
-    // post-join search cooldown：join 后不能立即搜索
+    // post-join search cooldown: нельзя искать сразу после join
     if (this.lastJoinTime >= 0 && now - this.lastJoinTime < this.config.postJoinSearchCooldownMs) {
       const remainMs = this.config.postJoinSearchCooldownMs - (now - this.lastJoinTime);
       return {
@@ -165,9 +165,9 @@ export class ExplorationGuard {
     return { allowed: true };
   }
 
-  // ── 观察窗口 ────────────────────────────────────────────────────────────
+  // ── Окно наблюдения ────────────────────────────────────────────────────────────
 
-  /** 获取频道的观察阶段。nowMs = 当前墙钟时间，joinMs = 加入时的墙钟时间。 */
+  /** Возвращает фазу наблюдения канала. nowMs = текущее реальное время, joinMs = реальное время вступления. */
   getObservationPhase(joinMs: number, nowMs: number): "silent" | "apprentice" | "normal" {
     const elapsedS = (nowMs - joinMs) / 1000;
     if (elapsedS < this.config.silentDurationS) return "silent";
@@ -175,7 +175,7 @@ export class ExplorationGuard {
     return "normal";
   }
 
-  // ── 事件记录 ────────────────────────────────────────────────────────────
+  // ── Запись событий ────────────────────────────────────────────────────────────
 
   recordJoin(): void {
     const now = this._now();
@@ -184,7 +184,7 @@ export class ExplorationGuard {
   }
 
   recordLeave(): void {
-    // 目前仅占位，未来可统计 join-leave 间隔
+    // Пока только заглушка, в будущем можно отслеживать интервал join-leave
   }
 
   recordSearch(): void {
@@ -200,7 +200,7 @@ export class ExplorationGuard {
     cb.consecutiveFailures++;
 
     if (cb.state === "half-open") {
-      // 半开试探失败 → 回到 open
+      // Пробный запрос в half-open провалился → возврат в open
       cb.state = "open";
       cb.openedAt = this._now();
     } else if (cb.consecutiveFailures >= this.config.circuitBreakerThreshold) {
@@ -215,7 +215,7 @@ export class ExplorationGuard {
     cb.state = "closed";
   }
 
-  /** 获取 breaker 状态（测试用，纯派生不 mutate）。 */
+  /** Возвращает состояние breaker (для тестов, чистое производное, без мутаций). */
   getBreakerState(action: string): CircuitState {
     const cb = this.getBreaker(action);
     if (cb.state === "open" && this._now() - cb.openedAt >= this.config.circuitBreakerOpenMs) {
@@ -224,7 +224,7 @@ export class ExplorationGuard {
     return cb.state;
   }
 
-  // ── 内部工具 ────────────────────────────────────────────────────────────
+  // ── Внутренние утилиты ────────────────────────────────────────────────────────────
 
   private getBreaker(action: string): CircuitBreaker {
     let cb = this.breakers.get(action);

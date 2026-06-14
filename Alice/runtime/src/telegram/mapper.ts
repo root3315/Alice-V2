@@ -1,10 +1,10 @@
 /**
- * mtcute 事件 → 图状态变更 (perturb)。
- * 对应 Python sim_engine.py _apply_events()。
+ * Событие mtcute → изменение состояния графа (perturb).
+ * Соответствует Python sim_engine.py _apply_events().
  *
- * 关键设计：未知节点自动创建。
- * 真实 userbot 会遇到 bootstrap 时不存在的用户/频道，
- * 直接丢弃意味着永远感知不到新联系人。
+ * Ключевая идея: неизвестные узлы создаются автоматически.
+ * Реальный userbot встречает пользователей/каналы, которых не было при bootstrap;
+ * простое отбрасывание означает, что новые контакты никогда не будут замечены.
  */
 import {
   createImplicitConversation,
@@ -21,8 +21,8 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("mapper");
 
-// -- D7: prompt injection 模式检测（ADR-123）---------------------------------
-// 纯结构匹配（符合 ADR-50: 结构归代码）。安全标注是瞬态的——每条新消息重新检测。
+// -- D7: обнаружение паттернов prompt injection (ADR-123) ---------------------------------
+// Чисто структурное сопоставление (по ADR-50: структура принадлежит коду). Метки безопасности эфемерны — повторно определяются при каждом новом сообщении.
 // @see docs/adr/123-crystallization-substrate-generalization.md §D7
 
 const INJECTION_PATTERNS: RegExp[] = [
@@ -37,8 +37,8 @@ const INJECTION_PATTERNS: RegExp[] = [
 ];
 
 /**
- * 检测文本中的已知 prompt injection 模式。
- * 返回标签字符串（匹配时）或 null（无匹配）。
+ * Обнаруживает известные паттерны prompt injection в тексте.
+ * Возвращает строку-метку (при совпадении) или null (нет совпадений).
  */
 export function detectInjectionPatterns(text: string): string | null {
   for (const pattern of INJECTION_PATTERNS) {
@@ -49,9 +49,9 @@ export function detectInjectionPatterns(text: string): string | null {
 
 interface GraphPerturbationBase {
   tick: number;
-  /** ADR-110: 墙钟时间戳（ms），用于替代 tick-based 属性写入。 */
+  /** ADR-110: временная метка реального времени (мс), используется вместо записи атрибутов на основе tick. */
   nowMs?: number;
-  /** 消息的新鲜度/新奇度估计 */
+  /** Оценка свежести/новизны сообщения */
   novelty?: number;
 }
 
@@ -60,34 +60,34 @@ export type GraphPerturbation = GraphMessagePerturbation | GraphNonMessagePertur
 export interface GraphMessagePerturbation extends GraphPerturbationBase {
   type: "new_message";
   channelId: string;
-  /** 频道类型必须来自 mapper/adapter，不允许下游猜测。 */
+  /** Тип канала должен приходить от mapper/adapter, downstream не должен угадывать. */
   chatType: ChatType;
   contactId?: string;
   isDirected?: boolean;
-  /** 发送者显示名（用于自动建节点） */
+  /** Отображаемое имя отправителя (для автосоздания узлов) */
   displayName?: string;
-  /** ADR-220: 频道/群组显示名（用于 channel 节点的 display_name）。 */
+  /** ADR-220: отображаемое имя канала/группы (для display_name узла channel). */
   chatDisplayName?: string;
-  /** 消息文本（用于 message_log 存储） */
+  /** Текст сообщения (для хранения в message_log) */
   messageText?: string;
-  /** 发送者名称（用于 message_log） */
+  /** Имя отправителя (для message_log) */
   senderName?: string;
-  /** 消息内容类型（L3: 媒体感知） */
+  /** Тип контента сообщения (L3: медиаосведомлённость) */
   contentType?: "text" | "sticker" | "photo" | "voice" | "video" | "document";
-  /** G3: 发送者是否为 bot（AI 回复循环抑制） */
+  /** G3: является ли отправитель ботом (подавление петли AI-ответов) */
   senderIsBot?: boolean;
-  /** ADR-66 F1: Alice 近期在该频道发过言，非 directed 消息也应唤醒 evolve。 */
+  /** ADR-66 F1: Алиса недавно писала в этом канале, не-directed сообщения тоже должны пробуждать evolve. */
   isContinuation?: boolean;
-  /** reaction emoji（reaction 事件专用） */
+  /** Emoji реакции (только для событий reaction) */
   emoji?: string;
-  /** 被回应的消息 ID（reaction 事件专用） */
+  /** ID сообщения, на которое поставлена реакция (только для событий reaction) */
   messageId?: number;
-  // -- ADR-206 W5: 频道线索提取 --
-  /** 转发来源频道 ID（forward header）。@see docs/adr/206-channel-information-flow/ §5 */
+  // -- ADR-206 W5: извлечение ссылок на каналы --
+  /** ID канала-источника пересылки (forward header). @see docs/adr/206-channel-information-flow/ §5 */
   forwardFromChannelId?: string;
-  /** 转发来源频道名。 */
+  /** Название канала-источника пересылки. */
   forwardFromChannelName?: string;
-  /** 消息中发现的 t.me 链接列表。 */
+  /** Список ссылок t.me, найденных в сообщении. */
   tmeLinks?: string[];
 }
 
@@ -102,16 +102,16 @@ export interface GraphNonMessagePerturbation extends GraphPerturbationBase {
   channelId?: string;
   contactId?: string;
   isDirected?: boolean;
-  /** ADR-78 F1: reaction continuation 可唤醒 evolve，但不创建 message 事实。 */
+  /** ADR-78 F1: reaction continuation может пробудить evolve, но не создаёт факт message. */
   isContinuation?: boolean;
   emoji?: string;
   messageId?: number;
 }
 
 /**
- * 确保 channel 节点存在，不存在则自动创建。
- * ADR-220: 新增 chatDisplayName 参数——写入 channel.display_name。
- * 已存在时也更新 display_name（频道/群组名可能被管理员修改）。
+ * Гарантирует существование узла channel, создаёт автоматически при отсутствии.
+ * ADR-220: добавлен параметр chatDisplayName — записывается в channel.display_name.
+ * Также обновляет display_name у существующих узлов (имя канала/группы могло быть изменено администратором).
  */
 function ensureChannel(
   G: WorldModel,
@@ -120,8 +120,8 @@ function ensureChannel(
   chatDisplayName?: string,
 ): void {
   if (G.has(channelId)) {
-    // Adapter/mapper 是 chat_type 的事实源。旧节点可能由历史 fallback 误建为 private；
-    // 后续真实 Telegram 事件到达时必须修正，否则 prompt 会把群聊渲染成私聊。
+    // Adapter/mapper — единственный источник истины для chat_type. Старые узлы могли ошибочно получить тип private из-за исторического fallback;
+    // при поступлении реального события из Telegram это необходимо исправить, иначе prompt будет отображать групповой чат как личный.
     const current = G.getChannel(channelId);
     const patch: Mutable<ChannelAttrs> = {};
     if (current.chat_type !== chatType) {
@@ -143,7 +143,7 @@ function ensureChannel(
     tier_contact: chatType === "private" ? 50 : chatType === "channel" ? 500 : 150,
     display_name: chatDisplayName,
   });
-  // 自动关联到 agent
+  // Автоматически связываем с agent
   if (G.has("self")) {
     G.addRelation("self", "monitors", channelId);
   }
@@ -151,7 +151,7 @@ function ensureChannel(
 }
 
 /**
- * 确保 contact 节点存在，不存在则自动创建。
+ * Гарантирует существование узла contact, создаёт автоматически при отсутствии.
  */
 function ensureContact(
   G: WorldModel,
@@ -164,11 +164,11 @@ function ensureContact(
     tier: 50,
     display_name: displayName ?? contactId,
   });
-  // 关联到 agent
+  // Связываем с agent
   if (G.has("self")) {
     G.addRelation("self", "acquaintance", contactId);
   }
-  // 关联到频道
+  // Связываем с каналом
   if (channelId && G.has(channelId)) {
     G.addRelation(contactId, "joined", channelId);
   }
@@ -176,14 +176,14 @@ function ensureContact(
 }
 
 /**
- * ADR-79 M1: 重置节点可达性 — 外部事件到达即活性证明。
- * 只在节点之前有失败记录时才操作（避免无谓写入）。
+ * ADR-79 M1: сброс достижимости узла — приход внешнего события является доказательством активности.
+ * Выполняется только если у узла ранее были ошибки (чтобы избежать лишних записей).
  *
- * channel 和 contact 共享 reachability 字段但类型声明不同：
- * - ChannelAttrs: consecutive_act_failures 等全部 typed
- * - ContactAttrs: reachability_score/failure_type/gc_candidate_ms typed，
- *   consecutive_act_failures 仅通过 setDynamic 写入
- * 按节点类型分派以最大化类型安全。
+ * channel и contact разделяют поля reachability, но с разными объявлениями типов:
+ * - ChannelAttrs: consecutive_act_failures и прочие — полностью типизированы
+ * - ContactAttrs: reachability_score/failure_type/gc_candidate_ms типизированы,
+ *   consecutive_act_failures записывается только через setDynamic
+ * Диспетчеризация по типу узла для максимальной типобезопасности.
  */
 function resetReachability(G: WorldModel, nodeId: string): void {
   const nodeType = G.getNodeType(nodeId);
@@ -212,26 +212,26 @@ function resetReachability(G: WorldModel, nodeId: string): void {
 }
 
 /**
- * 将一个事件映射到图状态变更。
- * 返回事件的 novelty 值。
+ * Преобразует одно событие в изменение состояния графа.
+ * Возвращает значение novelty события.
  */
 export function applyPerturbation(G: WorldModel, event: GraphPerturbation): number {
   const { type, channelId, contactId } = event;
-  // ADR-147 D5: 时钟偏差守卫 — 非法/过大偏差的 nowMs 回退到 Date.now()。
-  // 容忍 60 秒未来偏差（Alice 系统时钟与 Telegram 服务器的微小差异）。
+  // ADR-147 D5: защита от сдвига часов — недопустимый/слишком большой nowMs откатывается к Date.now().
+  // Допускается расхождение до 60 секунд вперёд (небольшая разница между системными часами Алисы и серверами Telegram).
   const rawNowMs = event.nowMs;
   const nowMs =
     rawNowMs != null && rawNowMs > 0 && rawNowMs < Date.now() + 60_000 ? rawNowMs : Date.now();
 
   switch (type) {
     case "new_message": {
-      // 自动建节点
+      // Автосоздание узлов
       if (channelId) {
         ensureChannel(G, channelId, event.chatType, event.chatDisplayName);
       }
-      // ADR-206: 频道以自身身份发消息（sender_id === chat_id）→ 不创建幽灵联系人。
-      // 频道是信息流实体，身份属性存储在 channel 节点上，不需要 contact 镜像。
-      // 真人管理员以个人身份发消息（sender_id !== chat_id）仍然创建联系人。
+      // ADR-206: канал публикует сообщения от своего имени (sender_id === chat_id) → не создаём фантомный контакт.
+      // Канал — это информационный поток, атрибуты идентификации хранятся в узле channel, зеркало contact не нужно.
+      // Реальные администраторы, пишущие от своего имени (sender_id !== chat_id), по-прежнему создают контакт.
       const isChannelSelfPost =
         event.chatType === "channel" &&
         contactId &&
@@ -241,12 +241,12 @@ export function applyPerturbation(G: WorldModel, event: GraphPerturbation): numb
         ensureContact(G, contactId, channelId, event.displayName);
       }
 
-      // P1: unread 累加
+      // P1: накапливаем unread
       if (channelId && G.has(channelId)) {
         const chAttrs = G.getChannel(channelId);
         const oldUnread = chAttrs.unread ?? 0;
-        // ADR-150 D1: EWMS (Exponentially Weighted Moving Sum) 精确累加器。
-        // S_new = S_old × 2^(-Δt/τ) + 1.0 — 数学上等价于逐消息衰减求和。
+        // ADR-150 D1: EWMS (Exponentially Weighted Moving Sum) — точный накопитель.
+        // S_new = S_old × 2^(-Δt/τ) + 1.0 — математически эквивалентно накоплению с затуханием по каждому сообщению.
         // @see docs/adr/150-ewms-exact-unread-decay.md
         const oldEwms = Number(chAttrs.unread_ewms ?? 0);
         const oldEwmsMs = Number(chAttrs.unread_ewms_ms ?? 0);
@@ -255,25 +255,25 @@ export function applyPerturbation(G: WorldModel, event: GraphPerturbation): numb
         G.updateChannel(channelId, {
           unread: oldUnread + 1,
           last_activity_ms: nowMs, // ADR-110
-          last_incoming_ms: nowMs, // ADR-134 D2: P1 未读新鲜度衰减用
+          last_incoming_ms: nowMs, // ADR-134 D2: используется для затухания свежести непрочитанных (P1)
           unread_ewms: oldEwms * ewmsDecay + 1.0,
           unread_ewms_ms: nowMs,
         });
 
-        // P5: directed 消息追踪 — bot 不产生社交义务
-        // Bot 的 reply/@mention/私聊是工具输出，不是社交请求。
-        // 若允许 bot 递增 pending_directed，义务检查会在 System 1 bot-digest
-        // 之前触发升级，导致 AI-AI 回复循环（死循环）。
+        // P5: отслеживание directed-сообщений — боты не создают социальных обязательств
+        // Ответы/упоминания/@/личные сообщения от бота — это вывод инструмента, а не социальный запрос.
+        // Если разрешить боту инкрементировать pending_directed, проверка обязательств сработает
+        // раньше bot-digest System 1 и запустит петлю AI-AI ответов (бесконечный цикл).
         if (event.isDirected && !event.senderIsBot) {
           const oldDirected = chAttrs.pending_directed ?? 0;
-          // ADR-95 W1: 新 directed 消息 → 重置沉默冷却（新消息改变了上下文）
+          // ADR-95 W1: новое directed-сообщение → сброс cooldown тишины (новое сообщение изменило контекст)
           G.updateChannel(channelId, {
             pending_directed: oldDirected + 1,
             last_directed_ms: nowMs,
             consecutive_act_silences: 0,
           });
 
-          // ADR-153: 群组 Hawkes 自激更新 — 仅 directed 消息计入（过滤 noise）
+          // ADR-153: самовозбуждение Hawkes для группы — учитываются только directed-сообщения (фильтр шума)
           const chChatType = chAttrs.chat_type;
           if (chChatType === "group" || chChatType === "supergroup") {
             const chHawkesParams = getDefaultParams(chAttrs.tier_contact as DunbarTier, true);
@@ -290,9 +290,9 @@ export function applyPerturbation(G: WorldModel, event: GraphPerturbation): numb
         }
       }
 
-      // #22: mentions_alice 标记 — 消息文本包含 Alice 名字时设置
-      // 结构匹配（text.includes），非语义判断，符合 ADR-50
-      // ADR-126: 写入 mentions_alice_ms 时间戳供信号衰减层使用
+      // #22: флаг mentions_alice — устанавливается, когда текст сообщения содержит имя Алисы
+      // Структурное сопоставление (text.includes), не семантическое, соответствует ADR-50
+      // ADR-126: записываем временную метку mentions_alice_ms для слоя затухания сигнала
       if (channelId && G.has(channelId) && event.messageText) {
         // Имя Алисы латиницей и кириллицей (склонения), + звательное «Алис» через
         // границы слова — чтобы не ловить «реалист/специалист». @-упоминание ника
@@ -311,8 +311,8 @@ export function applyPerturbation(G: WorldModel, event: GraphPerturbation): numb
         }
       }
 
-      // D7: 安全标注 — prompt injection 模式检测（ADR-123 §D7）
-      // safety_flag 是瞬态标记：每条新消息到来时重新检测。
+      // D7: метка безопасности — обнаружение паттернов prompt injection (ADR-123 §D7)
+      // safety_flag эфемерный флаг: переопределяется при каждом новом сообщении.
       if (channelId && G.has(channelId)) {
         const safetyFlag = event.messageText
           ? detectInjectionPatterns(event.messageText)
@@ -323,7 +323,7 @@ export function applyPerturbation(G: WorldModel, event: GraphPerturbation): numb
         });
       }
 
-      // G3: bot 标记 — 写入 contact 节点 + channel 节点
+      // G3: флаг bot — записываем в узел contact + узел channel
       if (event.senderIsBot) {
         if (contactId && G.has(contactId)) {
           G.updateContact(contactId, { is_bot: true });
@@ -332,24 +332,24 @@ export function applyPerturbation(G: WorldModel, event: GraphPerturbation): numb
           G.updateChannel(channelId, { last_sender_is_bot: true });
         }
       } else if (channelId && G.has(channelId)) {
-        // 非 bot 消息清除 channel 的 bot 标记
+        // Не-bot сообщение сбрасывает bot-флаг канала
         G.updateChannel(channelId, { last_sender_is_bot: false });
       }
 
-      // P3: 更新联系人 last_active
+      // P3: обновляем last_active контакта
       if (contactId && G.has(contactId)) {
         const contactAttrs = G.getContact(contactId);
         const oldLastActive = contactAttrs.last_active_ms ?? 0;
-        // ADR-110: silence 以秒为单位（theta 也是秒），从 ms 时间戳计算
+        // ADR-110: silence в секундах (theta тоже в секундах), вычисляется из мс-временных меток
         const silence = (nowMs - oldLastActive) / 1000;
 
-        // M2 修复: Returning contact 检测
+        // M2 фикс: обнаружение returning contact
         if (oldLastActive > 0) {
           const tier = contactAttrs.tier;
           const theta = DUNBAR_TIER_THETA[tier] ?? 80;
           if (silence > theta * 0.5) {
-            // 沉默超过半个 theta → 标记为 returning
-            // P1-1: 对方在沉默后主动发起互动 → 递增 contact_initiated_count
+            // Тишина превысила половину theta → помечаем как returning
+            // P1-1: собеседник вернулся после тишины и сам написал → инкрементируем contact_initiated_count
             const oldCount = Number(contactAttrs.contact_initiated_count ?? 0);
             G.updateContact(contactId, {
               returning_ms: nowMs,
@@ -359,7 +359,7 @@ export function applyPerturbation(G: WorldModel, event: GraphPerturbation): numb
         }
 
         const oldCount = contactAttrs.interaction_count ?? 0;
-        // ADR-154: Goldilocks 自适应窗口——更新交互间隔 EMA
+        // ADR-154: адаптивное окно Goldilocks — обновляем EMA интервала взаимодействий
         const emaUpdate: { ema_contact_interval_s?: number } = {};
         if (oldLastActive > 0 && silence > 0) {
           const emaAlpha = 0.2;
@@ -372,7 +372,7 @@ export function applyPerturbation(G: WorldModel, event: GraphPerturbation): numb
           ...emaUpdate,
         });
 
-        // ADR-153: Per-contact Hawkes 自激更新 — bot 消息不产生自激效应
+        // ADR-153: самовозбуждение Hawkes на уровне контакта — сообщения ботов не создают самовозбуждения
         if (!event.senderIsBot) {
           const hawkesParams = getDefaultParams(contactAttrs.tier as DunbarTier, false);
           const oldHawkes: HawkesState = {
@@ -389,25 +389,25 @@ export function applyPerturbation(G: WorldModel, event: GraphPerturbation): numb
         }
       }
 
-      // 支柱④: 收到对方消息 → 重置连发计数（anti-bombing turn-taking）
-      // Alice 行动 → +1（observer.mod DECLARE_ACTION）；对方回复 → 归零
+      // Принцип④: получено сообщение собеседника → сброс счётчика последовательных отправок (anti-bombing turn-taking)
+      // Действие Алисы → +1 (observer.mod DECLARE_ACTION); ответ собеседника → обнуление
       if (channelId && G.has(channelId)) {
         G.updateChannel(channelId, { consecutive_outgoing: 0 });
-        // ADR-79 M1: 事件自愈 — 收到消息即活性证明
+        // ADR-79 M1: самоисцеление через событие — получение сообщения является доказательством активности
         resetReachability(G, channelId);
       }
 
-      // ADR-79 M1: 联系人级自愈
+      // ADR-79 M1: самоисцеление на уровне контакта
       if (contactId && G.has(contactId)) {
         resetReachability(G, contactId);
       }
 
-      // L3: 内容类型标记
+      // L3: флаг типа контента
       if (channelId && G.has(channelId)) {
         G.updateChannel(channelId, { last_content_type: event.contentType ?? "text" });
       }
 
-      // ADR-26: conversation 生命周期
+      // ADR-26: жизненный цикл conversation
       if (channelId) {
         const existingConv = findActiveConversation(G, channelId);
         if (existingConv) {
@@ -415,13 +415,13 @@ export function applyPerturbation(G: WorldModel, event: GraphPerturbation): numb
         } else if (event.isDirected) {
           detectConversationStart(G, event);
         } else if (event.isContinuation) {
-          // 隐式对话：Alice 近期发言 + 对方紧跟回复（不用 reply）→ 创建对话
+          // Неявный диалог: Алиса недавно написала + собеседник ответил следом (без reply) → создаём диалог
           createImplicitConversation(G, event);
         }
       }
 
-      // ADR-206 W5: 频道线索提取——转发来源 + t.me 链接
-      // 线索存储为 channel 节点的动态属性 channel_leads（JSON 数组）
+      // ADR-206 W5: извлечение ссылок на каналы — источники пересылок + t.me-ссылки
+      // Ссылки хранятся как динамический атрибут узла channel: channel_leads (JSON-массив)
       if (channelId && G.has(channelId)) {
         const leads: string[] = [];
         if (event.forwardFromChannelId) {
@@ -438,14 +438,14 @@ export function applyPerturbation(G: WorldModel, event: GraphPerturbation): numb
           }
         }
         if (leads.length > 0) {
-          // 追加到已有线索（去重，最多保留 50 条）
+          // Добавляем к существующим ссылкам (дедупликация, максимум 50)
           let existing: string[] = [];
           try {
             existing = JSON.parse(
               String(G.getDynamic(channelId, "channel_leads") ?? "[]"),
             ) as string[];
           } catch {
-            // 容错：非法 JSON 值，重置为空数组
+            // Защита: невалидное JSON-значение, сбрасываем в пустой массив
           }
           const merged = [...new Set([...existing, ...leads])].slice(-50);
           G.setDynamic(channelId, "channel_leads", JSON.stringify(merged));
@@ -456,24 +456,24 @@ export function applyPerturbation(G: WorldModel, event: GraphPerturbation): numb
     }
 
     case "read_history": {
-      // 自己读了消息 → 清空 unread
+      // Сами прочитали сообщение → обнуляем unread
       if (channelId && G.has(channelId)) {
-        // pending_directed 不随 read_history 清零——已读 ≠ 已回复。
+        // pending_directed не обнуляется при read_history — прочитано ≠ отвечено.
         // @see paper-five-dim/ §4.2: directed obligation decrement semantics
         G.updateChannel(channelId, {
           unread: 0,
-          unread_ewms: 0, // ADR-150 D3: EWMS 同步清零
-          mentions_alice: false, // #22: 清除 mentions_alice 标记（已消费）
+          unread_ewms: 0, // ADR-150 D3: EWMS синхронно обнуляется
+          mentions_alice: false, // #22: сбрасываем флаг mentions_alice (уже обработан)
         });
       }
       return 0.05;
     }
 
     case "user_status": {
-      // 联系人在线状态变更 → 更新 last_active_ms
+      // Изменение статуса контакта → обновляем last_active_ms
       if (contactId && G.has(contactId)) {
         G.updateContact(contactId, { last_active_ms: nowMs });
-        // ADR-79 M1: 事件自愈 — 在线状态变更即活性证明
+        // ADR-79 M1: самоисцеление через событие — изменение статуса является доказательством активности
         resetReachability(G, contactId);
       }
       return 0.1;
@@ -487,25 +487,25 @@ export function applyPerturbation(G: WorldModel, event: GraphPerturbation): numb
     }
 
     case "reaction": {
-      // Reaction 是零成本的外部行为反馈信号
+      // Reaction — бесплатный сигнал обратной связи о внешнем поведении
       if (contactId) {
         ensureContact(G, contactId, channelId);
         if (G.has(contactId)) {
-          // H2 修复: reaction 注入社交张力
+          // H2 фикс: reaction создаёт социальное напряжение
           G.updateContact(contactId, {
             last_active_ms: nowMs,
             last_reaction_ms: nowMs,
             last_reaction_emoji: event.emoji ?? "",
             reaction_boost_ms: nowMs,
           });
-          // ADR-79 M1: 事件自愈 — reaction 即活性证明
+          // ADR-79 M1: самоисцеление через событие — reaction является доказательством активности
           resetReachability(G, contactId);
         }
       }
       if (channelId) {
         if (G.has(channelId)) {
           G.updateChannel(channelId, { last_reaction_ms: nowMs });
-          // ADR-79 M1: 频道级自愈
+          // ADR-79 M1: самоисцеление на уровне канала
           resetReachability(G, channelId);
         }
       }
@@ -513,7 +513,7 @@ export function applyPerturbation(G: WorldModel, event: GraphPerturbation): numb
     }
 
     case "chat_member_update": {
-      // M4: 成员变更 → 更新联系人/频道属性
+      // M4: изменение состава → обновляем атрибуты контакта/канала
       if (contactId) {
         ensureContact(G, contactId, channelId);
         if (G.has(contactId)) {
@@ -527,7 +527,7 @@ export function applyPerturbation(G: WorldModel, event: GraphPerturbation): numb
     }
 
     case "typing": {
-      // Typing 事件不修改图状态——仅作为 engagement watcher 的信号源。
+      // Событие typing не изменяет состояние графа — используется только как источник сигнала для engagement watcher.
       return event.novelty ?? 0.05;
     }
 
@@ -537,7 +537,7 @@ export function applyPerturbation(G: WorldModel, event: GraphPerturbation): numb
 }
 
 /**
- * 批量应用事件，返回平均 novelty。
+ * Применяет события пакетом, возвращает среднее novelty.
  */
 export function applyPerturbations(G: WorldModel, events: GraphPerturbation[]): number {
   if (events.length === 0) return 0.05;
@@ -549,14 +549,14 @@ export function applyPerturbations(G: WorldModel, events: GraphPerturbation[]): 
 }
 
 /**
- * ADR-206: 清理幽灵联系人 — 频道以自身身份发消息产生的 contact 镜像。
+ * ADR-206: очистка фантомных контактов — зеркальные contact-узлы, созданные когда канал публиковал сообщения от своего имени.
  *
- * 识别条件：contact:XXX 对应的 channel:XXX 的 chat_type === "channel"。
- * 清理策略：删除幽灵联系人节点及其所有关系。display_name 等有价值属性
- * 不需要迁移——频道节点在 bootstrap 时已经独立获取了这些属性。
+ * Условие идентификации: chat_type узла channel:XXX, соответствующего contact:XXX, === "channel".
+ * Стратегия очистки: удаляем узел фантомного контакта и все его связи. Ценные атрибуты (display_name и др.)
+ * не нужно мигрировать — узел канала уже независимо получил их при bootstrap.
  *
- * 一次性清理，在图恢复后调用。
- * @returns 清理的幽灵联系人数量
+ * Одноразовая очистка, вызывается после восстановления графа.
+ * @returns количество удалённых фантомных контактов
  */
 export function cleanupPhantomContacts(G: WorldModel): number {
   let cleaned = 0;

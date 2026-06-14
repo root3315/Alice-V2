@@ -1,22 +1,23 @@
 /**
- * Pressure Mod — 六维压力场感知。
+ * Pressure Mod — восприятие шестимерного поля давления.
  *
- * 将 pressure/ 目录的计算结果接入 Mod 系统：
- * - UPDATE_PRESSURES 指令：接收 evolve.ts 已计算的压力结果（避免双重计算）
- * - contribute：通过 buildSituationBriefing 注入 per-entity 自然语言情境描述
- * - query：暴露 pressureState 供其他 mod 读取
+ * Подключает результаты вычислений из каталога pressure/ к системе Mod:
+ * - Инструкция UPDATE_PRESSURES: принимает готовые результаты давления от evolve.ts (во избежание двойного вычисления)
+ * - contribute: внедряет естественно-языковое описание ситуации per-entity через buildSituationBriefing
+ * - query: открывает pressureState для чтения другими mod
  *
- * 这是 Alice 的核心 mod——压力场是声部竞争的信号源，
- * 没有它，整个行为系统没有输入。
+ * Это ключевой mod Alice — поле давления является источником сигналов для конкуренции голосов;
+ * без него всей системе поведения нечем питаться.
  *
- * 设计选择：压力计算仍在 evolve.ts 中直接调用 computeAllPressures()
- * （因为声部竞争需要即时结果），计算完成后通过 dispatch 注入本 mod。
- * 这样避免了 onTickEnd 中的重复计算，同时让 storyteller
- * 能通过 mod 系统访问压力数据。
+ * Проектное решение: вычисление давления по-прежнему вызывает computeAllPressures() напрямую в evolve.ts
+ * (потому что конкуренция голосов требует немедленного результата), после чего результат
+ * инжектируется в этот mod через dispatch.
+ * Это устраняет повторное вычисление в onTickEnd и позволяет storyteller
+ * обращаться к данным давления через систему mod.
  *
- * @see paper-five-dim/ §3（六维压力场）+ §3.4（Laplacian 传播）
- * @see paper-five-dim/ Definition 7.1（Context Assembly: Contribute → Rank → Trim → Inject）
- * @see paper-five-dim/ Axiom 2（Prefill as Fact, Not Instruction）
+ * @see paper-five-dim/ §3 (шестимерное поле давления) + §3.4 (распространение через Laplacian)
+ * @see paper-five-dim/ Definition 7.1 (Context Assembly: Contribute → Rank → Trim → Inject)
+ * @see paper-five-dim/ Axiom 2 (Prefill as Fact, Not Instruction)
  */
 
 import { z } from "zod";
@@ -28,18 +29,18 @@ import { ensureChannelId } from "../graph/constants.js";
 import type { AllPressures } from "../pressure/aggregate.js";
 import { buildSituationBriefing } from "../pressure/situation-lines.js";
 
-// -- Mod 状态 -----------------------------------------------------------------
+// -- Состояние Mod ------------------------------------------------------------
 
 interface PressureState {
-  /** 最近一次 tick 的完整压力计算结果。 */
+  /** Полный результат расчёта давления за последний tick. */
   latest: AllPressures | null;
-  /** API 历史（最近 20 个 tick），用于节奏模式检测。 */
+  /** История API (последние 20 тиков) для обнаружения ритмических паттернов. */
   apiHistory: number[];
-  /** 最近一次 tick 的焦点实体集合（由 evolve 管线注入）。 */
+  /** Набор фокусных сущностей последнего тика (инжектируется конвейером evolve). */
   focalEntities: string[];
 }
 
-// -- Mod 定义 -----------------------------------------------------------------
+// -- Определение Mod ----------------------------------------------------------
 
 export const pressureMod = createMod<PressureState>("pressure", {
   category: "core",
@@ -51,9 +52,9 @@ export const pressureMod = createMod<PressureState>("pressure", {
   },
 })
   /**
-   * 接收 evolve.ts 计算的压力结果。
-   * evolve.ts 在 computeAllPressures() 后立即 dispatch 此指令，
-   * 避免 onTickEnd 中的重复计算。
+   * Принять результаты расчёта давления от evolve.ts.
+   * evolve.ts диспатчит эту инструкцию сразу после computeAllPressures(),
+   * чтобы избежать повторного расчёта в onTickEnd.
    */
   .instruction("UPDATE_PRESSURES", {
     params: z.object({
@@ -64,13 +65,13 @@ export const pressureMod = createMod<PressureState>("pressure", {
     impl(ctx, args) {
       ctx.state.latest = args.pressures as unknown as AllPressures;
       ctx.state.focalEntities = (args.focalEntities as string[]) ?? [];
-      // 追加 API 历史（滑动窗口，最多 20 条）
+      // Добавить в историю API (скользящее окно, не более 20 записей)
       ctx.state.apiHistory.push(ctx.state.latest.API);
       if (ctx.state.apiHistory.length > 20) ctx.state.apiHistory.shift();
       return true;
     },
   })
-  /** 获取最近一次 tick 的完整压力状态。 */
+  /** Получить полное состояние давления за последний tick. */
   .query("pressure", {
     params: z.object({}),
     description: "Получить текущее шестимерное состояние давления (P1-P6 + API + детализация вкладов)",
@@ -83,9 +84,9 @@ export const pressureMod = createMod<PressureState>("pressure", {
   .contribute((ctx): ContributionItem[] => {
     const items: ContributionItem[] = [];
 
-    // ADR-64 III-3: 墙钟时间始终注入（不依赖压力数据）
+    // ADR-64 III-3: Время настенных часов инжектируется всегда (не зависит от данных давления)
     // @see docs/adr/64-runtime-theory-alignment-audit.md
-    // 使用 ctx.nowMs（由 dispatcher.startTick 设置），eval 环境下为固定时间戳。
+    // Используется ctx.nowMs (устанавливается dispatcher.startTick), в eval-окружении — фиксированная метка времени.
     const now = new Date(ctx.nowMs);
     const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     const timeStr = now.toLocaleTimeString("en-US", {
@@ -98,7 +99,7 @@ export const pressureMod = createMod<PressureState>("pressure", {
       section("wall-clock", [PromptBuilder.of(`It's ${dateStr}, ${timeStr}.`)], undefined, 4, 98),
     );
 
-    // ADR-83 D6: 无压力数据时提供基本情境（防止空 user prompt）
+    // ADR-83 D6: При отсутствии данных давления предоставить базовый контекст (защита от пустого user prompt)
     if (!ctx.state.latest) {
       items.push(
         section(
@@ -113,12 +114,12 @@ export const pressureMod = createMod<PressureState>("pressure", {
     }
     const p = ctx.state.latest;
 
-    // Per-entity 自然语言情境描述（D2a → D2b 管线）。
-    // 替代旧的 Factor/Trend/Signal 三层抽象——直接生成 LLM 可读的社交情境。
-    // 数字仅用于排序和强度分级，不出现在输出中。
+    // Описание ситуации на естественном языке per-entity (конвейер D2a → D2b).
+    // Заменяет старую трёхуровневую абстракцию Factor/Trend/Signal — напрямую генерирует социальный контекст, читаемый LLM.
+    // Числа используются только для сортировки и градации интенсивности, в вывод не попадают.
     // @see paper-five-dim/ Remark 7: Rendering Level 2 (Guided Signal)
-    // ADR-187 D1: 读取当前 action target（由 SET_CONTACT_TARGET 设置），传入 buildSituationBriefing
-    // 使非当前 target 的 entity 标注 "(you're not in this chat right now)"
+    // ADR-187 D1: Читать текущий action target (устанавливается SET_CONTACT_TARGET), передавать в buildSituationBriefing
+    // чтобы сущности, не являющиеся текущим target, помечались "(you're not in this chat right now)"
     const relState = readModState(ctx, "relationships");
     const actionTarget = relState?.targetNodeId ? ensureChannelId(relState.targetNodeId) : null;
     const rawLines = buildSituationBriefing(p, ctx.graph, ctx.tick, ctx.nowMs, {
@@ -127,18 +128,19 @@ export const pressureMod = createMod<PressureState>("pressure", {
       actionTarget: actionTarget ?? undefined,
     });
     const lines = rawLines.map(PromptBuilder.of);
-    // order=5 确保情境描述在所有 section 最前面（threads=30, memory=50 之前）
+    // order=5 гарантирует, что описание ситуации будет первым среди всех section (перед threads=30, memory=50)
     items.push(section("situation", lines, "What's going on", 5, 95));
 
-    // ── 历史模式检测（节奏历史窗口）──────────────────────────────────
-    // 不改 TranslationEntry 类型，直接在 contribute() 中根据 apiHistory 注入额外贡献项。
-    // 参考叙事引擎 director.mod 的 ntiHistory 模式检测。
+    // ── Обнаружение исторических паттернов (окно истории ритма) ──────────────────────────────────
+    // Не меняем тип TranslationEntry — дополнительные contribution items инжектируются
+    // прямо в contribute() на основе apiHistory.
+    // Аналог обнаружения паттернов ntiHistory в director.mod нарративного движка.
     const history = ctx.state.apiHistory;
     if (history.length >= 5) {
       const recent5 = history.slice(-5);
       const avg5 = recent5.reduce((a, b) => a + b, 0) / recent5.length;
 
-      // 持续高压（连续 5 tick API > 3.0）
+      // Устойчивая высокая нагрузка (5 тиков подряд API > 3.0)
       if (recent5.every((v) => v > 3.0)) {
         items.push(
           section(
@@ -151,7 +153,7 @@ export const pressureMod = createMod<PressureState>("pressure", {
         );
       }
 
-      // 突然跌落（最近值比 5-tick 均值低 50%+）
+      // Резкое падение (последнее значение ниже среднего за 5 тиков на 50%+)
       const latest = history[history.length - 1];
       if (avg5 > 1.0 && latest < avg5 * 0.5) {
         items.push(
@@ -165,7 +167,7 @@ export const pressureMod = createMod<PressureState>("pressure", {
         );
       }
 
-      // 低迷恒温（连续 10+ tick API < 0.5）→ 主动触发好奇心
+      // Устойчивое затишье (10+ тиков подряд API < 0.5) → активировать любопытство
       if (history.length >= 10) {
         const recent10 = history.slice(-10);
         if (recent10.every((v) => v < 0.5)) {

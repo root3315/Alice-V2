@@ -177,10 +177,10 @@ export function parseOneBotMessageEvent(input: unknown): OneBotMessageEvent {
 }
 
 /**
- * OneBot v11 入站消息到 Alice canonical fact 的纯映射边界。
+ * Чистая граница маппинга входящих сообщений OneBot v11 в canonical fact Alice.
  *
- * QQ 内部稳定身份只使用 platform=qq；OneBot/NapCat 只是接入协议，不进入
- * channel/contact/message 的平台命名空间。
+ * Стабильная внутренняя идентификация QQ использует только platform=qq; OneBot/NapCat — лишь протокол доступа,
+ * не входящий в пространство имён платформы channel/contact/message.
  *
  * @see docs/adr/264-qq-platform-support/README.md
  * @see docs/reference/LangBot/src/langbot/pkg/platform/sources/aiocqhttp.py

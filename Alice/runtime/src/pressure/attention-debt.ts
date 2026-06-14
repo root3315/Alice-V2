@@ -1,59 +1,59 @@
 /**
- * ADR-100: 注意力负债 — 群组注意力饥饿的结构性解决方案。
+ * ADR-100: Долг внимания — структурное решение проблемы голодания внимания в группах.
  *
- * 压力场缺少时间积分维度，导致纯贪婪选择 + 有限资源 = 系统性饥饿。
- * Attention debt 作为 stored pressure（MCT 储存效应）叠加到 NSV 上，
- * 使被持续忽略的有压力 channel 逐渐积累竞争优势。
+ * Полю давления не хватает измерения временного интегрирования, из-за чего чистая жадная выборка + ограниченные ресурсы = системное голодание.
+ * Attention debt накладывается на NSV как stored pressure (эффект хранения MCT),
+ * постепенно накапливая конкурентное преимущество у давящих каналов, которые постоянно игнорируются.
  *
- * 递推公式:
+ * Рекуррентная формула:
  *   D_h(n) = D_h(n-1) × (1 - δ) + 1[target ≠ h] × API_h(n)
  *
- * NSV 加成:
+ * Бонус NSV:
  *   NSV_debt(a, h, n) = NSV(a, h, n) + μ_D × tanh(D_h / κ_D)
  *
- * 纯函数 API，不持有状态。
+ * Чистая функция API, не хранит состояние.
  *
  * @see docs/adr/100-attention-debt.md §9
  * @see paper-pomdp/ §7 Discussion: Multi-Channel Attention Allocation as Fair RMAB
  */
 
-/** dt 缩放基准（秒）。衰减公式 (1-δ)^(dt/BASE) 保持与 60s tick 间隔的数值一致。 */
+/** Базовый масштаб dt (секунды). Формула затухания (1-δ)^(dt/BASE) сохраняет числовую согласованность с тиковым интервалом 60s. */
 const DT_BASE_S = 60;
 
 export interface AttentionDebtConfig {
-  /** 衰减率，防止无穷累积。 */
+  /** Коэффициент затухания, предотвращающий бесконечное накопление. */
   delta: number;
-  // ADR-218 Phase 2: muD/kappaD 已删除（computeDebtBonus 已移除）。
-  // 保留 delta 供 updateAttentionDebt 使用。
+  // ADR-218 Phase 2: muD/kappaD удалены (computeDebtBonus удалён).
+  // delta сохранён для использования в updateAttentionDebt.
 }
 
 export const DEFAULT_ATTENTION_DEBT_CONFIG: AttentionDebtConfig = {
   delta: 0.05,
 };
 
-/** 频道超过此时长无新消息 → 仅衰减 debt，不累积。 */
-const STALE_THRESHOLD_MS = 7 * 24 * 3600 * 1000; // 7 天
+/** Если канал не получал новых сообщений дольше этого порога → только затухание долга, без накопления. */
+const STALE_THRESHOLD_MS = 7 * 24 * 3600 * 1000; // 7 дней
 
 /**
- * 更新 debt map：每个 channel 的 attention debt。
+ * Обновляет debt map: долг внимания каждого канала.
  *
  * D_h(n) = D_h(n-1) × (1 - δ) + 1[target(n-1) ≠ h] × API_h(n)
  *
- * - 被选中的 channel：debt 仅衰减（不累积）
- * - 未被选中但有压力的 channel：debt 增长
- * - 无压力（API_h=0）的 channel：debt 仅衰减（死群不累积）
- * - 超过 STALE_THRESHOLD 无新消息的 channel：仅衰减（冷频道不累积）
+ * - Выбранный channel: долг только затухает (без накопления)
+ * - Невыбранный channel с давлением: долг растёт
+ * - Channel без давления (API_h=0): долг только затухает (мёртвые группы не накапливают)
+ * - Channel без новых сообщений дольше STALE_THRESHOLD: только затухание (холодные каналы не накапливают)
  *
- * @param prevDebt - 上一 tick 的 debt map
- * @param channelPressures - channel → 该 channel 的压力贡献（API_h(n)）
- * @param selectedTarget - 上一 tick 选中的目标（null = 沉默）
- * @param config - 衰减参数
- * @param dt - 本 tick 时间步长（秒）。用于 (1-δ)^(dt/60) 缩放衰减。
- * @param lastIncomingMs - channel → 最后收到消息的墙钟时间（ms）。
- *   超过 STALE_THRESHOLD 无新消息的频道仅衰减不累积，
- *   新消息到达时自动恢复累积——消息驱动而非时间累积。
- * @param nowMs - 当前墙钟时间（ms）。
- * @returns 新的 debt map（不修改原 map）
+ * @param prevDebt - debt map предыдущего тика
+ * @param channelPressures - channel → вклад давления этого канала (API_h(n))
+ * @param selectedTarget - цель, выбранная на предыдущем тике (null = молчание)
+ * @param config - параметры затухания
+ * @param dt - шаг времени текущего тика (секунды). Используется для масштабирования затухания (1-δ)^(dt/60).
+ * @param lastIncomingMs - channel → время настенных часов последнего входящего сообщения (ms).
+ *   Каналы без сообщений дольше STALE_THRESHOLD только затухают без накопления,
+ *   при поступлении нового сообщения накопление автоматически восстанавливается — управляется сообщениями, а не временем.
+ * @param nowMs - текущее время настенных часов (ms).
+ * @returns новый debt map (исходный map не изменяется)
  */
 export function updateAttentionDebt(
   prevDebt: Map<string, number>,
@@ -66,7 +66,7 @@ export function updateAttentionDebt(
 ): Map<string, number> {
   const now = nowMs ?? Date.now();
   const newDebt = new Map<string, number>();
-  // 合并所有已知 channel：prevDebt 中有的 + channelPressures 中有的
+  // Объединяем все известные каналы: присутствующие в prevDebt + присутствующие в channelPressures
   const allChannels = new Set([...prevDebt.keys(), ...channelPressures.keys()]);
 
   for (const ch of allChannels) {
@@ -74,18 +74,18 @@ export function updateAttentionDebt(
     const pressure = channelPressures.get(ch) ?? 0;
     const wasSelected = ch === selectedTarget;
 
-    // 冷频道检测：超过 7 天无新消息 → 仅衰减，不累积 debt。
-    // 新消息到达时 last_incoming_ms 刷新 → isStale=false → 恢复正常累积。
+    // Определение холодного канала: нет новых сообщений более 7 дней → только затухание, без накопления долга.
+    // При поступлении нового сообщения last_incoming_ms обновляется → isStale=false → нормальное накопление восстанавливается.
     const lastMsg = lastIncomingMs?.get(ch);
     const isStale = lastMsg != null && lastMsg > 0 && now - lastMsg > STALE_THRESHOLD_MS;
 
     // D_h(n) = D_h(n-1) × (1-δ)^(dt/60) + 1[target ≠ h] × API_h(n)
-    // dt=60s 时退化为旧行为 (1-δ)^1
+    // При dt=60s вырождается в прежнее поведение (1-δ)^1
     const decayed = prev * (1 - config.delta) ** (dt / DT_BASE_S);
     const accumulated = wasSelected || isStale ? 0 : pressure;
     const debt = decayed + accumulated;
 
-    // 只保留有意义的 debt（避免 map 无限膨胀）
+    // Сохраняем только значимый долг (предотвращаем бесконечный рост map)
     if (debt > 1e-6) {
       newDebt.set(ch, debt);
     }
@@ -94,6 +94,6 @@ export function updateAttentionDebt(
   return newDebt;
 }
 
-// ADR-218 Phase 2: computeDebtBonus 已删除。
-// U_coverage 被 U_fairness 取代（iaus-scorer.ts post-scoring pass）。
-// updateAttentionDebt 保留——debt 累积仍用于压力监控和 channelPressures 输入。
+// ADR-218 Phase 2: computeDebtBonus удалён.
+// U_coverage заменён на U_fairness (post-scoring pass в iaus-scorer.ts).
+// updateAttentionDebt сохранён — накопление долга по-прежнему используется для мониторинга давления и как входные данные channelPressures.

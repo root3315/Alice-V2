@@ -1,29 +1,29 @@
 /**
- * 脚本预验证 — LLM 输出后、Docker 执行前的轻量 dry-run。
+ * Предварительная валидация скрипта — лёгкий dry-run после вывода LLM и до выполнения в Docker.
  *
- * 验证层级：
- * 1. bash -n 语法检查（本地 spawn，毫秒级）
- * 2. 命令名校验：每个非注释非空行的首个 token 是否在已知命令集里
- * 3. 模糊匹配建议：未知命令 → Levenshtein 距离 ≤ 2 的候选
+ * Уровни проверки:
+ * 1. bash -n синтаксическая проверка (локальный spawn, миллисекунды)
+ * 2. Проверка имён команд: является ли первый токен каждой непустой/некомментарной строки известной командой
+ * 3. Предложения нечёткого совпадения: неизвестная команда → кандидаты с расстоянием Левенштейна ≤ 2
  *
- * 返回人类/LLM 可读的错误消息，供 instructor retry 反馈。
+ * Возвращает сообщения об ошибках, читаемые человеком/LLM, для обратной связи при повторе instructor.
  *
  * @see docs/adr/211-instructor-js-script-prevalidation.md
  */
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
-// logger 预留（后续需要时启用）
+// logger зарезервирован (включить при необходимости)
 // import { createLogger } from "../utils/logger.js";
 // const log = createLogger("script-validator");
 
 /**
- * 解析可用的 bash 路径。
+ * Определить доступный путь к bash.
  *
- * Windows 上 PATH 里的 `bash` 通常是 System32\bash.exe（WSL 中转），
- * 没有可用发行版时会以 "execvpe(/bin/bash) failed" 报错，被误判成语法错误。
- * 这里优先用 Git for Windows 自带的真 bash；找不到则在 Windows 上返回 null
- * → 跳过宿主语法预检（Docker 容器内仍会真正执行并校验）。
+ * На Windows `bash` из PATH обычно — System32\bash.exe (WSL-ретранслятор),
+ * без доступного дистрибутива выдаёт ошибку "execvpe(/bin/bash) failed", которая ошибочно считается синтаксической.
+ * Здесь приоритет отдаётся настоящему bash из Git for Windows; если не найден — на Windows возвращается null
+ * → хостовая синтаксическая проверка пропускается (внутри Docker-контейнера команда всё равно выполнится и проверится).
  */
 let _bashPath: string | null | undefined;
 function resolveBash(): string | null {
@@ -40,12 +40,12 @@ function resolveBash(): string | null {
       return c;
     }
   }
-  // 非 Windows：PATH 的 bash 一般是真 bash。Windows：PATH bash 是 WSL 中转 → 跳过。
+  // Не-Windows: bash из PATH, как правило, настоящий. Windows: bash из PATH — WSL-ретранслятор → пропускаем.
   _bashPath = process.platform === "win32" ? null : "bash";
   return _bashPath;
 }
 
-/** 启动失败（非语法错误）特征：WSL 中转、缺 /bin/bash、无法 exec 等。 */
+/** Признаки сбоя запуска (не синтаксическая ошибка): WSL-ретранслятор, отсутствие /bin/bash, ошибка exec и т.п. */
 function isLaunchFailure(stderr: string): boolean {
   return (
     /WSL|execvpe|Relay|cannot execute|command not found|No such file or directory/i.test(stderr) &&
@@ -53,14 +53,14 @@ function isLaunchFailure(stderr: string): boolean {
   );
 }
 
-// 已知命令集 — 启动时从 CommandCatalog 注入
+// Набор известных команд — внедряется из CommandCatalog при запуске
 let _knownCommands = new Set<string>([
-  // 内置系统命令（始终可用）
+  // Встроенные системные команды (всегда доступны)
   "irc",
   "album",
   "self",
   "alice-pkg",
-  // shell 内建
+  // Встроенные команды shell
   "echo",
   "printf",
   "set",
@@ -70,7 +70,7 @@ let _knownCommands = new Set<string>([
   "true",
   "false",
   "exit",
-  // 常见 POSIX 工具
+  // Стандартные POSIX-утилиты
   "grep",
   "sed",
   "awk",
@@ -93,30 +93,30 @@ let _knownCommands = new Set<string>([
 
 let _knownSubcommands = new Map<string, Set<string>>();
 
-/** 从 CommandCatalog 注入额外命令名（启动时调用）。 */
+/** Внедрить дополнительные имена команд из CommandCatalog (вызывается при запуске). */
 export function registerKnownCommands(names: Iterable<string>): void {
   for (const name of names) {
     _knownCommands.add(name);
   }
 }
 
-/** 从真实 CLI 定义注入子命令名（启动时调用）。 */
+/** Внедрить имена подкоманд из реальных CLI-определений (вызывается при запуске). */
 export function registerKnownSubcommands(command: string, names: Iterable<string>): void {
   _knownSubcommands.set(command, new Set(names));
 }
 
-/** 重置（测试用）。 */
+/** Сброс (для тестов). */
 export function resetKnownCommands(): void {
   _knownCommands = new Set(["irc", "album", "self", "engine", "alice-pkg"]);
   _knownSubcommands = new Map<string, Set<string>>();
 }
 
-/** 获取当前已知命令集（测试/调试用）。 */
+/** Получить текущий набор известных команд (для тестов/отладки). */
 export function getKnownCommands(): ReadonlySet<string> {
   return _knownCommands;
 }
 
-// ── 验证逻辑 ──────────────────────────────────────────────────────────────
+// ── Логика валидации ──────────────────────────────────────────────────────
 
 export type ValidationErrorCode =
   | "no_executable"
@@ -134,19 +134,19 @@ export interface ValidationError {
 export interface ValidationResult {
   valid: boolean;
   errors: ValidationError[];
-  /** LLM 可读的错误摘要（供 instructor retry 注入）。 */
+  /** Читаемое LLM резюме ошибок (для внедрения при повторе instructor). */
   summary: string;
 }
 
 /**
- * 轻量 dry-run 验证脚本。
- * 不需要 Docker，毫秒级完成。
+ * Лёгкий dry-run для валидации скрипта.
+ * Не требует Docker, завершается за миллисекунды.
  */
 export function validateScript(script: string): ValidationResult {
   const errors: ValidationError[] = [];
 
-  // 0. 必须包含至少一条可执行命令（非注释、非空行）
-  //    防止 LLM 输出纯自然语言或只有注释 → 浪费 Docker 执行
+  // 0. Должна содержать хотя бы одну исполняемую команду (не комментарий, не пустая строка)
+  //    Предотвращает отправку в Docker чистого естественного языка или только комментариев
   if (!hasExecutableCommand(script)) {
     errors.push({
       code: "no_executable",
@@ -160,11 +160,11 @@ export function validateScript(script: string): ValidationResult {
     };
   }
 
-  // 1. bash -n 语法检查
+  // 1. bash -n синтаксическая проверка
   const syntaxErrors = checkBashSyntax(script);
   errors.push(...syntaxErrors);
 
-  // 2. 命令名校验（仅在语法正确时检查，避免噪音）
+  // 2. Проверка имён команд (только при синтаксически корректном скрипте, во избежание шума)
   if (syntaxErrors.length === 0) {
     errors.push(...checkIrcMessageRefs(script));
     const cmdErrors = checkCommandNames(script);
@@ -178,7 +178,7 @@ export function validateScript(script: string): ValidationResult {
   return { valid, errors, summary };
 }
 
-/** 脚本是否包含至少一条可执行命令（非注释、非空行、非纯赋值）。 */
+/** Содержит ли скрипт хотя бы одну исполняемую команду (не комментарий, не пустая строка, не чистое присваивание). */
 function hasExecutableCommand(script: string): boolean {
   for (const line of script.split("\n")) {
     const trimmed = line.trim();
@@ -188,7 +188,7 @@ function hasExecutableCommand(script: string): boolean {
   return false;
 }
 
-/** bash -n 语法检查。 */
+/** bash -n синтаксическая проверка. */
 function checkBashSyntax(script: string): ValidationError[] {
   const bash = resolveBash();
   if (!bash) return []; // нет настоящего bash (Windows без git-bash) → пропускаем хост-проверку
@@ -208,7 +208,7 @@ function checkBashSyntax(script: string): ValidationError[] {
     if (isLaunchFailure(stderr)) return [];
     const errors: ValidationError[] = [];
 
-    // 解析 bash -n 输出格式: "bash: line N: ..."
+    // Разобрать вывод bash -n: "bash: line N: ..."
     for (const line of stderr.split("\n")) {
       const match = line.match(/line (\d+): (.+)/);
       if (match) {
@@ -220,7 +220,7 @@ function checkBashSyntax(script: string): ValidationError[] {
       }
     }
 
-    // 如果没能解析出结构化错误，至少返回原始 stderr
+    // Если структурированные ошибки не распознаны — вернуть хотя бы сырой stderr
     if (errors.length === 0 && stderr.trim()) {
       errors.push({
         code: "shell_syntax",
@@ -271,13 +271,13 @@ function checkIrcMessageRefs(script: string): ValidationError[] {
   return errors;
 }
 
-// ── 命令名校验 ──────────────────────────────────────────────────────────
+// ── Проверка имён команд ──────────────────────────────────────────────────
 //
-// 只校验顶级命令名。子命令校验交给 citty 在容器内运行时完成 —
-// citty 自带 "Unknown command" 报错，错误通过 feedback-arc 反馈给 LLM。
+// Проверяются только имена команд верхнего уровня. Валидация подкоманд делегируется citty во время выполнения в контейнере —
+// citty сам выдаёт "Unknown command", ошибка возвращается LLM через feedback-arc.
 // @see citty resolveSubCommand → CLIError("E_UNKNOWN_COMMAND")
 
-/** 命令名校验：每个非注释非空行的首 token 是否已知。 */
+/** Проверка имён команд: является ли первый токен каждой непустой/некомментарной строки известным. */
 function checkCommandNames(script: string): ValidationError[] {
   const errors: ValidationError[] = [];
   const lines = splitLinesWithQuoteState(script);
@@ -286,17 +286,17 @@ function checkCommandNames(script: string): ValidationError[] {
     const { line, startsInQuote } = lines[i];
     if (startsInQuote) continue;
     const trimmed = line.trim();
-    // 跳过空行、注释、shebang
+    // Пропустить пустые строки, комментарии, shebang
     if (!trimmed || trimmed.startsWith("#")) continue;
 
-    // 跳过 shell 变量赋值 (FOO=bar, foo=$(cmd), foo=`cmd`)
+    // Пропустить присваивания переменных shell (FOO=bar, foo=$(cmd), foo=`cmd`)
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(trimmed)) continue;
 
-    // 提取首 token（命令名）
+    // Извлечь первый токен (имя команды)
     const firstToken = trimmed.split(/[\s;|&(]/)[0];
     if (!firstToken) continue;
 
-    // 跳过 shell 关键字
+    // Пропустить ключевые слова shell
     if (SHELL_KEYWORDS.has(firstToken)) continue;
 
     if (!_knownCommands.has(firstToken)) {
@@ -408,9 +408,9 @@ const SHELL_KEYWORDS = new Set([
   "!",
 ]);
 
-// ── 模糊匹配 ──────────────────────────────────────────────────────────────
+// ── Нечёткое совпадение ───────────────────────────────────────────────────
 
-/** Levenshtein 距离。 */
+/** Расстояние Левенштейна. */
 function levenshtein(a: string, b: string): number {
   const m = a.length;
   const n = b.length;
@@ -429,12 +429,12 @@ function levenshtein(a: string, b: string): number {
   return dp[m][n];
 }
 
-/** 在已知命令集中找 Levenshtein 距离 ≤ 2 的最近匹配。 */
+/** Найти ближайшее совпадение в наборе известных команд с расстоянием Левенштейна ≤ 2. */
 function findClosest(input: string, candidates: ReadonlySet<string>): string | null {
   let best: string | null = null;
-  let bestDist = 3; // 阈值
+  let bestDist = 3; // порог
   for (const cmd of candidates) {
-    // 快速剪枝：长度差 > 2 不可能 ≤ 2
+    // Быстрое отсечение: при разнице длин > 2 расстояние не может быть ≤ 2
     if (Math.abs(input.length - cmd.length) > 2) continue;
     const dist = levenshtein(input, cmd);
     if (dist < bestDist) {

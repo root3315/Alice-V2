@@ -1,13 +1,13 @@
 /**
- * P_prospect — 前瞻性压力（ADR-23 Wave 4）。
+ * P_prospect — перспективное давление (ADR-23 Wave 4).
  *
- * Thread horizon 产生前瞻性压力，作为 API 的独立加法项。
+ * Thread horizon создаёт перспективное давление как самостоятельный аддитивный член API.
  *
  * P_prospect = Σ_i w_i × σ(k × (1 - remaining_i / horizon_i))
  *   remaining = max(0, deadlineMs - nowMs)
- *   σ = sigmoid, 上界自然有限
+ *   σ = sigmoid, верхняя граница естественно ограничена
  *
- * 无 horizon 线程 → P_prospect = 0（v4 退化）。
+ * Нет потоков с horizon → P_prospect = 0 (деградация v4).
  */
 import type { WorldModel } from "../graph/world-model.js";
 import { standardSigmoid } from "../utils/math.js";
@@ -15,14 +15,14 @@ import { readNodeMs } from "./clock.js";
 import type { PressureResult } from "./p1-attention.js";
 
 /**
- * 计算 P_prospect。
+ * Вычисляет P_prospect.
  *
- * 从图中读取所有 open 状态的 Thread 实体（有 deadline 属性且有限），
- * 计算前瞻性压力。
+ * Читает из графа все Thread-сущности со статусом open (с конечным атрибутом deadline),
+ * вычисляет перспективное давление.
  *
- * @param G 伴侣图
- * @param n 当前 tick
- * @param kSteepness sigmoid 陡度（默认 5.0）
+ * @param G граф компаньона
+ * @param n текущий тик
+ * @param kSteepness крутизна sigmoid (по умолчанию 5.0)
  */
 export function pProspect(
   G: WorldModel,
@@ -39,7 +39,7 @@ export function pProspect(
     const deadline = attrs.deadline;
     if (!Number.isFinite(deadline)) continue;
 
-    // ADR-166: 精确读取，缺失任一时间戳则跳过（Unknown ≠ Old）
+    // ADR-166: точное чтение, при отсутствии любой временной метки — пропустить (Unknown ≠ Old)
     const createdMs = readNodeMs(G, tid, "created_ms");
     const deadlineMs = readNodeMs(G, tid, "deadline_ms");
     if (createdMs <= 0 || deadlineMs <= 0) continue;
@@ -50,7 +50,7 @@ export function pProspect(
     const remainingS = Math.max(0, (deadlineMs - nowMs) / 1000);
     const w = attrs.w;
 
-    // σ(k × (1 - remaining / horizon)) — 接近 deadline 时趋近 1
+    // σ(k × (1 - remaining / horizon)) — стремится к 1 при приближении к deadline
     const progress = 1 - remainingS / horizonS;
     const pressure = w * standardSigmoid(kSteepness * progress);
     contributions[tid] = pressure;

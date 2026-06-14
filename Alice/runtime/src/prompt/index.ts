@@ -1,5 +1,5 @@
 /**
- * ADR-220 + ADR-237: 声明式 User Prompt 管线 — 公共 API。
+ * ADR-220 + ADR-237: Декларативный конвейер User Prompt — публичный API.
  */
 
 export { renderUserPrompt } from "./renderers/index.js";

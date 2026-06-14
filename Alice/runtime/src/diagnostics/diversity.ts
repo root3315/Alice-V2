@@ -1,12 +1,12 @@
 /**
- * A2 声部多样性分析 — ADR-76 自动化行为验证。
+ * A2 Анализ разнообразия голосов — автоматизированная проверка поведения ADR-76.
  *
- * - 声部选择 Shannon 熵（H）→ 对标 HUMA Timeliness 理论最大熵
- * - 声部轮换率（连续相同声部 / 总行动）→ ADR-75 voice fatigue 效果验证
- * - 人格漂移追踪（π 变化率 vs 压力振荡周期比）→ V5 记忆慢变量
+ * - Энтропия Шеннона (H) выбора голоса → сравнение с теоретическим максимумом HUMA Timeliness
+ * - Частота смены голоса (последовательные повторы / всего действий) → проверка эффекта voice fatigue ADR-75
+ * - Отслеживание дрейфа личности (скорость изменения π vs соотношение периода осцилляций давления) → медленная переменная памяти V5
  *
  * @see docs/adr/76-naturalness-validation-methodology.md
- * @see docs/adr/74-huma-cross-pollination/74-huma-cross-pollination.md §差距1
+ * @see docs/adr/74-huma-cross-pollination/74-huma-cross-pollination.md §Разрыв1
  * @see docs/adr/75-deliberation-state/75-deliberation-state.md
  */
 
@@ -25,70 +25,70 @@ import { VOICE_COUNT } from "../voices/personality.js";
 const IAUS_ACTION_VOICE_COUNT = 3;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 类型
+// Типы
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface VoiceDiversityReport {
-  /** 声部选择的 Shannon 熵 H（bits）。最大值 = log2(5) ≈ 2.32。 */
+  /** Энтропия Шеннона H выбора голоса (бит). Максимум = log2(5) ≈ 2.32. */
   shannonEntropy: number;
-  /** 理论最大熵（= log2(声部数)）。 */
+  /** Теоретическая максимальная энтропия (= log2(количество голосов)). */
   maxEntropy: number;
-  /** 归一化熵 H/H_max ∈ [0, 1]。1 = 完全均匀，0 = 只用一个声部。 */
+  /** Нормализованная энтропия H/H_max ∈ [0, 1]. 1 = полностью равномерно, 0 = только один голос. */
   normalizedEntropy: number;
-  /** 各声部使用频率。 */
+  /** Частота использования каждого голоса. */
   voiceFrequencies: Record<string, number>;
-  /** 连续相同声部的比率 = 连续重复次数 / (总行动数 - 1)。 */
+  /** Доля последовательных повторов голоса = число повторов / (всего действий - 1). */
   consecutiveRepeatRate: number;
-  /** 人格漂移分析（需要 personality_snapshots 数据）。 */
+  /** Анализ дрейфа личности (требует данных personality_snapshots). */
   personalityDrift: PersonalityDriftReport | null;
-  /** 按观测层拆开的声部序列。A2 权威面是 voice_selection_tick_log。 */
+  /** Последовательности голосов, разбитые по наблюдательным слоям. Авторитетный план A2 — voice_selection_tick_log. */
   planes: Record<string, VoiceDiversityPlaneReport>;
-  /** A2 当前采用的权威观测面。 */
+  /** Текущий авторитетный наблюдательный план A2. */
   authorityPlane: "voice_selection_tick_log";
 }
 
 export interface VoiceDiversityPlaneReport {
-  /** 样本数。 */
+  /** Количество выборок. */
   sampleCount: number;
-  /** 声部选择的 Shannon 熵 H（bits）。 */
+  /** Энтропия Шеннона H выбора голоса (бит). */
   shannonEntropy: number;
-  /** 当前观测面的理论最大熵。 */
+  /** Теоретическая максимальная энтропия для текущего наблюдательного плана. */
   maxEntropy: number;
-  /** 归一化熵 H/H_max ∈ [0, 1]。 */
+  /** Нормализованная энтропия H/H_max ∈ [0, 1]. */
   normalizedEntropy: number;
-  /** 各声部使用频率。 */
+  /** Частота использования каждого голоса. */
   voiceFrequencies: Record<string, number>;
-  /** 连续相同声部的比率。 */
+  /** Доля последовательных повторов голоса. */
   consecutiveRepeatRate: number;
 }
 
 export interface PersonalityDriftReport {
-  /** π 变化速率（每 tick 的 L2 位移平均值）。 */
+  /** Скорость изменения π (среднее L2-смещение за один tick). */
   meanDriftPerTick: number;
-  /** 压力振荡周期（行动间隔中位数）。 */
+  /** Период осцилляций давления (медиана интервалов между действиями). */
   pressureOscillationPeriod: number;
   /**
-   * 漂移时间尺度比 = π 达到显著变化（> 0.1）所需 tick / 压力振荡周期。
-   * V5 预测：此比值 >> 1（记忆是慢变量）。
+   * Соотношение временных масштабов дрейфа = число тиков для достижения значимого изменения π (> 0.1) / период осцилляций.
+   * Прогноз V5: это соотношение >> 1 (память — медленная переменная).
    */
   driftToOscillationRatio: number;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 分析函数
+// Функции анализа
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 分析声部多样性。
+ * Анализирует разнообразие голосов.
  *
- * 从 tick_log 读取声部选择序列，计算 Shannon 熵和轮换率。
- * 从 personality_snapshots 读取 π 演化，计算漂移速率。
+ * Читает последовательность выборов голоса из tick_log, вычисляет энтропию Шеннона и частоту смены.
+ * Читает эволюцию π из personality_snapshots, вычисляет скорость дрейфа.
  */
 export function analyzeVoiceDiversity(): VoiceDiversityReport {
   const db = getDb();
 
-  // ── 1. 声部选择权威序列 ───────────────────────────────────────────────
-  // ADR-124 D7: tick_log.action 是 loudness winner；action_log 是下游执行记录。
+  // ── 1. Авторитетная последовательность выбора голоса ───────────────────────────────────────────────
+  // ADR-124 D7: tick_log.action — победитель по громкости; action_log — запись нижележащего выполнения.
   const voiceSelections = db
     .select({ voice: tickLog.action })
     .from(tickLog)
@@ -98,7 +98,7 @@ export function analyzeVoiceDiversity(): VoiceDiversityReport {
   const authority = summarizeVoiceSequence(voiceSelections, VOICE_COUNT);
   const planes = buildVoiceDiversityPlanes(db, authority);
 
-  // ── 3. 人格漂移（V5）────────────────────────────────────────────────
+  // ── 3. Дрейф личности (V5) ────────────────────────────────────────────────
   const personalityDrift = analyzePersonalityDrift(db);
 
   return {
@@ -224,9 +224,9 @@ function readSelectedAction(payloadJson: string): string | null {
 }
 
 /**
- * 分析人格向量漂移速率 vs 压力振荡周期。
+ * Анализирует скорость дрейфа вектора личности vs период осцилляций давления.
  *
- * V5 预测：π 的演化时间尺度 >> 压力振荡时间尺度（记忆是慢变量）。
+ * Прогноз V5: временной масштаб эволюции π >> временного масштаба осцилляций давления (память — медленная переменная).
  */
 function analyzePersonalityDrift(db: ReturnType<typeof getDb>): PersonalityDriftReport | null {
   const snapshots = db
@@ -237,7 +237,7 @@ function analyzePersonalityDrift(db: ReturnType<typeof getDb>): PersonalityDrift
 
   if (snapshots.length < 2) return null;
 
-  // π 变化速率：相邻快照的 L2 距离 / tick 差
+  // Скорость изменения π: L2-расстояние между соседними снапшотами / разница тиков
   const drifts: number[] = [];
   for (let i = 1; i < snapshots.length; i++) {
     let prev: number[];
@@ -263,7 +263,7 @@ function analyzePersonalityDrift(db: ReturnType<typeof getDb>): PersonalityDrift
 
   const meanDriftPerTick = drifts.reduce((a, b) => a + b, 0) / drifts.length;
 
-  // 压力振荡周期 ≈ 行动间隔中位数
+  // Период осцилляций давления ≈ медиана интервалов между действиями
   const actionTicks = db
     .select({ tick: actionLog.tick })
     .from(actionLog)
@@ -278,7 +278,7 @@ function analyzePersonalityDrift(db: ReturnType<typeof getDb>): PersonalityDrift
   const pressureOscillationPeriod =
     intervals.length > 0 ? intervals[Math.floor(intervals.length / 2)] : 1;
 
-  // 达到 Δπ > 0.1 所需 tick 数 ≈ 0.1 / meanDriftPerTick
+  // Число тиков для достижения Δπ > 0.1 ≈ 0.1 / meanDriftPerTick
   const ticksToSignificantDrift = meanDriftPerTick > 0 ? 0.1 / meanDriftPerTick : Infinity;
   const driftToOscillationRatio =
     pressureOscillationPeriod > 0 ? ticksToSignificantDrift / pressureOscillationPeriod : Infinity;

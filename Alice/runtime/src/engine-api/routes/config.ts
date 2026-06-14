@@ -1,5 +1,5 @@
 /**
- * Engine API — 配置路由。
+ * Engine API — маршрут конфигурации.
  *
  * GET /config/:key → { "value": ... }
  *
@@ -8,12 +8,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { EngineApiDeps } from "../server.js";
 
-/** 可查询的配置 key 白名单。 */
+/** Белый список допустимых ключей конфигурации. */
 const ALLOWED_KEYS = new Set(["timezoneOffset", "exaApiKey", "musicApiBaseUrl", "youtubeApiKey"]);
 
 /**
- * 处理 GET /config/:key。
- * @param key 配置项名称（URL 段）
+ * Обрабатывает GET /config/:key.
+ * @param key Имя параметра конфигурации (URL-сегмент)
  */
 export function handleConfigGet(
   key: string,

@@ -1,13 +1,13 @@
 /**
- * 人格向量及其演化。
- * 对应 Python voices.py PersonalityVector + personality_evolution_step()。
+ * Вектор личности и его эволюция.
+ * Соответствует Python voices.py PersonalityVector + personality_evolution_step().
  */
 
 import type { PersonalityWeights } from "../utils/math.js";
 
 /**
- * 声部身份注册表 — 4 个声部的唯一定义点。
- * ADR-81: Reflection 声部移除。Consolidation 是常规 action sandbox 多跳执行的涌现属性。
+ * Реестр идентичностей голосов — единственная точка определения 4 голосов.
+ * ADR-81: голос Reflection удалён. Consolidation — это возникающее свойство многошагового выполнения в обычном action sandbox.
  * @see paper-five-dim/ Def 3.6: π = (π_D, π_C, π_S, π_X)
  */
 export const VOICES = [
@@ -31,8 +31,8 @@ export const VOICE_BY_INDEX = Object.fromEntries(VOICES.map((v) => [v.index, v.i
 >;
 
 /**
- * 将权重投影到有界单纯形 {π | π_i ∈ [piMin, piMax], Σπ = 1}。
- * 迭代 clamp → normalize 直到收敛（通常 2-3 轮）。
+ * Проецирует веса на ограниченный симплекс {π | π_i ∈ [piMin, piMax], Σπ = 1}.
+ * Итерирует clamp → normalize до сходимости (обычно 2-3 прохода).
  * @see paper-five-dim Def 3.6 (eq 14)
  */
 function projectToSimplex(weights: number[], piMin: number, piMax: number): PersonalityWeights {
@@ -54,7 +54,7 @@ export const PERSONALITY_MIN = 0.05;
 const PERSONALITY_MAX = 0.5;
 
 export class PersonalityVector {
-  /** π = (π_D, π_C, π_S, π_X)，满足 sum = 1。ADR-81: 4 维。 */
+  /** π = (π_D, π_C, π_S, π_X), при условии sum = 1. ADR-81: 4 измерения. */
   weights: PersonalityWeights;
 
   constructor(weights?: number[]) {
@@ -94,10 +94,10 @@ export class PersonalityVector {
 }
 
 /**
- * 批量人格演化：累加所有 feedback delta 后执行一次均值回归 + 一次投影。
+ * Пакетная эволюция личности: накапливает все дельты обратной связи, затем выполняет одну регрессию к среднему + одну проекцию.
  *
- * 避免单 feedback 调用 personalityEvolutionStep 多次导致
- * 均值回归和投影被过度应用（N 次 feedback → N 次回归 vs 1 次回归）。
+ * Исключает ситуацию, когда многократный вызов personalityEvolutionStep на одной обратной связи
+ * приводит к избыточному применению регрессии и проекции (N обратных связей → N регрессий вместо 1).
  */
 export function personalityEvolutionBatch(
   personality: PersonalityVector,
@@ -109,17 +109,17 @@ export function personalityEvolutionBatch(
 ): PersonalityVector {
   const newWeights = [...personality.weights];
 
-  // 累加所有 delta
+  // накапливаем все дельты
   for (const { actionIdx, feedback } of feedbacks) {
     newWeights[actionIdx] += alpha * feedback;
   }
 
-  // 一次均值回归
+  // одна регрессия к среднему
   for (let i = 0; i < newWeights.length; i++) {
     const home = piHome[i] ?? 1 / newWeights.length;
     newWeights[i] -= gamma * (newWeights[i] - home);
   }
 
-  // 一次投影
+  // одна проекция
   return new PersonalityVector(projectToSimplex(newWeights, piMin, PERSONALITY_MAX));
 }

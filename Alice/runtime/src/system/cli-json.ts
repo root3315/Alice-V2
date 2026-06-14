@@ -1,31 +1,31 @@
 /**
- * CLI JSON 字段选择 — GitHub CLI 风格（ADR-239）。
+ * CLI выборка JSON-полей — стиль GitHub CLI (ADR-239).
  *
- * --json 接受逗号分隔字段列表，无效字段报错并列出可用字段。
- * 与 GitHub CLI 行为一致：`gh issue list --json invalid` → 报错。
+ * --json принимает список полей через запятую; неизвестные поля вызывают ошибку с перечислением допустимых.
+ * Поведение соответствует GitHub CLI: `gh issue list --json invalid` → ошибка.
  *
- * FP 设计原则：
- * - discriminated union 表达输出模式
- * - as const 保证不可变
- * - 泛型保持类型信息
+ * Принципы FP-дизайна:
+ * - discriminated union выражает режим вывода
+ * - as const гарантирует иммутабельность
+ * - дженерики сохраняют типовую информацию
  */
 
 // ── Output Mode (Sum Type) ──
 
-/** 输出模式 — discriminated union，编译期强制覆盖。 */
+/** Режим вывода — discriminated union, полное покрытие на этапе компиляции. */
 export type OutputMode =
-  | { type: "human" } // 人类可读文本
-  | { type: "json"; fields: string[] | undefined }; // JSON 模式；fields=undefined 表示全字段
+  | { type: "human" } // человекочитаемый текст
+  | { type: "json"; fields: string[] | undefined }; // JSON-режим; fields=undefined означает все поля
 
-/** 从 --json 参数解析输出模式。 */
+/** Разбирает режим вывода из аргумента --json. */
 export function parseOutputMode(
   command: CommandName | string,
   jsonArg: string | undefined,
 ): OutputMode {
-  // 无参数 → 人类可读
+  // Нет аргумента → человекочитаемый режим
   if (jsonArg === undefined) return { type: "human" };
 
-  // 空字符串 → JSON 全字段
+  // Пустая строка → JSON со всеми полями
   if (jsonArg === "") return { type: "json", fields: undefined };
 
   const requested = jsonArg
@@ -33,15 +33,15 @@ export function parseOutputMode(
     .map((f) => f.trim())
     .filter(Boolean);
 
-  // 检查命令是否在注册表中
+  // Проверяем, есть ли команда в реестре
   const available = command in COMMAND_FIELDS ? COMMAND_FIELDS[command as CommandName] : undefined;
 
-  // 命令未注册 → 允许任意字段
+  // Команда не зарегистрирована → разрешаем любые поля
   if (!available) {
     return { type: "json", fields: requested.length > 0 ? requested : undefined };
   }
 
-  // 验证字段 — 用 Set 提高可读性
+  // Валидация полей — Set для удобочитаемости
   const validSet = new Set<string>(available);
   const invalid = requested.filter((f) => !validSet.has(f));
   if (invalid.length > 0) {
@@ -56,9 +56,9 @@ export function parseOutputMode(
 
 // ── Field Registry (Immutable) ──
 
-/** 命令可用字段注册表 — as const 保证不可变。 */
+/** Реестр доступных полей команд — as const гарантирует иммутабельность. */
 export const COMMAND_FIELDS = {
-  // 核心命令
+  // Основные команды
   say: ["msgId", "chatId"] as const,
   reply: ["msgId", "chatId", "replyTo"] as const,
   react: ["success", "chatId", "msgId"] as const,
@@ -84,7 +84,7 @@ export const COMMAND_FIELDS = {
   ] as const,
   "album-send": ["msgId", "chatId", "assetId", "sendMode"] as const,
 
-  // 查询命令
+  // Команды запроса
   whois: ["chatId", "name", "chatType", "topic", "unread", "pendingDirected", "role"] as const,
   motd: ["mood", "valence", "tension"] as const,
   tail: [
@@ -101,12 +101,12 @@ export const COMMAND_FIELDS = {
   topic: ["chatId", "topic"] as const,
 } as const;
 
-/** 命令名类型 — 从注册表推导，消除魔法字符串。 */
+/** Тип имени команды — выводится из реестра, устраняет магические строки. */
 export type CommandName = keyof typeof COMMAND_FIELDS;
 
 // ── Output Filtering (Generic) ──
 
-/** 过滤对象，只保留指定字段。泛型保持类型信息。 */
+/** Фильтрует объект, оставляя только указанные поля. Дженерик сохраняет типовую информацию. */
 export function filterFields<T extends Record<string, unknown>>(
   obj: T,
   fields: readonly string[] | undefined,
@@ -121,7 +121,7 @@ export function filterFields<T extends Record<string, unknown>>(
   return result;
 }
 
-/** 过滤数组元素。 */
+/** Фильтрует поля элементов массива. */
 export function filterArrayFields<T extends Record<string, unknown>>(
   arr: T[],
   fields: readonly string[] | undefined,
@@ -130,7 +130,7 @@ export function filterArrayFields<T extends Record<string, unknown>>(
   return arr.map((item) => filterFields(item, fields));
 }
 
-/** 统一过滤入口 — 处理单个对象或数组。 */
+/** Единая точка входа фильтрации — обрабатывает одиночный объект или массив. */
 export function filterOutput<T extends Record<string, unknown>>(
   data: T | T[],
   fields: readonly string[] | undefined,

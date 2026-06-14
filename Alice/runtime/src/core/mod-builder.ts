@@ -1,10 +1,10 @@
 /**
- * createMod Builder — 扁平化 Mod 定义 API。
+ * createMod Builder — плоский API для определения Mod.
  *
- * 用 `createMod<S>()` scoped builder 替代 `defineMod<S>()` 嵌套对象树，
- * 获得 Zod 类型推断 + 扁平链式声明。
+ * Заменяет вложенное дерево объектов `defineMod<S>()` на scoped builder `createMod<S>()`,
+ * обеспечивая вывод типов Zod + плоское цепочечное объявление.
  *
- * 用法:
+ * Использование:
  * ```typescript
  * export const diaryMod = createMod<DiaryState>("diary", {
  *   category: "mechanic",
@@ -18,7 +18,7 @@
  *     }),
  *     description: "写一条私人日记",
  *     impl(ctx, args) {
- *       // args.content: string ← 自动推断
+ *       // args.content: string ← выводится автоматически
  *     },
  *   })
  *   .contribute((ctx) => [...])
@@ -40,11 +40,11 @@ import type {
   QueryDefinition,
 } from "./types.js";
 
-// ── Zod → ParamDefinition 转换 ──────────────────────────────────────────────
+// ── Zod → преобразование в ParamDefinition ──────────────────────────────────────────────
 
 /**
- * 从 Zod schema 提取 .describe() 描述。
- * 支持 unwrap: z.string().describe("x").optional() 的 describe 在内层。
+ * Извлекает описание .describe() из Zod schema.
+ * Поддерживает unwrap: describe в z.string().describe("x").optional() находится во внутреннем слое.
  */
 export function extractDescription(schema: z.ZodTypeAny): string {
   if (schema.description) return schema.description;
@@ -60,7 +60,7 @@ export function extractDescription(schema: z.ZodTypeAny): string {
   return "";
 }
 
-/** z.object shape → Record<string, ParamDefinition>。 */
+/** z.object shape → Record<string, ParamDefinition>. */
 export function zodToParamDefs(shape: z.ZodRawShape): Record<string, ParamDefinition> {
   const result: Record<string, ParamDefinition> = {};
   for (const [key, schema] of Object.entries(shape)) {
@@ -69,7 +69,7 @@ export function zodToParamDefs(shape: z.ZodRawShape): Record<string, ParamDefini
   return result;
 }
 
-// ── Builder 配置类型 ─────────────────────────────────────────────────────────
+// ── Типы конфигурации Builder ─────────────────────────────────────────────────────────
 
 interface CreateModConfig<S> {
   category: ModMeta["category"];
@@ -96,7 +96,7 @@ interface QueryConfig<S, T extends z.ZodRawShape> {
   params: z.ZodObject<T>;
   description: string;
   returns?: string;
-  /** LLM 可读的返回值简述。渲染为 JSDoc @returns。 */
+  /** Краткое описание возвращаемого значения для LLM. Рендерится как JSDoc @returns. */
   returnHint?: string;
   deriveParams?: Record<
     string,
@@ -107,7 +107,7 @@ interface QueryConfig<S, T extends z.ZodRawShape> {
   impl: (ctx: ModContext<S>, args: z.output<z.ZodObject<T>>) => unknown;
 }
 
-// ── Builder 类 ───────────────────────────────────────────────────────────────
+// ── Класс Builder ───────────────────────────────────────────────────────────────
 
 class ModBuilder<S> {
   private readonly _meta: ModMeta;
@@ -184,7 +184,7 @@ class ModBuilder<S> {
     return this;
   }
 
-  /** 意识流事件钩子（C2 元认知入口点）。Wave 4 预留，暂不接线。 */
+  /** Хук событий потока сознания (точка входа метапознания C2). Зарезервировано для Wave 4, пока не подключено. */
   onEvent(
     handler: (
       ctx: ModContext<S>,
@@ -210,7 +210,7 @@ class ModBuilder<S> {
   }
 }
 
-// ── 公开 API ─────────────────────────────────────────────────────────────────
+// ── Публичный API ─────────────────────────────────────────────────────────────────
 
 export function createMod<S>(name: string, config: CreateModConfig<S>): ModBuilder<S> {
   return new ModBuilder(name, config);

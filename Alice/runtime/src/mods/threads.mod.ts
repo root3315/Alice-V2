@@ -1,16 +1,16 @@
 /**
- * Threads Mod — 叙事线程管理。
+ * Threads Mod — управление нарративными нитями.
  *
- * 对应叙事引擎的 narrative-tree mod（Arc-Beat 系统）：
- * - Thread ≈ Arc（话题/关系线，有 tension + status + weight）
- * - Beat ≈ 关键事件节拍（有 causedBy / spawns 因果链）
+ * Соответствует mod narrative-tree нарративного движка (система Arc-Beat):
+ * - Thread ≈ Arc (топик/нить отношений, с tension + status + weight)
+ * - Beat ≈ ключевое событие-такт (с причинными связями causedBy / spawns)
  *
- * 指令：self_topic_begin, self_topic_advance, self_topic_resolve, affect_thread, thread_review
- * 查询：openTopics, printTopicsAbout, topicUpdates
- * contribute：活跃线程列表 → section 桶
+ * Инструкции: self_topic_begin, self_topic_advance, self_topic_resolve, affect_thread, thread_review
+ * Запросы: openTopics, printTopicsAbout, topicUpdates
+ * contribute: список активных нитей → бакет section
  *
- * 参考: narrative-engine/mods/narrative-tree/index.ts
- * 参考: narrative-framework-paper §5 (P_τ priority)
+ * Ссылка: narrative-engine/mods/narrative-tree/index.ts
+ * Ссылка: narrative-framework-paper §5 (P_τ priority)
  */
 import { desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -26,7 +26,7 @@ import { resolveDisplayName, safeDisplayName } from "../graph/display.js";
 import { estimateEventMs } from "../pressure/clock.js";
 import { humanDuration, humanDurationAgo } from "../utils/time-format.js";
 
-// -- 类型 --------------------------------------------------------------------
+// -- Типы --------------------------------------------------------------------
 
 interface Involvement {
   nodeId: string;
@@ -34,9 +34,9 @@ interface Involvement {
   facts?: string[];
 }
 
-// WEIGHT_MAP 从 generators.ts 导入（单一真相来源）
+// WEIGHT_MAP импортируется из generators.ts (единственный источник истины)
 
-/** ADR-23: 扩展 Beat 社交类型（兼容 kernel|ambient）。ADR-181: +prudence/breakthrough。 */
+/** ADR-23: расширенные социальные типы Beat (совместимы с kernel|ambient). ADR-181: +prudence/breakthrough. */
 export const BEAT_TYPES = [
   "kernel",
   "ambient",
@@ -52,18 +52,18 @@ export const BEAT_TYPES = [
 
 export type BeatType = (typeof BEAT_TYPES)[number];
 
-// -- ADR-241: 相关性衰减常量 ------------------------------------------------
+// -- ADR-241: константы затухания релевантности ------------------------------------------------
 
-/** ADR-241: 相关性阈值 — 低于此值的线程不注入 prompt。 */
-// 依据：半衰期 7 天时，minor 线程（w=0.5）约 7 天后 relevance ≈ 0.25，14 天 ≈ 0.125。
-// major 线程（w=2.0）14 天 ≈ 1.0，28 天 ≈ 0.5。
+/** ADR-241: порог релевантности — нити ниже этого значения не инжектируются в prompt. */
+// Обоснование: при периоде полуспада 7 дней minor нить (w=0.5) через 7 дней relevance ≈ 0.25, через 14 ≈ 0.125.
+// major нить (w=2.0) через 14 дней ≈ 1.0, через 28 ≈ 0.5.
 const RELEVANCE_THRESHOLD = 0.15;
 
-/** ADR-241: Stale 标记阈值 — 接近过滤阈值时显示 [stale] 标记。 */
-// 2× RELEVANCE_THRESHOLD，提前约 2-3 天警告。
+/** ADR-241: порог метки Stale — отображать метку [stale] при приближении к порогу фильтрации. */
+// 2× RELEVANCE_THRESHOLD, предупреждение примерно за 2-3 дня.
 const STALE_THRESHOLD = RELEVANCE_THRESHOLD * 2;
 
-// -- 辅助函数 -----------------------------------------------------------------
+// -- Вспомогательные функции -----------------------------------------------------------------
 
 function parseInvolves(raw: string | null): Involvement[] {
   if (!raw) return [];
@@ -74,18 +74,18 @@ function parseInvolves(raw: string | null): Involvement[] {
   }
 }
 
-/** 过滤掉 nodeId 为空/undefined 的 involves 条目。 */
+/** Фильтрует записи involves с пустым/undefined nodeId. */
 function validInvolves(involves: Involvement[]): Involvement[] {
   return involves.filter((i) => i.nodeId != null && i.nodeId !== "" && i.nodeId !== "undefined");
 }
 
-/** 将 involves 渲染为 LLM 可读的显示名称列表（无障碍：用 display_name 替代 raw nodeId）。 */
+/** Рендерит involves как список отображаемых имён для LLM (доступность: display_name вместо raw nodeId). */
 function renderInvolves(involves: Involvement[], ctx: ModContext): string {
   const valid = validInvolves(involves);
   if (valid.length === 0) return "";
   return valid
     .map((i) => {
-      // ADR-172: 统一使用 safeDisplayName — 永不返回 raw graph ID
+      // ADR-172: единообразно используем safeDisplayName — никогда не возвращаем raw graph ID
       const name = safeDisplayName(ctx.graph, i.nodeId);
       return `${name}(${i.role})`;
     })
@@ -93,9 +93,9 @@ function renderInvolves(involves: Involvement[], ctx: ModContext): string {
 }
 
 /**
- * ADR-110: 线程压力（简化 P_τ，论文 Eq. P1）。
- * ADR-64 VI-1: log(1 + ageS/86400) × w + activity_decay。
- * 使用墙钟秒制时间。
+ * ADR-110: давление нити (упрощённый P_τ, уравнение P1 из статьи).
+ * ADR-64 VI-1: log(1 + ageS/86400) × w + activity_decay.
+ * Используется wall-clock время в секундах.
  */
 function threadPressure(
   createdMs: number,
@@ -105,7 +105,7 @@ function threadPressure(
 ): number {
   const ageS = Math.max(1, (nowMs - createdMs) / 1000);
   const w = WEIGHT_MAP[weight] ?? 0.5;
-  // ADR-64 VI-1: 对数增长替代 age^1.5，防止长线程爆炸
+  // ADR-64 VI-1: логарифмический рост вместо age^1.5, предотвращает взрыв у длинных нитей
   const agingPressure = Math.log(1 + ageS / 86400) * w;
   const sinceBeatS = Math.max(0, (nowMs - (lastBeatMs ?? createdMs)) / 1000);
   const activityDecay = sinceBeatS > 300 ? Math.log(sinceBeatS / 60) * w * 0.1 : 0;
@@ -113,14 +113,14 @@ function threadPressure(
 }
 
 /**
- * ADR-241: 线程相关性（半衰期衰减）— 用于过滤，不用于排序。
+ * ADR-241: релевантность нити (затухание с периодом полуспада) — используется для фильтрации, не для сортировки.
  *
- * threadPressure 随时间增长（"处理紧迫度"），用于排序是正确的。
- * threadRelevance 随不活跃时间衰减（"当前相关性"），用于过滤长期无活动线程。
+ * threadPressure растёт со временем ("срочность обработки") — правильно использовать для сортировки.
+ * threadRelevance убывает с временем бездействия ("текущая релевантность") — используется для фильтрации длительно неактивных нитей.
  *
- * 半衰期 7 天：minor 线程 7 天后 ≈ 0.25，14 天 ≈ 0.125（低于 RELEVANCE_THRESHOLD）。
+ * Период полуспада 7 дней: minor нить через 7 дней ≈ 0.25, через 14 ≈ 0.125 (ниже RELEVANCE_THRESHOLD).
  * @see docs/adr/241-thread-weight-decay.md
- * @see docs/adr/89-impression-formation-system.md（半衰期参考）
+ * @see docs/adr/89-impression-formation-system.md (ссылка на период полуспада)
  */
 export function threadRelevance(
   createdMs: number,
@@ -131,22 +131,22 @@ export function threadRelevance(
   const w = WEIGHT_MAP[weight] ?? 0.5;
   const baseMs = lastBeatMs ?? createdMs;
   const inactiveS = Math.max(0, (nowMs - baseMs) / 1000);
-  // 半衰期 7 天（604800 秒）
+  // Период полуспада 7 дней (604800 секунд)
   const DECAY_HALF_LIFE_S = 7 * 86400;
   const decayFactor = 2 ** (-inactiveS / DECAY_HALF_LIFE_S);
   return w * decayFactor;
 }
 
-// -- Mod 状态 -----------------------------------------------------------------
+// -- Состояние Mod -----------------------------------------------------------------
 
 interface ThreadsState {
-  /** 缓存：活跃线程数（onTickEnd 更新）。 */
+  /** Кэш: число активных нитей (обновляется в onTickEnd). */
   activeCount: number;
-  /** 缓存：最高线程压力。 */
+  /** Кэш: максимальное давление нити. */
   maxPressure: number;
 }
 
-// -- Mod 定义 -----------------------------------------------------------------
+// -- Определение Mod -----------------------------------------------------------------
 
 export const threadsMod = createMod<ThreadsState>("threads", {
   category: "mechanic",
@@ -183,7 +183,7 @@ export const threadsMod = createMod<ThreadsState>("threads", {
     },
     impl(ctx, args) {
       const db = getDb();
-      // ADR-204 C10: involves 的 nodeId 可能是 display_name，代码侧解析
+      // ADR-204 C10: nodeId в involves может быть display_name, разбирается на стороне кода
       const rawInvolves = Array.isArray(args.involves)
         ? (args.involves as Involvement[])
         : undefined;
@@ -198,12 +198,12 @@ export const threadsMod = createMod<ThreadsState>("threads", {
         | "major"
         | "critical";
 
-      // ADR-104: 从 relationships mod 读取当前行动目标作为 source_channel
+      // ADR-104: читаем текущую цель действия из relationships mod как source_channel
       const relState = readModState(ctx, "relationships");
       const sourceChannel = relState?.targetNodeId ?? undefined;
 
-      // ADR-115: 委托给 createThreadInGraph 共享函数
-      const deadlineMs = horizon != null ? ctx.nowMs + horizon * 60 * 1000 : undefined; // horizon 单位是分钟
+      // ADR-115: делегируем в общую функцию createThreadInGraph
+      const deadlineMs = horizon != null ? ctx.nowMs + horizon * 60 * 1000 : undefined; // horizon в минутах
       const threadId = createThreadInGraph(db, ctx.graph, ctx.tick, ctx.nowMs, {
         title: String(args.title),
         weight,
@@ -214,11 +214,11 @@ export const threadsMod = createMod<ThreadsState>("threads", {
         sourceChannel,
       });
 
-      // FTS 索引同步已内聚到 createThreadInGraph
+      // Синхронизация FTS-индекса инкапсулирована в createThreadInGraph
       return threadId;
     },
   })
-  // ADR-66 F8: BEAT → advance（"Beat"是叙事框架术语，LLM 不理解）。
+  // ADR-66 F8: BEAT → advance ("Beat" — термин нарративного фреймворка, непонятный LLM).
   .instruction("advance_topic", {
     params: z.object({
       threadId: z.number().int().positive().describe("ID темы"),
@@ -272,12 +272,12 @@ export const threadsMod = createMod<ThreadsState>("threads", {
         })
         .returning({ id: narrativeBeats.id })
         .all();
-      // 更新 last_beat_tick（不影响 FTS 索引列 title/summary，无需 rebuild）
+      // Обновление last_beat_tick (не затрагивает FTS-индексируемые столбцы title/summary, rebuild не нужен)
       db.update(narrativeThreads)
         .set({ lastBeatTick: ctx.tick })
         .where(eq(narrativeThreads.id, threadId))
         .run();
-      // ADR-134 D3: 更新图节点活跃时间（线程过期基于最后活动而非创建时间）
+      // ADR-134 D3: обновление времени активности узла графа (срок действия нити основан на последней активности, не на создании)
       const threadNodeId = `thread_${threadId}`;
       if (ctx.graph.has(threadNodeId)) {
         ctx.graph.updateThread(threadNodeId, { last_activity_ms: ctx.nowMs });
@@ -299,13 +299,13 @@ export const threadsMod = createMod<ThreadsState>("threads", {
     impl(ctx, args) {
       const db = getDb();
       const threadId = Number(args.threadId);
-      // ADR-191: 委托给 resolveThreadInGraph — resolve 路径的单一真相来源
-      // （与 self_topic_begin → createThreadInGraph 对称）
+      // ADR-191: делегируем в resolveThreadInGraph — единственный источник истины для пути resolve
+      // (симметрично self_topic_begin → createThreadInGraph)
       const threadNodeId = `thread_${threadId}`;
       if (ctx.graph.has(threadNodeId)) {
         resolveThreadInGraph(db, ctx.graph, threadNodeId, ctx.tick, ctx.nowMs);
       } else {
-        // 图中无节点（可能已 GC）→ 只更新 DB
+        // Узел в графе отсутствует (возможно GC'd) → обновляем только БД
         db.update(narrativeThreads)
           .set({ status: "resolved", resolvedTick: ctx.tick })
           .where(eq(narrativeThreads.id, threadId))
@@ -315,8 +315,8 @@ export const threadsMod = createMod<ThreadsState>("threads", {
     },
   })
   /**
-   * ADR-64 VI-2: 更新线程叙事摘要。
-   * LLM 在 Reflection 中调用，对已有多条 beat 的线程生成摘要。
+   * ADR-64 VI-2: обновление нарративного резюме нити.
+   * LLM вызывает в Reflection для генерации резюме нитей с несколькими beat.
    */
   .instruction("thread_review", {
     params: z.object({
@@ -334,16 +334,16 @@ export const threadsMod = createMod<ThreadsState>("threads", {
       const threadId = Number(args.threadId);
       const summary = String(args.summary);
 
-      // 更新 DB
+      // Обновление БД
       const db = getDb();
-      // FTS 同步由 AFTER UPDATE OF title, summary 触发器自动完成。
+      // FTS-синхронизация выполняется автоматически триггером AFTER UPDATE OF title, summary.
       // @see runtime/drizzle/0017_fts5_triggers.sql
       db.update(narrativeThreads)
         .set({ summary, summaryTick: ctx.tick })
         .where(eq(narrativeThreads.id, threadId))
         .run();
 
-      // 同步更新图节点
+      // Синхронное обновление узла графа
       const threadNodeId = `thread_${threadId}`;
       if (ctx.graph.has(threadNodeId)) {
         ctx.graph.updateThread(threadNodeId, { summary, last_activity_ms: ctx.nowMs });
@@ -418,7 +418,7 @@ export const threadsMod = createMod<ThreadsState>("threads", {
         });
       }
 
-      // involves 不在 FTS 索引列（title/summary）中，无需 rebuild
+      // involves не входит в FTS-индексируемые столбцы (title/summary), rebuild не нужен
       db.update(narrativeThreads)
         .set({ involves: JSON.stringify(involves) })
         .where(eq(narrativeThreads.id, threadId))
@@ -450,7 +450,7 @@ export const threadsMod = createMod<ThreadsState>("threads", {
           ...r,
           involves: validInvolves(parseInvolves(r.involves)).map((i) => ({
             ...i,
-            // ADR-190: 统一使用 safeDisplayName — 永不返回 raw graph ID
+            // ADR-190: единообразно используем safeDisplayName — никогда не возвращаем raw graph ID
             displayName: safeDisplayName(ctx.graph, i.nodeId),
           })),
           pressure: threadPressure(
@@ -461,7 +461,7 @@ export const threadsMod = createMod<ThreadsState>("threads", {
             r.weight,
             ctx.nowMs,
           ),
-          // ADR-241: relevance 用于 dormant 判定（半衰期衰减）
+          // ADR-241: relevance используется для определения dormant (затухание с периодом полуспада)
           relevance: threadRelevance(
             estimateEventMs({ createdAt: r.createdAt, tick: r.createdTick }, ctx.nowMs, ctx.tick),
             r.lastBeatTick != null
@@ -478,7 +478,7 @@ export const threadsMod = createMod<ThreadsState>("threads", {
       if (rows.length === 0) return ["(no open topics)"];
       return rows.map((r) => {
         const parts = [`#${r.id} "${r.title}" [${r.status}] ${r.weight}`];
-        // ADR-241: 用 relevance（衰减型）判定 dormant，用 pressure（增长型）判定 urgency
+        // ADR-241: relevance (убывающий) для определения dormant, pressure (растущий) для определения urgency
         const rel = Number(r.relevance ?? r.pressure ?? 0);
         if (rel < RELEVANCE_THRESHOLD) {
           parts.push("dormant");
@@ -494,7 +494,7 @@ export const threadsMod = createMod<ThreadsState>("threads", {
           parts.push(
             `involves: ${involves.map((i) => `${i.displayName ?? i.nodeId} as ${i.role ?? "participant"}`).join(", ")}`,
           );
-        if (r.horizon) parts.push(`~${humanDuration(Number(r.horizon) * 60)} ahead`); // horizon 单位是分钟 → 秒
+        if (r.horizon) parts.push(`~${humanDuration(Number(r.horizon) * 60)} ahead`); // horizon в минутах → секунды
         return parts.join(", ");
       });
     },
@@ -577,7 +577,7 @@ export const threadsMod = createMod<ThreadsState>("threads", {
 
     if (rows.length === 0) return [];
 
-    // ADR-66 F10: 按当前对话对象优先排序线程
+    // ADR-66 F10: нити сортируются с приоритетом текущего собеседника
     const relState = readModState(ctx, "relationships");
     const targetNodeId = relState?.targetNodeId ?? null;
 
@@ -596,15 +596,15 @@ export const threadsMod = createMod<ThreadsState>("threads", {
           ...r,
           involves: parseInvolves(r.involves),
           pressure: threadPressure(createdMs, lastBeatMs, r.weight, ctx.nowMs),
-          // ADR-241: relevance 用于过滤（半衰期衰减），pressure 用于排序（增长型）
+          // ADR-241: relevance для фильтрации (затухание с периодом полуспада), pressure для сортировки (растущий)
           relevance: threadRelevance(createdMs, lastBeatMs, r.weight, ctx.nowMs),
         };
       })
-      // ADR-241: 相关性过滤 — 自动排除长期无活动的线程
+      // ADR-241: фильтрация по релевантности — автоматически исключаем нити с длительным отсутствием активности
       .filter((t) => t.relevance >= RELEVANCE_THRESHOLD)
       .sort((a, b) => b.pressure - a.pressure);
 
-    // 分离：涉及当前对话对象的线程优先展示
+    // Разделение: нити с участием текущего собеседника показываются первыми
     let threads: typeof allThreads;
     if (targetNodeId) {
       const relevant = allThreads.filter((t) =>
@@ -622,18 +622,18 @@ export const threadsMod = createMod<ThreadsState>("threads", {
     const needsReview: string[] = [];
 
     for (const t of threads) {
-      // ADR-64 III-1/III-2: tick → 人类时间, pressure → 定性标签
+      // ADR-64 III-1/III-2: tick → человеко-читаемое время, pressure → качественная метка
       // @see docs/adr/64-runtime-theory-alignment-audit.md
       const urgencyLabel =
         t.pressure > 1.0 ? "high urgency" : t.pressure > 0.5 ? "moderate" : "low";
-      // ADR-115: 内源性线程标注 [system]，ADR-226: 自动聚类标注 [auto]
+      // ADR-115: эндогенные нити помечаются [system], ADR-226: автоматические кластеры помечаются [auto]
       const threadNodeId = `thread_${t.id}`;
       const threadSource = ctx.graph.has(threadNodeId)
         ? ctx.graph.getDynamic(threadNodeId, "source")
         : undefined;
       const sourceTag =
         threadSource === "system" ? " [system]" : threadSource === "auto" ? " [auto]" : "";
-      // ADR-110 + ADR-69: 归因 — "you last advanced" 闭合因果感知环
+      // ADR-110 + ADR-69: атрибуция — "you last advanced" замыкает петлю причинно-следственного восприятия
       const lastBeatMs =
         t.lastBeatTick != null
           ? estimateEventMs({ tick: t.lastBeatTick }, ctx.nowMs, ctx.tick)
@@ -642,10 +642,10 @@ export const threadsMod = createMod<ThreadsState>("threads", {
         lastBeatMs != null
           ? ` — you last advanced ${humanDurationAgo((ctx.nowMs - lastBeatMs) / 1000)}`
           : "";
-      // ADR-241: Stale 标记 — relevance 接近过滤阈值时显示 [stale]
+      // ADR-241: метка Stale — отображать [stale] когда relevance приближается к порогу фильтрации
       const isStale = t.relevance < STALE_THRESHOLD;
       const staleTag = isStale ? " [stale]" : "";
-      // ADR-241: 计算无活动天数
+      // ADR-241: вычисление числа дней без активности
       const baseActivityMs =
         lastBeatMs ?? (typeof t.createdAt === "number" ? t.createdAt : t.createdAt.getTime());
       const inactiveMs = ctx.nowMs - baseActivityMs;
@@ -660,7 +660,7 @@ export const threadsMod = createMod<ThreadsState>("threads", {
           estimateEventMs({ tick: t.deadlineTick }, ctx.nowMs, ctx.tick) || ctx.nowMs;
         const remainingS = Math.max(0, (deadlineMs - ctx.nowMs) / 1000);
         const remainingHuman = humanDuration(remainingS);
-        // 承诺线程（title 以 "Commitment:" 开头）提前 1 小时预警，其他线程 5 分钟
+        // Нити-обязательства (title начинается с "Commitment:") предупреждают за 1 час, остальные — за 5 минут
         const isCommitment = typeof t.title === "string" && t.title.startsWith("Commitment:");
         const urgentThresholdS = isCommitment ? 3600 : 300;
         const urgentTag = remainingS <= urgentThresholdS ? " — URGENT" : "";
@@ -671,10 +671,10 @@ export const threadsMod = createMod<ThreadsState>("threads", {
         m.kv("involves", involvesStr);
       }
 
-      // ADR-64 VI-2: 优先展示 summary，fallback 到最近 beat
+      // ADR-64 VI-2: приоритет summary, fallback на последний beat
       if (t.summary) {
         m.kv("summary", t.summary);
-        // 仅展示 summary 后的最新 beat（如有）
+        // Показывать только самый последний beat после summary (при наличии)
         const latestBeat = db
           .select()
           .from(narrativeBeats)
@@ -689,7 +689,7 @@ export const threadsMod = createMod<ThreadsState>("threads", {
           m.kv(`latest[${humanDurationAgo(beatAgoS)}]`, b.content);
         }
       } else {
-        // 无 summary — fallback 到最近 2 条 beat
+        // Нет summary — fallback на последние 2 beat
         const beats = db
           .select()
           .from(narrativeBeats)
@@ -701,7 +701,7 @@ export const threadsMod = createMod<ThreadsState>("threads", {
         for (const b of beats) {
           const bMs = estimateEventMs({ tick: b.tick }, ctx.nowMs, ctx.tick) || ctx.nowMs;
           const beatAgoS = (ctx.nowMs - bMs) / 1000;
-          // ADR-84 W3: 渲染 beatType + causedBy/spawns 因果链
+          // ADR-84 W3: рендер beatType + причинная цепочка causedBy/spawns
           const typeTag = b.beatType && b.beatType !== "ambient" ? ` ${b.beatType}:` : ":";
           let causalSuffix = "";
           if (b.causedBy) {
@@ -724,14 +724,14 @@ export const threadsMod = createMod<ThreadsState>("threads", {
         }
       }
 
-      // ADR-64 VI-2: 检测需要 thread_review 的线程
+      // ADR-64 VI-2: определение нитей, требующих thread_review
       const beatCount = db
         .select({ count: sql<number>`count(*)` })
         .from(narrativeBeats)
         .where(eq(narrativeBeats.threadId, t.id))
         .get();
       const totalBeats = beatCount?.count ?? 0;
-      // ADR-110: 21600 秒（6 小时）
+      // ADR-110: 21600 секунд (6 часов)
       const summaryMs =
         t.summaryTick != null
           ? estimateEventMs({ tick: t.summaryTick }, ctx.nowMs, ctx.tick)
@@ -745,12 +745,12 @@ export const threadsMod = createMod<ThreadsState>("threads", {
       }
     }
 
-    // ADR-210: 纯事实视角——不用 "Your"
+    // ADR-210: сугубо фактическая перспектива — не использовать "Your"
     const items = [section("threads", m.build(), "Narrative threads", 30, 70)];
 
-    // ADR-64 VI-2: thread review 提示
-    // ADR-81: 压力门控——低压力时注入指令性簿记提示
-    // @see docs/adr/81-reflection-separation.md §Mod 贡献从声部门控改为压力门控
+    // ADR-64 VI-2: подсказка thread review
+    // ADR-81: гейтинг по давлению — инжектировать директивные подсказки по ведению записей при низком давлении
+    // @see docs/adr/81-reflection-separation.md §Mod вклад переключён с голосового гейтинга на гейтинг по давлению
     if (needsReview.length > 0 && readPressureApi(ctx) < 0.6) {
       items.push(
         section(

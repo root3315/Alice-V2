@@ -1,5 +1,5 @@
 /**
- * SAA 工具收集 — 从 Mod 注册表 + Telegram actions 收集 LLM 可见工具。
+ * Сбор инструментов SAA — собирает видимые LLM инструменты из реестра Mod + Telegram actions.
  *
  * @see docs/adr/142-action-space-architecture/README.md
  */
@@ -8,11 +8,11 @@ import type { TelegramActionDef } from "../../telegram/action-types.js";
 import type { UnifiedTool } from "./types.js";
 import { hasAffordance } from "./types.js";
 
-// ── 收集 ─────────────────────────────────────────────────────────────────
+// ── Сбор ─────────────────────────────────────────────────────────────────
 
 /**
- * 从 Mod 注册表 + Telegram actions 收集所有带 affordance 的工具到统一视图。
- * 只有声明了 affordance 的工具才会被收集（内部指令自然被排除）。
+ * Собирает все инструменты с affordance из реестра Mod + Telegram actions в унифицированное представление.
+ * Собираются только инструменты, объявившие affordance (внутренние инструкции исключаются автоматически).
  */
 export function collectAllTools(
   mods: readonly ModDefinition[],
@@ -30,7 +30,7 @@ export function collectAllTools(
     }
   }
 
-  // Mod instructions
+  // Инструкции Mod
   for (const mod of mods) {
     for (const [name, def] of Object.entries(mod.instructions ?? {})) {
       if (hasAffordance(def)) {
@@ -40,7 +40,7 @@ export function collectAllTools(
         });
       }
     }
-    // Mod queries
+    // Запросы Mod
     for (const [name, def] of Object.entries(mod.queries ?? {})) {
       if (hasAffordance(def)) {
         tools.push({

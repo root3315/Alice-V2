@@ -1,5 +1,5 @@
 /**
- * Blackboard 构建与 drain — tick 循环的共享状态管理。
+ * Построение и drain Blackboard — управление общим состоянием цикла tick.
  *
  * @see docs/adr/142-action-space-architecture/README.md
  */
@@ -11,11 +11,11 @@ import {
 } from "../../core/script-execution.js";
 import type { Blackboard, FeatureFlags, TickOutcome, TickResult, ToolCategory } from "./types.js";
 
-/** 默认最大步数。 */
+/** Максимальное количество шагов по умолчанию. */
 const DEFAULT_MAX_STEPS = 3;
 
 /**
- * 创建 Blackboard。
+ * Создание Blackboard.
  */
 export function createBlackboard(opts: {
   pressures: [number, number, number, number, number, number];
@@ -42,7 +42,7 @@ export function createBlackboard(opts: {
 }
 
 /**
- * 更新 Blackboard — 合并一次脚本执行的结果。
+ * Обновление Blackboard — объединяет результат одного выполнения скрипта.
  */
 export function updateBoard(board: Blackboard, result: ScriptExecutionResult): void {
   board.execution = mergeScriptExecutionResults([board.execution, result]);
@@ -50,14 +50,14 @@ export function updateBoard(board: Blackboard, result: ScriptExecutionResult): v
 }
 
 /**
- * 判断 tick 循环是否应终止。
- * 返回 null 表示可继续，否则返回退出原因。
+ * Определяет, должен ли цикл tick завершиться.
+ * Возвращает null если можно продолжать, иначе возвращает причину выхода.
  */
 export function isTerminal(board: Blackboard): TickOutcome | null {
-  // 预算耗尽 — 返回 "terminal" 而非 "empty"。
-  // 预算耗尽 = LLM 用完了所有轮次（通常是 host 因本地 follow-up / 自纠而连续续轮），
-  // 不等于 LLM 无产出。"empty" 被 orchestrator 映射为 llm_failed，
-  // 触发指数退避 + 强制静默，对沉默决策造成死循环。
+  // бюджет исчерпан — возвращаем "terminal", а не "empty".
+  // исчерпание бюджета = LLM использовал все раунды (обычно host непрерывно возобновляет из-за local follow-up / самокоррекции),
+  // это не означает отсутствие вывода LLM. "empty" маппируется orchestrator в llm_failed,
+  // вызывает экспоненциальную задержку + принудительное молчание, создавая мёртвую петлю в решениях о молчании.
   if (board.budget.usedSteps >= board.budget.maxSteps) {
     return "terminal";
   }
@@ -66,10 +66,10 @@ export function isTerminal(board: Blackboard): TickOutcome | null {
 }
 
 /**
- * Drain Blackboard — 将 Blackboard 状态转换为 TickResult。
- * 调用后 Blackboard 不应再被使用。
+ * Drain Blackboard — преобразует состояние Blackboard в TickResult.
+ * После вызова Blackboard не должен использоваться.
  *
- * @param episodeRounds ADR-232: episode 内 block 续轮次数（host 触发的额外轮数）。
+ * @param episodeRounds ADR-232: количество возобновлений block внутри episode (дополнительные раунды, инициированные host).
  */
 export function drainBoard(
   board: Blackboard,

@@ -1,14 +1,14 @@
 /**
- * ADR-136: Eval 场景注册表 — 所有场景的统一导出。
+ * ADR-136: Реестр eval-сценариев — единый экспорт всех сценариев.
  *
- * 新增场景文件后在此注册，runner 通过 ALL_SCENARIOS 获取。
+ * После добавления нового файла сценариев зарегистрировать здесь; runner получает через ALL_SCENARIOS.
  *
- * 场景分类：
- * - Category A (branches): ReAct 决策树分支覆盖
- * - Category B (apps): App Toolkit 调用正确性
- * - Category C (proactive): 主动联系决策质量
- * - Category D (ablation): ADR-137 消融实验子集
- * - Category E (boundary): BIBO 边界稳定性
+ * Категории сценариев:
+ * - Category A (branches): покрытие ветвей дерева решений ReAct
+ * - Category B (apps): корректность вызовов App Toolkit
+ * - Category C (proactive): качество решений о проактивном контакте
+ * - Category D (ablation): подмножество аблационных экспериментов ADR-137
+ * - Category E (boundary): стабильность границ BIBO
  */
 import type { EvalScenario } from "../types.js";
 import { APP_SCENARIOS } from "./apps.js";
@@ -22,7 +22,7 @@ export { BOUNDARY_SCENARIOS } from "./boundary.js";
 export { BRANCH_SCENARIOS } from "./branches.js";
 export { PROACTIVE_SCENARIOS } from "./proactive.js";
 
-/** 全部评估场景。 */
+/** Все оценочные сценарии. */
 export const ALL_SCENARIOS: readonly EvalScenario[] = [
   ...BRANCH_SCENARIOS,
   ...APP_SCENARIOS,

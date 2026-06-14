@@ -1,8 +1,8 @@
 /**
- * 图持久化（ADR-33 Phase 2: Write-Back Cache）+ 人格快照。
+ * Персистентность графа (ADR-33 Phase 2: Write-Back Cache) + снимок личности.
  *
- * 图：dirty-tracking 增量写回到 graph_nodes + graph_edges。
- * 人格：全量快照到 personality_snapshots（不变）。
+ * Граф: инкрементальный write-back через dirty-tracking в graph_nodes + graph_edges.
+ * Личность: полный снимок в personality_snapshots (без изменений).
  */
 import { and, desc, eq, sql } from "drizzle-orm";
 import { type BeliefDict, BeliefStore } from "../belief/store.js";
@@ -22,9 +22,9 @@ import {
 
 const log = createLogger("snapshot");
 
-// -- Infinity 序列化辅助 -----------------------------------------------------
+// -- Вспомогательные функции сериализации Infinity -----------------------------------------------------
 
-/** 将 attrs 中的 Infinity 转为 "inf" 以兼容 JSON。 */
+/** Преобразует Infinity в attrs в "inf" для совместимости с JSON. */
 function serializeAttrs(attrs: Record<string, unknown>): string {
   return JSON.stringify(attrs, (_key, value) => {
     if (value === Infinity) return "inf";
@@ -33,7 +33,7 @@ function serializeAttrs(attrs: Record<string, unknown>): string {
   });
 }
 
-/** 将 JSON 中的 "inf"/"-inf" 还原为 Infinity。 */
+/** Восстанавливает "inf"/"-inf" из JSON обратно в Infinity. */
 function deserializeAttrs(json: string): Record<string, unknown> {
   return JSON.parse(json, (_key, value) => {
     if (value === "inf") return Infinity;
@@ -88,15 +88,15 @@ function repairLoadedChannelAttrs(
   };
 }
 
-// -- 图写回 ------------------------------------------------------------------
+// -- Write-back графа ------------------------------------------------------------------
 
 /**
- * ADR-33 Phase 2: 增量写回 dirty 节点到 SQLite。
+ * ADR-33 Phase 2: Инкрементальный write-back dirty-узлов в SQLite.
  *
- * - dirty 节点 → UPSERT graph_nodes
+ * - dirty-узлы → UPSERT graph_nodes
  * - dirtyEdgesRebuild → DELETE ALL + batch INSERT graph_edges
- * - 注解 → UPSERT __annotations__ 特殊行
- * - 全部包在一个 SQLite transaction 里
+ * - Аннотации → UPSERT специальной строки __annotations__
+ * - Всё внутри одной SQLite-транзакции
  */
 export function flushGraph(G: WorldModel): void {
   getDb();
@@ -106,14 +106,14 @@ export function flushGraph(G: WorldModel): void {
   const needEdgeRebuild = G.needsEdgeRebuild();
 
   if (dirtyNodes.size === 0 && !needEdgeRebuild) {
-    // 即使无 dirty 节点，也写信念（通过独立 API 变更，不触发 dirtyNodes）
+    // Даже без dirty-узлов записываем убеждения (изменяются через отдельный API, не triggering dirtyNodes)
     flushBeliefs(sqlite, G);
     G.clearDirty();
     return;
   }
 
   const tx = sqlite.transaction(() => {
-    // 1. UPSERT dirty 节点
+    // 1. UPSERT dirty-узлов
     if (dirtyNodes.size > 0) {
       const upsert = sqlite.prepare(`
         INSERT INTO graph_nodes (id, entity_type, attrs, updated_tick)
@@ -127,19 +127,19 @@ export function flushGraph(G: WorldModel): void {
       const deleteNode = sqlite.prepare("DELETE FROM graph_nodes WHERE id = ?");
       for (const nodeId of dirtyNodes) {
         if (!G.has(nodeId)) {
-          // 节点已删除，从 DB 清除
+          // Узел удалён — удаляем из БД
           deleteNode.run(nodeId);
           continue;
         }
         const entry = G.getEntry(nodeId);
         const entityType = entry.type;
-        // entity_type 从 attrs 中排除——已存为独立列
+        // entity_type исключается из attrs — уже хранится как отдельный столбец
         const { entity_type: _et, ...rest } = entry.attrs;
         upsert.run(nodeId, entityType, serializeAttrs(rest as Record<string, unknown>), G.tick);
       }
     }
 
-    // 2. 边全量重建（仅在有变更时）
+    // 2. Полное перестроение рёбер (только при наличии изменений)
     if (needEdgeRebuild) {
       sqlite.prepare("DELETE FROM graph_edges").run();
       const insertEdge = sqlite.prepare(`
@@ -153,7 +153,7 @@ export function flushGraph(G: WorldModel): void {
       }
     }
 
-    // 3. 信念（Social POMDP）
+    // 3. Убеждения (Social POMDP)
     flushBeliefs(sqlite, G);
   });
 
@@ -167,7 +167,7 @@ export function flushGraph(G: WorldModel): void {
   });
 }
 
-/** 将信念序列化写入 __beliefs__ 特殊行。 */
+/** Сериализует убеждения и записывает в специальную строку __beliefs__. */
 function flushBeliefs(sqlite: ReturnType<typeof getSqlite>, G: WorldModel): void {
   const beliefDict = G.beliefs.toDict();
   const hasBeliefs = Object.keys(beliefDict.entries).length > 0;
@@ -183,16 +183,16 @@ function flushBeliefs(sqlite: ReturnType<typeof getSqlite>, G: WorldModel): void
       )
       .run(BELIEFS_KEY, "__meta__", JSON.stringify(beliefDict), G.tick);
   } else {
-    // 无信念 → 删除可能的旧行
+    // Убеждений нет → удаляем возможную старую строку
     sqlite.prepare("DELETE FROM graph_nodes WHERE id = ?").run(BELIEFS_KEY);
   }
 }
 
-// -- 图加载 ------------------------------------------------------------------
+// -- Загрузка графа ------------------------------------------------------------------
 
 /**
- * ADR-33 Phase 2: 从 SQLite 关系表全量加载图。
- * 返回 null 表示无数据（首次启动）。
+ * ADR-33 Phase 2: Полная загрузка графа из реляционных таблиц SQLite.
+ * Возвращает null, если данных нет (первый запуск).
  */
 export function loadGraphFromDb(): WorldModel | null {
   const db = getDb();
@@ -204,16 +204,16 @@ export function loadGraphFromDb(): WorldModel | null {
   let beliefsJson: string | null = null;
   let maxTick = 0;
 
-  // 1. 加载节点
+  // 1. Загрузка узлов
   for (const row of nodeRows) {
-    // 跳过已废弃的 __annotations__ 行（旧 DB 兼容）
+    // Пропускаем устаревшие строки __annotations__ (совместимость со старой БД)
     if (row.id === "__annotations__") continue;
     if (row.id === BELIEFS_KEY) {
       beliefsJson = row.attrs;
       continue;
     }
     const attrs = deserializeAttrs(row.attrs);
-    // ADR-154: typed add 路由（addEntity 已移除）
+    // ADR-154: маршрутизация через типизированный add (addEntity удалён)
     const et = row.entityType === "info_item" ? "fact" : row.entityType;
     switch (et) {
       case "agent":
@@ -241,21 +241,21 @@ export function loadGraphFromDb(): WorldModel | null {
     if (row.updatedTick > maxTick) maxTick = row.updatedTick;
   }
 
-  // 2. 加载边
+  // 2. Загрузка рёбер
   const edgeRows = db.select().from(graphEdges).all();
   for (const row of edgeRows) {
     const extraAttrs = row.attrs ? deserializeAttrs(row.attrs) : {};
     G.addRelation(row.src, row.label, row.dst, extraAttrs);
   }
 
-  // 3. 恢复信念（Social POMDP）
+  // 3. Восстановление убеждений (Social POMDP)
   if (beliefsJson) {
     const beliefDict = JSON.parse(beliefsJson) as BeliefDict;
     const restored = BeliefStore.fromDict(beliefDict);
     G.beliefs.restoreFrom(restored);
   }
 
-  // 6. 恢复 tick（M2 修复: 从 tick_log 也取 max tick，防止仅 graph_nodes 不准确）
+  // 6. Восстановление tick (исправление M2: берём max tick также из tick_log, на случай неточности graph_nodes)
   const maxTickFromTickLog = db
     .select({ tick: tickLog.tick })
     .from(tickLog)
@@ -264,7 +264,7 @@ export function loadGraphFromDb(): WorldModel | null {
     .get();
   G.tick = Math.max(maxTick, maxTickFromTickLog?.tick ?? 0);
 
-  // 7. 清除 dirty 标记（刚从 DB 加载，内存 == SQLite）
+  // 7. Сброс dirty-флагов (только что загружено из БД, память == SQLite)
   G.clearDirty();
 
   log.info("Graph loaded from DB", {
@@ -276,10 +276,10 @@ export function loadGraphFromDb(): WorldModel | null {
   return G;
 }
 
-// -- 人格快照（不变）---------------------------------------------------------
+// -- Снимок личности (неизменяемый) ---------------------------------------------------------
 
 /**
- * 保存人格向量快照。
+ * Сохранение снимка вектора личности.
  */
 export function savePersonalitySnapshot(tick: number, personality: PersonalityVector): void {
   const db = getDb();
@@ -292,7 +292,7 @@ export function savePersonalitySnapshot(tick: number, personality: PersonalityVe
 }
 
 /**
- * 加载最新的人格向量。
+ * Загрузка последнего вектора личности.
  */
 export function loadLatestPersonality(): PersonalityVector | null {
   const db = getDb();
@@ -307,33 +307,33 @@ export function loadLatestPersonality(): PersonalityVector | null {
   return new PersonalityVector(JSON.parse(rows[0].weights));
 }
 
-// -- 兼容：旧 graph_snapshots 迁移 -------------------------------------------
+// -- Совместимость: миграция из устаревшего graph_snapshots -------------------------------------------
 
 /**
- * 从旧 graph_snapshots 表迁移数据到 graph_nodes + graph_edges。
- * 仅在 graph_nodes 为空且 graph_snapshots 有数据时执行。
+ * Миграция данных из устаревшей таблицы graph_snapshots в graph_nodes + graph_edges.
+ * Выполняется только если graph_nodes пуст, а в graph_snapshots есть данные.
  */
 export function migrateFromSnapshots(): boolean {
   const db = getDb();
   const sqlite = getSqlite();
 
-  // 检查是否需要迁移
+  // Проверяем, нужна ли миграция
   const nodeCount = db.select({ count: sql<number>`count(*)` }).from(graphNodes).get();
-  if (nodeCount && nodeCount.count > 0) return false; // 已有数据，不迁移
+  if (nodeCount && nodeCount.count > 0) return false; // Данные уже есть, миграция не нужна
 
-  // 检查旧表是否有数据
+  // Проверяем наличие данных в старой таблице
   const hasOldData = sqlite.prepare("SELECT COUNT(*) as count FROM graph_snapshots").get() as
     | { count: number }
     | undefined;
   if (!hasOldData || hasOldData.count === 0) return false;
 
-  // 取最新快照
+  // Берём последний снимок
   const row = sqlite
     .prepare("SELECT graph_json FROM graph_snapshots ORDER BY tick DESC LIMIT 1")
     .get() as { graph_json: string } | undefined;
   if (!row) return false;
 
-  // 解析旧 JSON 快照并写入新表
+  // Парсим старый JSON-снимок и записываем в новую таблицу
   const data = JSON.parse(row.graph_json);
   const G = WorldModel.deserialize(data);
   G.markEdgesDirty(); // H12: иначе flushGraph пропустит ВСЕ рёбра (deserialize строит их без dirty-флага)

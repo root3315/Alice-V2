@@ -1,5 +1,5 @@
 /**
- * 消息拉取 — Telegram API 实时消息获取 + 回复链逸散。
+ * Получение сообщений — Telegram API реального времени + диффузия цепочек ответов.
  */
 import {
   Audio,
@@ -42,14 +42,14 @@ import { annotateSenderRole, fetchChatInfo, getAdminMap } from "./group-meta.js"
 const log = createLogger("act");
 
 /**
- * 光栅缩略图类型白名单。
- * Telegram 缩略图类型：s/m/x/y/w/a/b/c/d = 光栅 JPEG
- * j = SVG outline（photoPathSize — mtcute 本地膨胀为 SVG），i = stripped，f/u/v = video
+ * Белый список растровых типов миниатюр.
+ * Типы миниатюр Telegram: s/m/x/y/w/a/b/c/d = растровый JPEG
+ * j = SVG outline (photoPathSize — mtcute разворачивает локально в SVG), i = stripped, f/u/v = video
  * @see docs/reference/mtcute/.../types/media/thumbnail.ts
  */
 const RASTER_THUMB_TYPES = new Set(["s", "m", "x", "y", "w", "a", "b", "c", "d"]);
 
-/** 消息内容分段——支持优先级感知的智能截断。 */
+/** Сегменты содержимого сообщения — поддерживает умное усечение с учётом приоритетов. */
 export interface ContentSegment {
   readonly kind: "body" | "media" | "link" | "image" | "meta";
   readonly text: string;
@@ -101,39 +101,39 @@ function extractStickerTitle(text: string): string | undefined {
   return match?.[1]?.trim() || undefined;
 }
 
-/** 简化的消息记录，供 fetchRecentMessages 使用。 */
+/** Упрощённая запись сообщения, используется в fetchRecentMessages. */
 export interface MessageRecord {
   id: number;
   senderName: string;
-  /** Telegram user ID（IRC ~id 标注用）。仅非 outgoing 消息有值。 */
+  /** Telegram user ID (для IRC-аннотации ~id). Присутствует только у входящих сообщений. */
   senderId?: number;
   isOutgoing: boolean;
   text: string;
   date: Date;
-  /** ADR-83 D4: 媒体类型标记（photo/sticker/voice 等），无媒体时 undefined。 */
+  /** ADR-83 D4: маркер типа медиа (photo/sticker/voice и др.), undefined при отсутствии медиа. */
   mediaType?: string;
   // --- ADR-85 ---
-  /** 回复目标消息 ID（↩#id 可视化）。 */
+  /** ID сообщения-цитаты (визуализация ↩#id). */
   replyToId?: number;
-  /** 是否被编辑过。 */
+  /** Было ли сообщение отредактировано. */
   isEdited?: boolean;
-  /** Reaction 聚合：emoji → count（仅 string emoji，跳过 custom）。 */
+  /** Агрегация реакций: emoji → count (только string-emoji, custom пропускаются). */
   reactions?: Record<string, number>;
-  /** 转发来源显示名（频道名/用户名/隐藏名）。 */
+  /** Отображаемое имя источника пересылки (название канала/имя пользователя/скрытое). */
   forwardFrom?: string;
-  /** ADR-97: 此消息通过回复链逸散拉入，非滑动窗口原始成员。 */
+  /** ADR-97: сообщение втянуто через диффузию цепочки ответов, не исходный член скользящего окна. */
   isDiffused?: boolean;
-  /** ADR-114 D5: Telegram 原生 mention 标记（消息 mention 了当前用户）。 */
+  /** ADR-114 D5: нативная метка Telegram mention (сообщение упомянуло текущего пользователя). */
   isMention?: boolean;
-  /** ADR-114 D2: 此消息通过未读 mention 扩散拉入（非滑动窗口原始成员）。 */
+  /** ADR-114 D2: сообщение втянуто через диффузию непрочитанного mention (не исходный член скользящего окна). */
   isMentionContext?: boolean;
-  /** 发送者是否为 Telegram bot。 */
+  /** Является ли отправитель Telegram-ботом. */
   isBot?: boolean;
-  /** 结构化内容分段（仅 fetchRecentMessages 生成的实时消息）。 */
+  /** Структурированные сегменты содержимого (только для реального времени из fetchRecentMessages). */
   segments?: ContentSegment[];
 }
 
-/** 替换 record 中第一个 media segment 的 text，同步 text 字段。 */
+/** Заменяет text первого media-сегмента в record, синхронизирует поле text. */
 function replaceMediaSegment(record: MessageRecord, newText: string): void {
   if (!record.segments) return;
   const idx = record.segments.findIndex((s) => s.kind === "media");
@@ -143,7 +143,7 @@ function replaceMediaSegment(record: MessageRecord, newText: string): void {
   }
 }
 
-/** 向 record 追加一个 segment，同步 text 字段。 */
+/** Добавляет сегмент в record, синхронизирует поле text. */
 function appendSegment(record: MessageRecord, seg: ContentSegment): void {
   if (!record.segments) return;
   (record.segments as ContentSegment[]).push(seg);
@@ -154,10 +154,10 @@ const CONTEXT_HORIZON_MS_PRIVATE = 7 * 24 * 3600_000;
 const CONTEXT_HORIZON_MS_GROUP = 48 * 3600_000;
 
 /**
- * ADR-134 D4: 计算实时消息窗口的地平线。
+ * ADR-134 D4: вычисляет горизонт окна сообщений реального времени.
  *
- * 频道是信息流，不是对话。只要还在浏览这个 channel，最新几条帖子即便超过 48h
- * 也仍然有决策价值；否则 prompt 会退化成“可转发对象列表”，丢掉频道正文。
+ * Канал — это лента, а не разговор. Пока идёт просмотр, последние посты ценны для решений
+ * даже спустя 48 ч; иначе промпт деградирует до «списка пересылаемых объектов» без тела канала.
  */
 export function resolveContextHorizonMs(chatId: number, chatType?: ChatType): number | null {
   if (chatType === "channel") return null;
@@ -167,7 +167,7 @@ export function resolveContextHorizonMs(chatId: number, chatType?: ChatType): nu
 }
 
 /**
- * 获取目标频道的近期消息（Telegram API 实时拉取）。
+ * Получает последние сообщения целевого канала (реальное время через Telegram API).
  */
 export async function fetchRecentMessages(
   client: TelegramClient,
@@ -182,8 +182,8 @@ export async function fetchRecentMessages(
     const limit = opts.limit ?? 30;
     const rawMessages = await getHistory(client, chatId, limit);
 
-    // ADR-134 D4: 感知地平线 — 群聊与频道不能共用同一条粗粒度规则。
-    // group/supergroup: 保持 48h 对话窗口；private: 7d；channel: 保留最新帖子（不限时）。
+    // ADR-134 D4: горизонт восприятия — для групп и каналов нельзя применять одно грубое правило.
+    // group/supergroup: окно разговора 48 ч; private: 7 д; channel: только последние посты (без ограничения).
     // @see docs/adr/134-temporal-coherence.md §D4
     const horizonMs = resolveContextHorizonMs(chatId, opts.chatType);
     const floorMs = horizonMs == null ? null : Date.now() - horizonMs;
@@ -192,12 +192,12 @@ export async function fetchRecentMessages(
 
     let records: MessageRecord[] = [];
 
-    // 群聊元信息 + 管理员角色标注（并行获取，SQLite 持久缓存）
+    // Метаданные группы + аннотация ролей администраторов (параллельное получение, постоянный кэш SQLite)
     const [adminMap, chatInfo] = await Promise.all([
       getAdminMap(client, chatId),
       fetchChatInfo(client, chatId),
     ]);
-    // 补充 isAliceAdmin：从 outgoing 消息提取 Alice 的 user ID，写入持久缓存
+    // Дополняем isAliceAdmin: извлекаем user ID Алисы из исходящих сообщений, пишем в постоянный кэш
     if (chatId < 0 && chatInfo) {
       const aliceId = messages.find((m) => m.isOutgoing && m.sender && "id" in m.sender)?.sender
         ?.id as number | undefined;
@@ -210,25 +210,25 @@ export async function fetchRecentMessages(
       }
     }
 
-    // ADR-88: 收集需要异步解析的媒体消息
+    // ADR-88: собираем медиасообщения, требующие асинхронного разбора
     const visionEnabled = isVisionEnabled(config);
     const ocrEnabled = isOcrEnabled(config);
     type MediaRef = NonNullable<(typeof messages)[number]["media"]>;
     const photosToDescribe: Array<{ index: number; fileUniqueId: string; media: MediaRef }> = [];
-    // OCR 候选：独立于 VLM，即使 VLM 禁用也可工作
+    // Кандидаты OCR: независимы от VLM, работают даже при отключённом VLM
     const photosToOcr: Array<{ index: number; fileUniqueId: string; media: MediaRef }> = [];
-    // ADR-119: 收集需要 VLM 语义描述的贴纸
+    // ADR-119: собираем стикеры, требующие семантического описания VLM
     const stickersToDescribe: Array<{
       index: number;
       fileUniqueId: string;
       media: MediaRef;
       /** sourceType: "static" | "animated" | "video" */
       sourceType: string;
-      /** Phase 2: 用于调色板索引 */
+      /** Phase 2: используется для индексации в палитре */
       emoji?: string;
       fileId: string;
     }> = [];
-    // ADR-119: 收集需要 ASR 转写的语音消息
+    // ADR-119: собираем голосовые сообщения, требующие ASR-транскрипции
     const asrEnabled = isASREnabled(config);
     const voicesToTranscribe: Array<{ index: number; fileUniqueId: string; media: MediaRef }> = [];
     const stickersToResolve: Array<{
@@ -245,7 +245,7 @@ export async function fetchRecentMessages(
     for (const msg of messages) {
       const segments: ContentSegment[] = [];
       let mediaType: string | undefined;
-      // ADR-78 P0 + ADR-83 D4: 非文本消息生成视觉标记，让 LLM 感知 media 存在
+      // ADR-78 P0 + ADR-83 D4: нетекстовые сообщения генерируют визуальный маркер, чтобы LLM воспринял наличие медиа
       if (msg.media) {
         mediaType = msg.media.type;
         if (!msg.text) {
@@ -256,7 +256,7 @@ export async function fetchRecentMessages(
               kind: "media",
               text: formatStickerMediaText({ emoji, fileId: stickerFileId }),
             });
-            // ADR-119: 收集 VLM 语义描述 + Phase 2 调色板索引
+            // ADR-119: собираем VLM-описание + Phase 2 индексацию в палитре
             if (visionEnabled) {
               const uid = msg.media.uniqueFileId;
               if (uid) {
@@ -270,7 +270,7 @@ export async function fetchRecentMessages(
                 });
               }
             }
-            // 收集异步解析：贴纸集标题
+            // Собираем для асинхронного разбора: название набора стикеров
             const inputSet = msg.media.inputStickerSet;
             if (msg.media.hasStickerSet && inputSet && "id" in inputSet) {
               stickersToResolve.push({
@@ -286,7 +286,7 @@ export async function fetchRecentMessages(
             segments.push({ kind: "media", text: formatAudioMediaText(msg.media) });
           } else if (mediaType === "voice") {
             segments.push({ kind: "media", text: "(voice 🎤)" });
-            // ADR-119: 收集 ASR 转写
+            // ADR-119: собираем для ASR-транскрипции
             if (asrEnabled) {
               const uid = "uniqueFileId" in msg.media ? String(msg.media.uniqueFileId) : "";
               if (uid) {
@@ -336,10 +336,10 @@ export async function fetchRecentMessages(
             });
           } else segments.push({ kind: "media", text: `(${mediaType})` });
         } else {
-          // 有 caption 的媒体消息：body 段承载文本
+          // Медиасообщение с подписью (caption): текст несёт сегмент body
           segments.push({ kind: "body", text: msg.text });
         }
-        // ADR-88: 标记需要 vision 描述的 photo（仅无文本的纯图片消息）
+        // ADR-88: помечаем фото, требующие VLM-описания (только чистые фото без текста)
         if (
           mediaType === "photo" &&
           segments.some((s) => s.kind === "media" && s.text === "(photo 📷)")
@@ -349,13 +349,13 @@ export async function fetchRecentMessages(
             if (visionEnabled) {
               photosToDescribe.push({ index: records.length, fileUniqueId: uid, media: msg.media });
             }
-            // OCR 不受 visionEnabled 约束——VLM 禁用时 OCR 仍可独立工作
+            // OCR не зависит от visionEnabled — работает независимо при отключённом VLM
             if (ocrEnabled) {
               photosToOcr.push({ index: records.length, fileUniqueId: uid, media: msg.media });
             }
           }
         }
-        // WebPageMedia: 消息本身有文字（URL），链接预览附加为 link 段
+        // WebPageMedia: в сообщении есть текст (URL), превью ссылки добавляется как сегмент link
         if (msg.media instanceof WebPageMedia) {
           const wp = msg.media.preview;
           const parts: string[] = [];
@@ -364,7 +364,7 @@ export async function fetchRecentMessages(
           if (parts.length > 0) {
             segments.push({ kind: "link", text: `(link: ${parts.join(" — ")})` });
           }
-          // 图片链接（previewType="photo"）的预渲染图有信息量 → VLM 描述
+          // Предрендеренное изображение ссылки (previewType="photo") несёт информацию → VLM-описание
           if (visionEnabled && wp.previewType === "photo" && wp.photo) {
             const uid = wp.photo.uniqueFileId;
             if (uid) {
@@ -377,30 +377,30 @@ export async function fetchRecentMessages(
           }
         }
       } else if (msg.text) {
-        // 纯文本消息
+        // Чисто текстовое сообщение
         segments.push({ kind: "body", text: msg.text });
       }
       const text = segments.map((s) => s.text).join(" ");
-      if (!text) continue; // 无文本也无媒体的消息才跳过
+      if (!text) continue; // Пропускаем только сообщения без текста и без медиа
       let senderName = "Unknown";
       let senderId: number | undefined;
       if (msg.sender) {
-        // B4 修复: 移除不安全类型断言，直接访问 mtcute Peer 接口属性
+        // B4 fix: убрано небезопасное приведение типов, обращаемся к атрибутам интерфейса Peer mtcute напрямую
         senderName = msg.sender.displayName || `User ${msg.sender.id}`;
         if (!msg.isOutgoing) {
           senderId = msg.sender.id;
         }
-        // 群聊角色标注：owner/admin + 自定义头衔
+        // Аннотация ролей в группе: owner/admin + кастомный титул
         senderName = annotateSenderRole(senderName, senderId, adminMap);
       }
 
-      // ADR-85 D4: reply chain
+      // ADR-85 D4: цепочка ответов
       const replyToId = msg.replyToMessage?.id ?? undefined;
 
-      // ADR-85 D5: edit awareness
+      // ADR-85 D5: отслеживание редактирования
       const isEdited = msg.editDate != null ? true : undefined;
 
-      // ADR-85 D6: reaction aggregation
+      // ADR-85 D6: агрегация реакций
       let reactions: Record<string, number> | undefined;
       if (msg.reactions) {
         const counts = msg.reactions.reactions;
@@ -408,7 +408,7 @@ export async function fetchRecentMessages(
           reactions = {};
           for (const r of counts) {
             const emoji = r.emoji;
-            // ReactionEmoji = string | tl.Long — 只保留 string emoji
+            // ReactionEmoji = string | tl.Long — оставляем только string emoji
             if (typeof emoji === "string") {
               reactions[emoji] = r.count;
             }
@@ -417,7 +417,7 @@ export async function fetchRecentMessages(
         }
       }
 
-      // 转发来源提取（IRC 风格：name ~senderId）
+      // Извлечение источника пересылки (IRC-стиль: name ~senderId)
       let forwardFrom: string | undefined;
       if (msg.forward) {
         const fwdSender = msg.forward.sender;
@@ -442,21 +442,21 @@ export async function fetchRecentMessages(
         isEdited,
         reactions,
         forwardFrom,
-        // ADR-114 D5: 传播 Telegram 原生 mention 标记
+        // ADR-114 D5: распространяем нативную метку Telegram mention
         isMention: msg.isMention || undefined,
         segments,
       });
     }
     records.reverse();
 
-    // ── 贴纸集标题异步解析 ────────────────────────────────────────────
+    // ── Асинхронный разбор названий наборов стикеров ────────────────────────────────────────────
     if (stickersToResolve.length > 0) {
-      // 先收集未缓存的 set IDs，去重（Sticker.inputStickerSet 可直接传给 getStickerSet）
+      // Собираем некэшированные set ID, дедублируем (Sticker.inputStickerSet можно передавать напрямую в getStickerSet)
       const uncachedSets = new Map<string, NonNullable<Sticker["inputStickerSet"]>>();
       for (const s of stickersToResolve) {
         if (!getCachedStickerSetTitle(s.setId)) uncachedSets.set(s.setId, s.inputStickerSet);
       }
-      // 并行获取（一般 ≤5 个 set）
+      // Параллельное получение (обычно ≤5 наборов)
       if (uncachedSets.size > 0) {
         await Promise.allSettled(
           [...uncachedSets].map(async ([setId, inputStickerSet]) => {
@@ -464,12 +464,12 @@ export async function fetchRecentMessages(
               const set = await client.getStickerSet(inputStickerSet);
               setCachedStickerSetTitle(setId, set.title, set.shortName);
             } catch {
-              /* 静默 — fallback 到纯 emoji */
+              /* тихо — fallback до чистого emoji */
             }
           }),
         );
       }
-      // 回填
+      // Обратная запись
       for (const s of stickersToResolve) {
         const cached = getCachedStickerSetTitle(s.setId);
         const title = cached?.title;
@@ -486,9 +486,9 @@ export async function fetchRecentMessages(
       }
     }
 
-    // ── ADR-119 + Phase 2: Sticker VLM 语义描述（共享 visionMaxPerTick 预算，优先级最高）──
-    // describeMedia("sticker") 同时产出 description + StickerAnalysis（读同时写）。
-    // 管线：palette check → OCR 前置过滤 → VLM 结构化分析 → 调色板入库。
+    // ── ADR-119 + Phase 2: VLM-описание стикеров (разделяет бюджет visionMaxPerTick, высший приоритет) ──
+    // describeMedia("sticker") одновременно выдаёт description + StickerAnalysis (чтение и запись за один проход).
+    // Конвейер: palette check → OCR-предфильтр → структурированный анализ VLM → запись в палитру.
     const db = getDb();
     let stickerVisionUsed = 0;
     if (stickersToDescribe.length > 0) {
@@ -499,10 +499,10 @@ export async function fetchRecentMessages(
       const stickerBatch = stickersToDescribe.slice(-stickerCap);
       const stickerResults = await Promise.allSettled(
         stickerBatch.map(async ({ index, fileUniqueId, media, sourceType, emoji, fileId }) => {
-          // 已在调色板中 → 用缓存 description（不重复分析）
+          // Уже в палитре → используем кэшированное description (без повторного анализа)
           if (isInPalette(db, fileUniqueId)) {
             const cached = getCachedDescription(fileUniqueId);
-            // media-cache TTL 过期时从 palette label 取 fallback
+            // При истечении TTL media-cache берём fallback из palette label
             if (cached) return { index, fileId, caption: cached };
             const paletteLabel = db
               .select({ label: stickerPalette.label })
@@ -512,11 +512,11 @@ export async function fetchRecentMessages(
               .get();
             return { index, fileId, caption: paletteLabel?.label };
           }
-          // 缓存命中（之前分析过但不符合入库条件）
+          // Попадание в кэш (ранее проанализирован, но не прошёл критерии для записи в палитру)
           const cached = getCachedDescription(fileUniqueId);
           if (cached) return { index, fileId, caption: cached };
           try {
-            // 下载 buffer
+            // Скачиваем buffer
             let buffer: Buffer;
             if (sourceType !== "static") {
               const sticker = media as Sticker;
@@ -544,17 +544,17 @@ export async function fetchRecentMessages(
             // ADR-153 AnimeIDF gate ОСЛАБЛЕН (по просьбе пользователя): описываем ВСЕ
             // стикеры, не только аниме. Раньше тут non-anime → "(non-anime sticker)" skip.
 
-            // OCR + VLM 并发（两者互相独立）
+            // OCR + VLM параллельно (независимы друг от друга)
             const base64 = buffer.toString("base64");
             const [ocrResult, caption] = await Promise.all([
-              // OCR（必执行）：提取贴纸上的文字，同时作为入库判断条件
+              // OCR (обязательно): извлекаем текст на стикере, также служит условием записи в палитру
               extractText(buffer, config).catch(() => undefined),
-              // VLM 结构化分析（generateObject → description + StickerAnalysis 副产物）
+              // Структурированный VLM-анализ (generateObject → description + побочный продукт StickerAnalysis)
               describeMedia(base64, fileUniqueId, "sticker", config),
             ]);
             const hasText = !!(ocrResult && ocrResult.trim().length > 0);
 
-            // VLM 入库为后备池（setName=NULL）— 自己安装的贴纸优先，找不到时才用
+            // VLM записывает в резервный пул (setName=NULL) — приоритет у установленных самостоятельно стикеров, этот используется как запасной
             const analysis = getStickerAnalysis(fileUniqueId);
             if (analysis && caption && !hasText) {
               upsertFromVLM(db, {
@@ -578,7 +578,7 @@ export async function fetchRecentMessages(
           }
         }),
       );
-      // 回填：追加 VLM 描述到已有的 (sticker ...) 文本
+      // Обратная запись: дописываем VLM-описание к существующему тексту (sticker ...)
       for (const r of stickerResults) {
         if (r.status !== "fulfilled" || !r.value.caption) continue;
         const ri = records.length - 1 - r.value.index;
@@ -594,8 +594,8 @@ export async function fetchRecentMessages(
       stickerVisionUsed = Math.min(stickerBatch.length, config.visionMaxPerTick);
     }
 
-    // ── Photo 下载去重：VLM 和 OCR 共享同一张图片的 Buffer ──────────
-    // 同一 fileUniqueId 只下载一次，后续调用复用 Promise
+    // ── Дедупликация загрузки фото: VLM и OCR разделяют один Buffer изображения ──────────
+    // Один fileUniqueId скачивается только раз, последующие вызовы повторно используют Promise
     const photoDownloadCache = new Map<string, Promise<Buffer>>();
     function downloadPhotoOnce(uid: string, media: MediaRef): Promise<Buffer> {
       let p = photoDownloadCache.get(uid);
@@ -608,17 +608,17 @@ export async function fetchRecentMessages(
       return p;
     }
 
-    // ── ADR-88: 并行获取 photo 描述（最多 visionMaxPerTick 张）────────
-    // VLM 描述收集到 Map（index → caption），延迟到 OCR 完成后统一回填
+    // ── ADR-88: параллельное получение описаний фото (не более visionMaxPerTick штук) ────────
+    // VLM-описания собираются в Map (index → caption), обратная запись единым проходом после OCR
     const visionCaptions = new Map<number, string>();
     if (photosToDescribe.length > 0) {
       const photoBudget = Math.max(0, config.visionMaxPerTick - stickerVisionUsed);
-      const batch = photosToDescribe.slice(-photoBudget); // 优先最近的
+      const batch = photosToDescribe.slice(-photoBudget); // Приоритет — самые новые
       const results = await Promise.allSettled(
         batch.map(async ({ index, fileUniqueId, media }) => {
           try {
             const buffer = await downloadPhotoOnce(fileUniqueId, media);
-            if (buffer.byteLength > 1_048_576) return { index, fileUniqueId, caption: undefined }; // > 1MB 跳过
+            if (buffer.byteLength > 1_048_576) return { index, fileUniqueId, caption: undefined }; // > 1 МБ — пропускаем
             const base64 = buffer.toString("base64");
             const caption = await describeMedia(base64, fileUniqueId, "photo", config);
             return { index, fileUniqueId, caption };
@@ -628,7 +628,7 @@ export async function fetchRecentMessages(
         }),
       );
 
-      // 收集 VLM 描述结果到 Map（index → caption）
+      // Собираем результаты VLM-описания в Map (index → caption)
       for (const r of results) {
         if (r.status === "fulfilled" && r.value.caption) {
           visionCaptions.set(r.value.index, r.value.caption);
@@ -637,14 +637,14 @@ export async function fetchRecentMessages(
       }
     }
 
-    // ── OCR 文字提取（独立预算，不占 visionMaxPerTick）────────────────
-    // OCR 结果收集到 Map，与 VLM 结果合并回填
+    // ── Извлечение текста OCR (отдельный бюджет, не занимает visionMaxPerTick) ────────────────
+    // Результаты OCR собираются в Map, затем объединяются с VLM при обратной записи
     const ocrTexts = new Map<number, string>();
     if (photosToOcr.length > 0) {
-      const ocrBatch = photosToOcr.slice(-config.ocrMaxPerTick); // 优先最近的
+      const ocrBatch = photosToOcr.slice(-config.ocrMaxPerTick); // Приоритет — самые новые
       const ocrResults = await Promise.allSettled(
         ocrBatch.map(async ({ index, fileUniqueId, media }) => {
-          // 缓存命中
+          // Попадание в кэш
           const cached = getCachedOcrText(fileUniqueId);
           if (cached) return { index, fileUniqueId, ocrText: cached };
           try {
@@ -665,13 +665,13 @@ export async function fetchRecentMessages(
       }
     }
 
-    // ── Photo 回填：合并 VLM 描述 + OCR 文字 ─────────────────────────
-    // | 场景            | 格式                                          |
+    // ── Обратная запись фото: объединяем VLM-описание + OCR-текст ─────────────────────────
+    // | Сценарий        | Формат                                        |
     // |-----------------|-----------------------------------------------|
-    // | VLM + OCR 都有  | (photo: {VLM描述}) + meta: (image OCR text...)|
-    // | 仅 VLM          | (photo: {VLM描述})                            |
-    // | 仅 OCR          | (photo 📷) + meta: (image OCR text...)        |
-    // | 两者都无        | (photo 📷)（不变）                            |
+    // | VLM + OCR       | (photo: {VLM-описание}) + meta: (image OCR text...)|
+    // | Только VLM      | (photo: {VLM-описание})                       |
+    // | Только OCR      | (photo 📷) + meta: (image OCR text...)        |
+    // | Ни того ни другого | (photo 📷) (без изменений)                |
     {
       const allPhotoIndices = new Set([...visionCaptions.keys(), ...ocrTexts.keys()]);
       for (const idx of allPhotoIndices) {
@@ -687,12 +687,12 @@ export async function fetchRecentMessages(
         if (ocr) {
           appendSegment(record, { kind: "meta", text: formatImageOcrMetaText(ocr) });
         }
-        // 两者都无 → 保持 (photo 📷) 不变
+        // Ни то ни другое → оставляем (photo 📷) без изменений
       }
     }
 
-    // ── 统一 VLM 池化：gif/video/linkPhoto 按消息时间排序（最近优先）──
-    // 替代旧的级联预算分配——video 和 linkPhoto 不再被系统性饿死。
+    // ── Единый VLM-пул: gif/video/linkPhoto сортируются по времени сообщения (новейшие первыми) ──
+    // Заменяет старое каскадное распределение бюджета — video и linkPhoto больше не голодают системно.
     {
       const photoUsed = Math.min(
         photosToDescribe.length,
@@ -703,7 +703,7 @@ export async function fetchRecentMessages(
         ...videosToDescribe.map((v) => ({ ...v, mediaKind: "video" as const })),
         ...linkPhotosToDescribe.map((l) => ({ ...l, mediaKind: "linkPhoto" as const })),
       ];
-      // 按消息 index 降序（最近的消息优先获取 VLM 描述）
+      // Сортируем по index сообщения по убыванию (самые новые сообщения получают VLM-описание первыми)
       pool.sort((a, b) => b.index - a.index);
       const poolBudget = Math.max(0, config.visionMaxPerTick - stickerVisionUsed - photoUsed);
       const poolBatch = pool.slice(0, poolBudget);
@@ -756,14 +756,14 @@ export async function fetchRecentMessages(
           } else if (mediaKind === "video") {
             replaceMediaSegment(records[ri], `(video: ${caption})`);
           } else {
-            // linkPhoto → image segment 追加到已有内容后
+            // linkPhoto → сегмент image дописывается после существующего содержимого
             appendSegment(records[ri], { kind: "image", text: `(image: ${caption})` });
           }
         }
       }
     }
 
-    // ── ADR-119: Voice ASR 转写（独立预算，不占 visionMaxPerTick）─────
+    // ── ADR-119: ASR-транскрипция голоса (отдельный бюджет, не занимает visionMaxPerTick) ─────
     const ASR_MAX_PER_TICK = 2;
     if (voicesToTranscribe.length > 0) {
       const asrBatch = voicesToTranscribe.slice(-ASR_MAX_PER_TICK);
@@ -796,7 +796,7 @@ export async function fetchRecentMessages(
       }
     }
 
-    // ADR-97: 回复链逸散 — 沿 replyToId 追溯窗口外的被回复消息
+    // ADR-97: диффузия цепочки ответов — идём по replyToId к цитируемым сообщениям за пределами окна
     const channelId = telegramChannelId(chatId);
     const diffused = diffuseReplyChain(records, channelId);
     if (diffused.length > 0) {
@@ -805,8 +805,8 @@ export async function fetchRecentMessages(
       records = [...unique, ...records].sort((a, b) => a.date.getTime() - b.date.getTime());
     }
 
-    // ADR-114 D2: Mention 扩散 — 获取未读 mention 并采样周围上下文
-    // 必须在 markRead 之前调用（markRead 会清除未读 mention 状态）
+    // ADR-114 D2: диффузия mention — получаем непрочитанные mention и берём контекст вокруг них
+    // Должно вызываться до markRead (markRead очищает статус непрочитанных mention)
     // @see docs/adr/114-context-assembly-rehabilitation.md — D2
     try {
       const mentionIds = await getUnreadMentionIds(client, chatId, 20);
@@ -817,18 +817,18 @@ export async function fetchRecentMessages(
         for (const mentionMsgId of mentionIds) {
           if (mentionContext.length >= MENTION_DIFFUSION_BUDGET) break;
           if (existingIds.has(mentionMsgId)) {
-            // Mention 已在窗口内 — D5 的 isMention 标记已覆盖，无需额外扩散
+            // Mention уже в окне — метка isMention из D5 покрывает его, дополнительная диффузия не нужна
             continue;
           }
 
-          // 从 DB 获取 ±radius 的消息簇
+          // Получаем из DB кластер сообщений ±radius
           const cluster = getMessageCluster(channelId, mentionMsgId, MENTION_CONTEXT_RADIUS);
           for (const row of cluster) {
             if (row.msgId != null && existingIds.has(row.msgId)) continue;
             if (row.msgId != null) existingIds.add(row.msgId);
             mentionContext.push({
               ...dbRecordToMessageRecord(row),
-              isDiffused: undefined, // 区分于 reply chain diffusion
+              isDiffused: undefined, // отличаем от диффузии reply chain
               isMentionContext: true,
             });
             if (mentionContext.length >= MENTION_DIFFUSION_BUDGET) break;
@@ -846,13 +846,13 @@ export async function fetchRecentMessages(
         }
       }
     } catch (e) {
-      // Mention 扩散失败不应阻断消息拉取——降级到 isMention 标记（D5 备用路径）
+      // Сбой диффузии mention не должен блокировать получение сообщений — деградируем до метки isMention (резервный путь D5)
       log.warn("Mention diffusion failed, falling back to isMention flags", e);
     }
 
-    // 自动已读：fetchRecentMessages 等同于"Alice 打开了聊天"，
-    // 真人行为是看了就已读。不标记会导致对方看不到双勾（已读回执）。
-    // ADR-114 D3: clearMentions 同时清除 mention 角标
+    // Авто-прочитано: fetchRecentMessages равнозначно «Алиса открыла чат»,
+    // живой человек отмечал бы прочитанным сразу. Без отметки собеседник не увидит двойной галочки (read receipt).
+    // ADR-114 D3: clearMentions одновременно сбрасывает счётчик непрочитанных mention
     markRead(client, chatId).catch(() => {});
 
     return records;
@@ -862,25 +862,25 @@ export async function fetchRecentMessages(
   }
 }
 
-// ── ADR-97: 回复链逸散上下文 ────────────────────────────────────────────
+// ── ADR-97: контекст диффузии цепочки ответов ────────────────────────────────────────────
 // @see docs/adr/97-reply-chain-diffusion-context.md
 
-/** BFS 最大追溯深度。群聊回复链通常 3-5 层，深度 2 覆盖 >90%。 */
+/** Максимальная глубина BFS-обхода. Цепочки в групповых чатах обычно 3-5 уровней; глубина 2 покрывает >90%. */
 const DIFFUSION_MAX_DEPTH = 2;
-/** 被回复消息前后各取的邻近消息数。 */
+/** Число соседних сообщений до и после каждого цитируемого. */
 const DIFFUSION_CONTEXT_RADIUS = 1;
-/** 追溯消息总量上限，防止 token 膨胀。 */
+/** Общий лимит извлекаемых сообщений, защита от раздувания токенов. */
 const DIFFUSION_BUDGET = 15;
 
-// ADR-114 D2: Mention 扩散常量
-/** Mention 消息前后各取的邻近消息数。比 reply chain 多一层上下文。 */
+// ADR-114 D2: Константы диффузии mention
+/** Число соседних сообщений до и после mention-сообщения. На один уровень контекста больше, чем у reply chain. */
 const MENTION_CONTEXT_RADIUS = 2;
-/** Mention 扩散消息总量上限。 */
+/** Общий лимит сообщений при диффузии mention. */
 const MENTION_DIFFUSION_BUDGET = 20;
 
-/** DB 记录 → MessageRecord 转换。逸散消息缺少 reactions 等实时字段。 */
+/** Конвертация DB-записи → MessageRecord. В диффузированных сообщениях отсутствуют realtime-поля типа reactions. */
 function dbRecordToMessageRecord(r: DbMessageRecord): MessageRecord {
-  // ADR-119: 媒体消息的 text 可能为 null，用占位符标注
+  // ADR-119: text медиасообщений может быть null, помечаем плейсхолдером
   let text = r.text ?? "(no text)";
   if (!r.text && r.mediaType) {
     const labels: Record<string, string> = {
@@ -894,7 +894,7 @@ function dbRecordToMessageRecord(r: DbMessageRecord): MessageRecord {
     text = labels[r.mediaType] ?? `(${r.mediaType})`;
   }
   return {
-    id: r.msgId ?? 0, // Telegram msgId 从 1 开始；null → 0 标识无 ID 的记录（Alice 自发消息）
+    id: r.msgId ?? 0, // Telegram msgId начинается с 1; null → 0 обозначает запись без ID (инициативное сообщение Алисы)
     senderName: r.senderName ?? "Unknown",
     senderId: r.senderId ? Number(r.senderId.replace("contact:", "")) || undefined : undefined,
     isOutgoing: r.isOutgoing,
@@ -907,21 +907,21 @@ function dbRecordToMessageRecord(r: DbMessageRecord): MessageRecord {
 }
 
 /**
- * 回复链逸散：沿 replyToId 边 BFS 扩展滑动窗口。
+ * Диффузия цепочки ответов: BFS-расширение скользящего окна по рёбрам replyToId.
  *
- * 以 seeds 中超出窗口的 replyToId 为起点，从 messageLog 追溯被回复消息
- * 及其 ±radius 邻近消息，形成"逸散 cluster"。
+ * За начальную точку берёт replyToId из seeds, выходящие за пределы окна, и извлекает из messageLog
+ * цитируемые сообщения и их соседей ±radius, формируя «диффузионный кластер».
  *
- * @param seeds 滑动窗口原始消息
- * @param chatId 频道 ID（messageLog 的 chatId 格式，如 "channel:telegram:123"）
- * @returns 需要插入的逸散消息（已按时间排序，带 isDiffused=true）
+ * @param seeds Исходные сообщения скользящего окна
+ * @param chatId ID канала (в формате chatId из messageLog, например "channel:telegram:123")
+ * @returns Диффузированные сообщения для вставки (отсортированы по времени, с isDiffused=true)
  */
 export function diffuseReplyChain(seeds: MessageRecord[], chatId: string): MessageRecord[] {
   const seedIds = new Set(seeds.map((s) => s.id));
   const visited = new Set(seedIds);
   const diffused: MessageRecord[] = [];
 
-  // 收集 seeds 中 replyToId 不在 seeds 的消息 → 初始 frontier
+  // Собираем из seeds сообщения, чей replyToId не входит в seeds → начальный frontier
   let frontier = new Set<number>();
   for (const seed of seeds) {
     if (seed.replyToId && !seedIds.has(seed.replyToId)) {
@@ -942,7 +942,7 @@ export function diffuseReplyChain(seeds: MessageRecord[], chatId: string): Messa
         diffused.push(dbRecordToMessageRecord(row));
         if (diffused.length >= DIFFUSION_BUDGET) break;
 
-        // 递归：cluster 中的回复关系加入下轮 frontier
+        // Рекурсия: связи ответов внутри кластера добавляются в следующий frontier
         if (row.replyToMsgId && !visited.has(row.replyToMsgId)) {
           nextFrontier.add(row.replyToMsgId);
         }
@@ -951,7 +951,7 @@ export function diffuseReplyChain(seeds: MessageRecord[], chatId: string): Messa
     frontier = nextFrontier;
   }
 
-  // 按时间排序
+  // Сортируем по времени
   diffused.sort((a, b) => a.date.getTime() - b.date.getTime());
   return diffused;
 }

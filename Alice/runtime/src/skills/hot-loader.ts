@@ -1,10 +1,10 @@
 /**
- * Skill 热加载器 — 运行时注册/注销 Skill 动作。
+ * Горячий загрузчик Skill — регистрация/отмена регистрации действий Skill во время выполнения.
  *
- * 协调三个注册中心的一致性：
- * 1. TELEGRAM_ACTIONS / TELEGRAM_ACTION_MAP（动作注册表）
- * 2. CAPABILITY_FAMILIES（能力族注册表）
- * 3. TOOL_CATEGORIES（category 枚举）
+ * Обеспечивает согласованность трёх реестров:
+ * 1. TELEGRAM_ACTIONS / TELEGRAM_ACTION_MAP (реестр действий)
+ * 2. CAPABILITY_FAMILIES (реестр семейств возможностей)
+ * 3. TOOL_CATEGORIES (перечисление категорий)
  *
  * @see docs/adr/201-os-for-llm.md
  */
@@ -24,13 +24,13 @@ import { registerAction, unregisterAction } from "../telegram/actions/index.js";
 import type { SkillManifest } from "./manifest.js";
 
 /**
- * 热加载编译后的 Skill：注册动作 + 能力族 + category。
+ * Горячая загрузка скомпилированного Skill: регистрация действий + семейств возможностей + category.
  *
- * @param actions 编译器产出的 TelegramActionDef[]
- * @param manifest 原始 manifest（提取 family 元数据）
+ * @param actions TelegramActionDef[], полученные от компилятора
+ * @param manifest исходный manifest (для извлечения метаданных family)
  */
 export function loadSkill(actions: TelegramActionDef[], manifest: SkillManifest): void {
-  // 1. 注册 categories（确保 man 能识别）
+  // 1. Регистрируем categories (чтобы man мог их распознать)
   const categories = new Set<string>();
   for (const action of actions) {
     const cat =
@@ -41,9 +41,9 @@ export function loadSkill(actions: TelegramActionDef[], manifest: SkillManifest)
     if (cat) categories.add(cat);
   }
 
-  // 2. 注册能力族
+  // 2. Регистрируем семейство возможностей
   if (manifest.family) {
-    // familyCategory 允许多个 Skill 共享同一能力族（如 fun 族）
+    // familyCategory позволяет нескольким Skill разделять одно семейство (например, семейство fun)
     const familyCat = manifest.familyCategory ?? manifest.name;
     if (!TOOL_CATEGORIES.includes(familyCat)) {
       registerToolCategory(familyCat);
@@ -51,25 +51,25 @@ export function loadSkill(actions: TelegramActionDef[], manifest: SkillManifest)
     registerCapabilityFamily(familyCat, manifest.family as CapabilityFamily);
   }
 
-  // 3. 注册动作
+  // 3. Регистрируем действия
   for (const action of actions) {
     registerAction(action);
   }
 }
 
 /**
- * 卸载 Skill：注销动作 + 能力族 + category。
+ * Выгружает Skill: отменяет регистрацию действий + семейств возможностей + category.
  *
- * @param actionNames 要注销的动作名列表
- * @param categories 要注销的 category 列表
+ * @param actionNames список имён действий для отмены регистрации
+ * @param categories список category для отмены регистрации
  */
 export function unloadSkill(actionNames: string[], categories: string[]): void {
-  // 1. 注销动作
+  // 1. Отменяем регистрацию действий
   for (const name of actionNames) {
     unregisterAction(name);
   }
 
-  // 2. 注销能力族和 category
+  // 2. Отменяем регистрацию семейств возможностей и category
   for (const cat of categories) {
     unregisterCapabilityFamily(cat);
     unregisterToolCategory(cat);

@@ -1,22 +1,22 @@
 /**
- * Storyteller — LLM 上下文聚合器（移植自叙事引擎）。
+ * Storyteller — агрегатор LLM-контекста (портирован из narrative engine).
  *
- * 从 Dispatcher 收集所有 Mod 的 contribute() → 按 bucket/order/priority 排序
- * → Trim（token budget 截断）→ 渲染成 system + user prompt。
+ * Собирает contribute() от всех Mod через Dispatcher → сортирует по bucket/order/priority
+ * → Trim (обрезка по token budget) → рендерит в system + user prompt.
  *
- * 替代旧的 briefing.ts（手工组装 prompt）。
+ * Заменяет старый briefing.ts (ручная сборка prompt).
  *
- * 排序规则：
- * 1. bucket 分层：header → section → footer
- * 2. 同 bucket 内按 order 升序（越小越靠前）
- * 3. 同 (bucket, key) 内按 priority 降序（越高越重要）
- * 4. 同 key 的项合并到一个组，第一个带 title 的项提供组标题
+ * Правила сортировки:
+ * 1. Слои bucket: header → section → footer
+ * 2. Внутри bucket по order по возрастанию (меньше — ближе к началу)
+ * 3. Внутри (bucket, key) по priority по убыванию (выше — важнее)
+ * 4. Элементы с одинаковым key объединяются в группу; заголовок даёт первый элемент с title
  *
- * Trim 步骤（论文 Def 3.9: Contribute → Rank → Trim → Inject）：
- * 渲染后检查总 token 量，超限则从最低优先级的非 header 组开始移除。
+ * Шаг Trim (Def 3.9 из статьи: Contribute → Rank → Trim → Inject):
+ * после рендера проверяется суммарный объём токенов; при превышении удаляем с наименьшим приоритетом не-header группы.
  *
- * 参考: narrative-engine/mods/storyteller/index.ts
- * @see paper-five-dim/ Definition 7.1（Context Assembly 四步管线）
+ * Источник: narrative-engine/mods/storyteller/index.ts
+ * @see paper-five-dim/ Definition 7.1 (четырёхшаговый пайплайн Context Assembly)
  */
 
 import { createLogger } from "../utils/logger.js";
@@ -24,17 +24,17 @@ import type { ContributionItem } from "./types.js";
 
 const log = createLogger("storyteller");
 
-// -- ADR-114 D1: Budget Zone 隔离 -------------------------------------------
+// -- ADR-114 D1: Изоляция Budget Zone -----------------------------------------
 
-/** Context assembly budget zone（上下文组装预算区域）。 */
+/** Зона бюджета при сборке контекста (context assembly budget zone). */
 export type BudgetZone = "anchor" | "situation" | "conversation" | "memory";
 
 /**
- * 默认 zone 比例。
- * anchor 30%: 人格核心（header bucket，免疫裁剪）
- * situation 15%: 环境感知（时钟、压力、策略提示、风险标记）
- * conversation 40%: 对话上下文（messages + scriptGuide + manual + footer + 对话相关 mod 贡献）
- * memory 15%: 记忆检索（联系人画像、线程、记忆整理）
+ * Соотношения zone по умолчанию.
+ * anchor 30%: ядро личности (header bucket, иммунитет к обрезке)
+ * situation 15%: восприятие окружения (часы, нагрузка, подсказки стратегии, метки риска)
+ * conversation 40%: контекст диалога (messages + scriptGuide + manual + footer + вклад mod, связанных с диалогом)
+ * memory 15%: извлечение воспоминаний (профиль контакта, потоки, упорядочение памяти)
  * @see docs/adr/114-context-assembly-rehabilitation.md — D1
  */
 export const DEFAULT_ZONE_RATIOS: Record<BudgetZone, number> = {
@@ -44,7 +44,7 @@ export const DEFAULT_ZONE_RATIOS: Record<BudgetZone, number> = {
   memory: 0.15,
 };
 
-/** 属于 SITUATION zone 的 contribution key。 */
+/** Ключи contribution, относящиеся к зоне SITUATION. */
 const SITUATION_KEYS = new Set([
   "wall-clock",
   "situation",
@@ -55,7 +55,7 @@ const SITUATION_KEYS = new Set([
   "scheduler-fired",
 ]);
 
-/** 属于 MEMORY zone 的 contribution key。 */
+/** Ключи contribution, относящиеся к зоне MEMORY. */
 const MEMORY_KEYS = new Set([
   "contact-profile",
   "threads",
@@ -64,14 +64,14 @@ const MEMORY_KEYS = new Set([
   "conversation",
 ]);
 
-/** ADR-115 T2: Zone budget 利用率统计。 */
+/** ADR-115 T2: Статистика использования zone budget. */
 export interface ZoneStats {
   budget: number;
   used: number;
   trimmed: number;
 }
 
-/** 按 bucket 和 key 将 ContributionItem 分类到 BudgetZone。 */
+/** Классифицирует ContributionItem по BudgetZone на основе bucket и key. */
 export function classifyZone(item: ContributionItem): BudgetZone {
   if (item.bucket === "header") return "anchor";
   if (SITUATION_KEYS.has(item.key ?? "")) return "situation";
@@ -80,17 +80,17 @@ export function classifyZone(item: ContributionItem): BudgetZone {
 }
 
 /**
- * Zone-aware 贡献渲染——按 zone 隔离 token budget。
+ * Zone-aware рендеринг вкладов — token budget изолирован по zone.
  *
- * 解决的问题：旧的单一共享池中，忙群 30 条消息吃掉 8000 tokens，
- * 导致 SITUATION/MEMORY zone 的 mod 贡献被系统性饿死。
+ * Решаемая проблема: в старом едином пуле 30 сообщений из активного чата съедали 8000 токенов,
+ * что системно «голодило» вклады mod в зонах SITUATION/MEMORY.
  *
- * @param items - 所有 mod 的 ContributionItem
- * @param totalBudget - 全局 token budget（GLOBAL_TOKEN_BUDGET）
- * @param zoneRatios - 自定义 zone 比例（可选，覆盖 DEFAULT_ZONE_RATIOS）
- * @param conversationFixedTokens - CONVERSATION zone 的固定开销
- *        （scriptGuide + manual + footer + messages 的 token 估算总和）
- * @see docs/adr/114-context-assembly-rehabilitation.md — D1: Budget Zone 隔离
+ * @param items - ContributionItem от всех mod
+ * @param totalBudget - глобальный token budget (GLOBAL_TOKEN_BUDGET)
+ * @param zoneRatios - пользовательские соотношения zone (опционально, перекрывает DEFAULT_ZONE_RATIOS)
+ * @param conversationFixedTokens - фиксированные расходы зоны CONVERSATION
+ *        (суммарная оценка токенов: scriptGuide + manual + footer + messages)
+ * @see docs/adr/114-context-assembly-rehabilitation.md — D1: Изоляция Budget Zone
  */
 export function renderContributionsByZone(
   items: ContributionItem[],
@@ -109,13 +109,13 @@ export function renderContributionsByZone(
 
   const ratios: Record<BudgetZone, number> = { ...DEFAULT_ZONE_RATIOS, ...zoneRatios };
 
-  // 校验：非 anchor zone 的比例之和应接近 0.7（anchor 免疫裁剪，不参与分配）
+  // Проверка: сумма долей не-anchor зон должна быть близка к 0.7 (anchor иммунен к обрезке и не участвует в распределении)
   const nonAnchorSum = ratios.situation + ratios.conversation + ratios.memory;
   if (nonAnchorSum > 1.0 || nonAnchorSum < 0.1) {
     log.warn("Zone ratios may be misconfigured", { ratios, nonAnchorSum });
   }
 
-  // 1. 按 zone 分组
+  // 1. Группировка по zone
   const zoneItems: Record<BudgetZone, ContributionItem[]> = {
     anchor: [],
     situation: [],
@@ -126,15 +126,15 @@ export function renderContributionsByZone(
     zoneItems[classifyZone(item)].push(item);
   }
 
-  // 2. ANCHOR zone: header bucket 免疫裁剪，不设 budget 上限
+  // 2. Зона ANCHOR: header bucket иммунен к обрезке, без верхнего лимита budget
   const anchorRendered = renderContributions(zoneItems.anchor, {
     maxTokens: Number.MAX_SAFE_INTEGER,
   });
 
-  // 3. 非 anchor zone 各自分配独立 budget
+  // 3. Каждой не-anchor зоне выделяется независимый budget
   const sitBudget = Math.max(100, Math.floor(totalBudget * ratios.situation));
   const memBudget = Math.max(100, Math.floor(totalBudget * ratios.memory));
-  // CONVERSATION zone 的 budget 需先扣除固定开销（scriptGuide + manual + footer + messages）
+  // Из budget зоны CONVERSATION сначала вычитаем фиксированные расходы (scriptGuide + manual + footer + messages)
   const convRawBudget = Math.floor(totalBudget * ratios.conversation);
   const convBudget = Math.max(100, convRawBudget - (conversationFixedTokens ?? 0));
 
@@ -142,7 +142,7 @@ export function renderContributionsByZone(
   const memRendered = renderContributions(zoneItems.memory, { maxTokens: memBudget });
   const convRendered = renderContributions(zoneItems.conversation, { maxTokens: convBudget });
 
-  // ADR-115 T2: zone budget 利用率（直接复用 renderContributions 内部 token 统计）
+  // ADR-115 T2: использование zone budget (напрямую переиспользуем внутреннюю статистику токенов renderContributions)
   const zoneStats: Record<BudgetZone, ZoneStats> = {
     anchor: {
       budget: Number.MAX_SAFE_INTEGER,
@@ -170,8 +170,8 @@ export function renderContributionsByZone(
     conversationFixedTokens: conversationFixedTokens ?? 0,
   });
 
-  // 4. 合并各 zone 的 system/user 输出
-  // system = anchor（header bucket），user = situation → memory → conversation
+  // 4. Объединяем вывод system/user из всех zone
+  // system = anchor (header bucket), user = situation → memory → conversation
   const systemParts = [anchorRendered.system].filter(Boolean);
   const userParts = [sitRendered.user, memRendered.user, convRendered.user].filter(Boolean);
 
@@ -182,10 +182,10 @@ export function renderContributionsByZone(
   };
 }
 
-// 桶排序权重
+// Веса порядка bucket'ов
 const BUCKET_ORDER: Record<string, number> = { header: 0, section: 1, footer: 2 };
 
-/** 分组结构。 */
+/** Структура группы. */
 interface Group {
   bucket: string;
   key: string;
@@ -194,19 +194,19 @@ interface Group {
   items: Array<{ priority: number; lines: string[] }>;
 }
 
-/** 渲染后的分组（含 token 估算）。 */
+/** Отрендеренная группа (с оценкой токенов). */
 interface RenderedGroup {
   bucket: string;
   key: string;
   text: string;
   tokens: number;
-  minPriority: number; // 组内最低 priority（用于 trim 排序）
+  minPriority: number; // минимальный priority в группе (используется при сортировке для trim)
 }
 
 /**
- * 估算文本的 token 数。
- * 分别统计 CJK 字符和 ASCII 字符，加权求和。
- * CJK 约 1.5 字/token，ASCII 约 4 字符/token。
+ * Оценивает количество токенов в тексте.
+ * Считает CJK- и ASCII-символы отдельно, затем суммирует с весами.
+ * CJK: ~1.5 символа/токен, ASCII: ~4 символа/токен.
  */
 export function estimateTokens(text: string): number {
   let cjk = 0;
@@ -217,23 +217,23 @@ export function estimateTokens(text: string): number {
   return Math.ceil(cjk / 1.5 + ascii / 4);
 }
 
-/** renderContributions 的返回值。 */
+/** Возвращаемое значение renderContributions. */
 export interface RenderResult {
   system: string;
   user: string;
-  /** ADR-115 T2: 裁剪掉的 token 估算量。 */
+  /** ADR-115 T2: оценка количества обрезанных токенов. */
   trimmedTokens: number;
-  /** ADR-115 T2: 最终输出的 token 估算量（system + user）。 */
+  /** ADR-115 T2: оценка количества токенов в итоговом выводе (system + user). */
   usedTokens: number;
 }
 
 const EMPTY_RENDER: RenderResult = { system: "", user: "", trimmedTokens: 0, usedTokens: 0 };
 
 /**
- * 从 ContributionItem[] 渲染为 prompt 文本。
- * 返回 RenderResult：header 桶 → system prompt，section+footer → user prompt。
+ * Рендерит ContributionItem[] в текст prompt.
+ * Возвращает RenderResult: bucket header → system prompt, section+footer → user prompt.
  *
- * @param maxTokens - token budget 上限（默认 3000）。超限时从最低优先级非 header 组移除。
+ * @param maxTokens - верхний лимит token budget (по умолчанию 3000). При превышении удаляем не-header группы с наименьшим приоритетом.
  */
 export function renderContributions(
   items: ContributionItem[],
@@ -243,7 +243,7 @@ export function renderContributions(
 
   const maxTokens = options?.maxTokens ?? 3000;
 
-  // 分组
+  // Группировка
   const groupMap = new Map<string, Group>();
   for (const item of items) {
     const groupKey = `${item.bucket}::${item.key ?? "__default__"}`;
@@ -258,9 +258,9 @@ export function renderContributions(
       };
       groupMap.set(groupKey, group);
     }
-    // 取最小 order
+    // Берём минимальный order
     if ((item.order ?? 50) < group.order) group.order = item.order ?? 50;
-    // 第一个有 title 的生效
+    // Действует первый элемент с title
     if (!group.title && item.title) group.title = item.title;
     group.items.push({
       priority: item.priority ?? 50,
@@ -268,27 +268,27 @@ export function renderContributions(
     });
   }
 
-  // 排序 groups: bucket → order → key
+  // Сортировка групп: bucket → order → key
   const groups = [...groupMap.values()].sort((a, b) => {
     const bucketDiff = (BUCKET_ORDER[a.bucket] ?? 1) - (BUCKET_ORDER[b.bucket] ?? 1);
     if (bucketDiff !== 0) return bucketDiff;
     return a.order - b.order;
   });
 
-  // 渲染所有组
+  // Рендерим все группы
   const renderedGroups: RenderedGroup[] = [];
 
   for (const group of groups) {
-    // 组内按 priority 降序
+    // Внутри группы по priority по убыванию
     group.items.sort((a, b) => b.priority - a.priority);
 
     const lines: string[] = [];
     if (group.title) {
-      // ADR-141: 自动规范化节标题为 ## Title 格式
+      // ADR-141: Автоматически нормализуем заголовок секции до формата ## Title
       lines.push(group.title.startsWith("## ") ? group.title : `## ${group.title}`);
     }
     for (let i = 0; i < group.items.length; i++) {
-      // 同 key 多 item 间插入空行分隔（来自不同 mod 的贡献）
+      // Между несколькими item с одинаковым key вставляем пустую строку (вклады от разных mod)
       if (i > 0) lines.push("");
       lines.push(...group.items[i].lines);
     }
@@ -306,27 +306,27 @@ export function renderContributions(
     });
   }
 
-  // ── ADR-209: 两阶段裁剪（item 级 → group 级） ──
-  // 阶段 1: item 级裁剪——在 group 内按 priority 从低到高逐 item 移除，保留标题和摘要
-  // 阶段 2: group 级裁剪——如果仍超限，整个 group 移除（留摘要行）
+  // ── ADR-209: Двухфазная обрезка (уровень item → уровень group) ──
+  // Фаза 1: обрезка на уровне item — внутри group удаляем item по priority от меньшего к большему, сохраняя заголовок и сводку
+  // Фаза 2: обрезка на уровне group — если лимит ещё превышен, удаляем group целиком (оставляя строку-сводку)
   let totalTokens = renderedGroups.reduce((sum, g) => sum + g.tokens, 0);
   let trimmedTokens = 0;
 
-  // 阶段 1: item 级裁剪
+  // Фаза 1: обрезка на уровне item
   if (totalTokens > maxTokens) {
     for (const group of groups) {
       if (totalTokens <= maxTokens) break;
       if (group.bucket === "header") continue;
-      if (group.items.length <= 1) continue; // 单 item 组留给阶段 2
+      if (group.items.length <= 1) continue; // Группы с одним item оставляем для фазы 2
 
-      // 从最低 priority 的 item 开始移除
+      // Начинаем удалять с item с наименьшим priority
       const sortedByPriorityAsc = [...group.items].sort((a, b) => a.priority - b.priority);
       let removed = 0;
       for (const item of sortedByPriorityAsc) {
         if (totalTokens <= maxTokens) break;
-        if (group.items.length - removed <= 1) break; // 至少保留 1 个 item
+        if (group.items.length - removed <= 1) break; // Сохраняем хотя бы 1 item
         const itemTokens = estimateTokens(item.lines.join("\n"));
-        // 从 group.items 中移除该 item
+        // Удаляем данный item из group.items
         const idx = group.items.indexOf(item);
         if (idx >= 0) {
           group.items.splice(idx, 1);
@@ -342,7 +342,7 @@ export function renderContributions(
       }
 
       if (removed > 0) {
-        // 重新渲染该 group（含摘要行）
+        // Повторно рендерим эту group (с добавлением строки-сводки)
         const rgIdx = renderedGroups.findIndex(
           (g) => g.key === group.key && g.bucket === group.bucket,
         );
@@ -358,7 +358,7 @@ export function renderContributions(
           newLines.push(`(${removed} more omitted)`);
           const newText = newLines.join("\n");
           const newTokens = estimateTokens(newText);
-          // 修正 token 差值（重新渲染后可能与累计减去的不一致）
+          // Корректируем дельту токенов (после повторного рендера может не совпадать с накопленным вычетом)
           totalTokens = totalTokens - renderedGroups[rgIdx].tokens + newTokens;
           renderedGroups[rgIdx].text = newText;
           renderedGroups[rgIdx].tokens = newTokens;
@@ -369,7 +369,7 @@ export function renderContributions(
     }
   }
 
-  // 阶段 2: group 级裁剪（兜底——与原逻辑一致）
+  // Фаза 2: обрезка на уровне group (страховочный этап — логика совпадает с исходной)
   while (totalTokens > maxTokens) {
     let trimIdx = -1;
     let lowestPriority = Infinity;
@@ -391,7 +391,7 @@ export function renderContributions(
     });
   }
 
-  // 构建最终结果
+  // Формируем итоговый результат
   const systemParts: string[] = [];
   const userParts: string[] = [];
 

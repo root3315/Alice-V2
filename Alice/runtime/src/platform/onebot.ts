@@ -149,10 +149,10 @@ async function postOneBotAction(
 }
 
 /**
- * QQ 第一接入路线：OneBot v11 action API。
+ * Основной маршрут подключения QQ: action API OneBot v11.
  *
- * OneBot 覆盖 QQ M1 核心闭环（群/私聊文本、reply、常见消息段），但不声明
- * reaction/read/media 等能力；缺失能力由 transport route 返回 unsupported_capability。
+ * OneBot покрывает ядро QQ M1 (групповой/личный текст, reply, стандартные сегменты сообщений),
+ * но не объявляет возможности reaction/read/media; отсутствующие возможности возвращают unsupported_capability через transport route.
  *
  * @see docs/adr/264-qq-platform-support/README.md
  * @see docs/reference/LangBot/src/langbot/pkg/platform/sources/aiocqhttp.py

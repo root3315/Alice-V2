@@ -1,8 +1,8 @@
 /**
- * ADR-220 + ADR-237: 场景渲染器路由。
+ * ADR-220 + ADR-237: Маршрутизация рендереров сцен.
  *
- * 根据 snapshot.chatTargetType 分派到对应的场景渲染器。
- * 每个渲染器是纯函数 (snapshot) → string。
+ * Диспетчеризует в соответствующий рендерер на основе snapshot.chatTargetType.
+ * Каждый рендерер — чистая функция (snapshot) → string.
  */
 
 import type { UserPromptSnapshot } from "../types.js";
@@ -11,7 +11,7 @@ import { renderGroup } from "./group.js";
 import { renderPrivate } from "./private.js";
 
 /**
- * 根据快照的场景类型选择渲染器，产出完整的 user prompt 文本。
+ * Выбирает рендерер по типу сцены снимка и возвращает полный текст user prompt.
  */
 export function renderUserPrompt(snapshot: UserPromptSnapshot): string {
   switch (snapshot.chatTargetType) {

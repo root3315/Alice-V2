@@ -1,8 +1,8 @@
 /**
- * L2 Shell Backend — 子进程 stdin/stdout（LLM = 终端用户）。
+ * L2 Shell Backend — дочерний процесс stdin/stdout (LLM = пользователь терминала).
  *
- * 执行命令模板，参数通过 {{param}} 替换注入。
- * stdout 作为结果返回给 LLM。
+ * Выполняет шаблон команды, параметры инжектируются через подстановку {{param}}.
+ * stdout возвращается LLM как результат.
  *
  * @see docs/adr/201-os-for-llm.md
  */
@@ -10,13 +10,13 @@
 import { execFile } from "node:child_process";
 
 /**
- * 模板变量替换（与 http backend 共用逻辑，但 shell 需要转义）。
+ * Подстановка переменных шаблона (логика общая с http backend, но shell требует экранирования).
  */
 export function interpolateShell(template: string, vars: Record<string, unknown>): string {
   return template.replace(/\{\{([^}]+)\}\}/g, (_, key: string) => {
     const value = vars[key.trim()];
     if (value == null) return "''";
-    // shell 安全：单引号包裹，内部单引号用 '\'' 转义
+    // shell-безопасность: оборачиваем в одинарные кавычки, внутренние экранируем через '\''
     const str = String(value);
     return `'${str.replace(/'/g, "'\\''")}'`;
   });
@@ -27,14 +27,14 @@ export interface ShellExecOptions {
   params: Record<string, unknown>;
   cwd?: string;
   timeout: number;
-  /** 额外环境变量（合并到 process.env 之上）。 */
+  /** Дополнительные переменные окружения (объединяются поверх process.env). */
   env?: Record<string, string>;
 }
 
 /**
- * 执行 Shell 命令。
+ * Выполняет Shell-команду.
  *
- * @returns stdout 文本
+ * @returns текст stdout
  */
 export function executeShellCommand(opts: ShellExecOptions): Promise<string> {
   const cmd = interpolateShell(opts.command, opts.params);
@@ -72,14 +72,14 @@ export interface RawCommandOptions {
 }
 
 /**
- * 直接执行命令，不经过 /bin/sh。
+ * Выполняет команду напрямую, минуя /bin/sh.
  *
- * args 作为数组传给 execFile，不经过 shell 解释（防注入）。
+ * args передаются массивом в execFile без shell-интерпретации (защита от инъекций).
  *
- * @param command 可执行文件路径或 PATH 上的命令名
- * @param args 参数数组
- * @param opts 执行选项
- * @returns stdout 文本
+ * @param command путь к исполняемому файлу или имя команды из PATH
+ * @param args массив аргументов
+ * @param opts параметры выполнения
+ * @returns текст stdout
  */
 export function executeRawCommand(
   command: string,

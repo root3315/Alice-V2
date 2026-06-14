@@ -1,13 +1,13 @@
 /**
- * 图查询工具函数。
- * 纯图遍历，不依赖 engine/ 层，供 pressure/、mods/、engine/ 自由导入。
+ * Вспомогательные функции запросов к графу.
+ * Чистый обход графа без зависимости от слоя engine/; свободно импортируется из pressure/, mods/, engine/.
  */
 import type { ConversationState } from "./entities.js";
 import type { WorldModel } from "./world-model.js";
 
 /**
- * 查找频道中处于活跃状态的对话会话。
- * 活跃 = state ∈ {pending, opening, active}
+ * Находит активную диалоговую сессию в канале.
+ * Активная = state ∈ {pending, opening, active}
  */
 export function findActiveConversation(G: WorldModel, channelId: string): string | null {
   for (const convId of G.getEntitiesByType("conversation")) {
@@ -22,8 +22,8 @@ export function findActiveConversation(G: WorldModel, channelId: string): string
 }
 
 /**
- * 查找频道中处于 closing 状态的对话。
- * leave / 超时后对话进入 closing → 对方 directed 消息可重新激活。
+ * Находит диалог в канале в состоянии closing.
+ * После leave / таймаута диалог переходит в closing → входящее directed-сообщение может его переактивировать.
  */
 export function findClosingConversation(G: WorldModel, channelId: string): string | null {
   for (const convId of G.getEntitiesByType("conversation")) {
@@ -36,13 +36,14 @@ export function findClosingConversation(G: WorldModel, channelId: string): strin
 }
 
 /**
- * 查找频道中优先级最高的非终态对话（排除 cooldown）。
- * 优先级：active > opening > pending > closing。
+ * Находит диалог с наивысшим приоритетом в канале, не находящийся в конечном состоянии (cooldown исключён).
+ * Приоритет: active > opening > pending > closing.
  *
- * 与 findActiveConversation 不同：返回 closing 状态对话，
- * 使 gateConversationAware 的 closing 分支和 gateClosingConversation 可达。
+ * В отличие от findActiveConversation: возвращает диалог в состоянии closing,
+ * делая ветку closing gateConversationAware и gateClosingConversation достижимыми.
  *
- * 单活跃对话不变式下至多返回一个，优先级排序是防御性措施。
+ * При инварианте единственного активного диалога возвращает не более одного;
+ * сортировка по приоритету — защитная мера.
  */
 export function findConversationForChannel(G: WorldModel, channelId: string): string | null {
   const PRIORITY: Record<ConversationState, number> = {
@@ -50,7 +51,7 @@ export function findConversationForChannel(G: WorldModel, channelId: string): st
     opening: 4,
     pending: 3,
     closing: 2,
-    cooldown: 1, // 最低优先级但仍可被发现（gateConversationAware 需要感知冷却期）
+    cooldown: 1, // наименьший приоритет, но всё ещё обнаруживается (gateConversationAware должен видеть период охлаждения)
   };
 
   let best: string | null = null;

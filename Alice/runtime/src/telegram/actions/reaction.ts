@@ -1,5 +1,5 @@
 /**
- * reaction 类别动作：react。
+ * Действия категории reaction: react.
  *
  * @see docs/adr/149-define-action-builder.md
  */
@@ -36,7 +36,7 @@ export const reactionActions: TelegramActionDef[] = [
       const graphId = ctx.ensureGraphId(args.chatId);
 
       await sendReaction(ctx.client, rawId, args.msgId, args.emoji);
-      // 审计修复: react 不是消息，不应递增 consecutive_outgoing
+      // Аудиторское исправление: react не является сообщением, не должен увеличивать consecutive_outgoing
       ctx.dispatcher.dispatch("DECLARE_ACTION", { target: graphId, isMessage: false });
 
       ctx.log.info("react executed", {

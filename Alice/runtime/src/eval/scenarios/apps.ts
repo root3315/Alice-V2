@@ -1,27 +1,27 @@
 /**
- * Category B: App Toolkit 场景 — 测试 9 个 App 的正确调用。
+ * Category B: Сценарии App Toolkit — тестирование корректного вызова 9 App.
  *
- * 每个 App 至少一个正例（应调用）+ 若干克制场景（不应调用）。
- * 验证 LLM 在自然对话中能正确选择并调用对应 App，
- * 同时在不需要 App 时保持克制。
+ * Для каждого App минимум один положительный пример (должен вызываться) + несколько сдержанных сценариев (не должен вызываться).
+ * Проверяет, что LLM в естественном диалоге правильно выбирает и вызывает нужный App,
+ * сохраняя сдержанность, когда App не нужен.
  *
- * ADR-138: 所有正例 expectedIntent="engage" + maxSteps: 3（budget 约束）。
- * eval runner 支持多轮 tick：LLM 调用 App 后 stay() → 注入模拟结果 → round 2 send_message。
- * GOAL 通过 actions.must 验证 App 调用 + send_message 完整链路。
+ * ADR-138: все положительные примеры expectedIntent="engage" + maxSteps: 3 (ограничение бюджета).
+ * eval runner поддерживает многораундовый tick: LLM вызывает App → stay() → инжект мок-результата → round 2 send_message.
+ * GOAL верифицируется через actions.must — проверяет полную цепочку вызова App + send_message.
  *
- * App 列表（ADR-132）：
+ * Список App (ADR-132):
  * calendar, weather, browser, trending, music, video, countdown
  *
  * @see docs/adr/132-app-toolkit.md
  * @see docs/adr/138-social-intent-truth-model.md
- * @see runtime/src/telegram/apps/ — App 实现
- * @see runtime/src/engine/act/shell-guide.ts — Shell-native 示例注入
+ * @see runtime/src/telegram/apps/ — реализации App
+ * @see runtime/src/engine/act/shell-guide.ts — инжекция Shell-native примеров
  */
 import type { EvalScenario } from "../types.js";
 
 export const APP_SCENARIOS = [
   // ═══════════════════════════════════════════════════════════════════════════
-  // 正例：每个 App 应被正确调用
+  // Положительные примеры: каждый App должен вызываться корректно
   // ═══════════════════════════════════════════════════════════════════════════
 
   // ── calendar ──────────────────────────────────────────────────────────────
@@ -221,7 +221,7 @@ export const APP_SCENARIOS = [
   },
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 克制场景：不应调用 App
+  // Сдержанные сценарии: App вызываться не должен
   // ═══════════════════════════════════════════════════════════════════════════
 
   {
@@ -290,7 +290,7 @@ export const APP_SCENARIOS = [
   },
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 消融对照：App 能力缺失时的降级行为
+  // Абляционный контроль: деградированное поведение при отсутствии возможностей App
   // ═══════════════════════════════════════════════════════════════════════════
 
   {
@@ -312,13 +312,13 @@ export const APP_SCENARIOS = [
       relationType: "close_friend",
     },
     chatType: "private",
-    // browse 能力不可用
+    // Возможность browse недоступна
     features: { hasTarget: true },
     structural: {
       expectedIntent: "engage",
       maxSteps: 3,
       actions: {
-        // trending 是 browse 不可用时的合理降级（热搜 ≈ 新闻热点）
+        // trending — разумная деградация при недоступном browse (горячие темы ≈ новостные тренды)
         must: ["send_message"],
         must_not: ["google", "visit"],
       },

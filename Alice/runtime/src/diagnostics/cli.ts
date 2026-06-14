@@ -1,7 +1,7 @@
 /**
- * ADR-76 诊断 CLI — 从 alice.db 生成完整行为验证报告。
+ * ADR-76 диагностический CLI — генерирует полный отчёт верификации поведения из alice.db.
  *
- * 用法：pnpm run diagnose [db-path]
+ * Использование: pnpm run diagnose [db-path]
  *
  * @see docs/adr/76-naturalness-validation-methodology.md
  */

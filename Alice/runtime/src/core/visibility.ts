@@ -1,14 +1,14 @@
 /**
- * ADR-172: Information Visibility Layer — 认知隐私边界。
+ * ADR-172: Information Visibility Layer — граница когнитивной приватности.
  *
- * 在 collectContributions() 和 renderContributionsByZone() 之间插入过滤层，
- * 根据当前 prompt 的受众（target chat）过滤跨聊天信息。
+ * Вставляет слой фильтрации между collectContributions() и renderContributionsByZone(),
+ * отсеивая межчатовую информацию по аудитории текущего промпта (target chat).
  *
- * 设计原则（126 号提案）：
- * - 注入什么信息 → 涌现什么行为
- * - 不让 LLM 看到不该看到的信息，比告诉它"别说"更可靠
+ * Принципы проектирования (предложение 126):
+ * - Что инжектируется → то и проявляется в поведении
+ * - Не давать LLM видеть лишнее надёжнее, чем говорить ему «не говори»
  *
- * 论文 Def 7.1 扩展：Contribute → Rank → 【Filter】 → Trim → Inject
+ * Расширение Def 7.1 статьи: Contribute → Rank → 【Filter】 → Trim → Inject
  *
  * @see docs/adr/172-information-visibility-layer.md
  */
@@ -20,24 +20,24 @@ import { ChatTarget } from "../prompt/types.js";
 import type { ContributionItem } from "./types.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 受众上下文
+// Контекст аудитории
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 当前 prompt 的受众上下文 — 决定哪些信息可见。 */
+/** Контекст аудитории текущего промпта — определяет, какая информация видима. */
 export interface AudienceContext {
-  /** target chat 的图节点 ID（如 "channel:123"）。null = 无目标。 */
+  /** ID узла графа для target chat (например "channel:123"). null = цели нет. */
   targetChat: string | null;
-  /** 聊天类型。 */
+  /** Тип чата. */
   chatType: "private" | "group" | "supergroup" | null;
-  /** target contact 的图节点 ID（私聊时有值）。 */
+  /** ID узла графа для target contact (присутствует в личных чатах). */
   targetContact: string | null;
-  /** target 的 Dunbar tier（群聊或未知时为 null）。 */
+  /** Dunbar tier цели (null для групповых чатов или при неизвестном значении). */
   targetTier: number | null;
 }
 
 /**
- * 从 prompt-builder 已有信息推导 AudienceContext。
- * 不需要额外数据源 — target、chatType、G 在 buildTickPrompt 中均已可用。
+ * Выводит AudienceContext из данных, уже доступных в prompt-builder.
+ * Дополнительные источники не нужны — target, chatType, G уже есть в buildTickPrompt.
  */
 export function buildAudienceContext(
   G: WorldModel,
@@ -58,108 +58,108 @@ export function buildAudienceContext(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Section Key 分类
+// Классификация Section Key
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 无跨聊天内容的 key — 直接放行，不过滤。
+ * Ключи без межчатового содержимого — пропускаются напрямую, без фильтрации.
  *
- * 这些 section 要么是普遍适用（时钟），要么已被 contribute() 限定到当前 target
- * （如 conversation、channel-info 等）。
+ * Эти секции либо универсальны (часы), либо уже привязаны к текущей цели через contribute()
+ * (например conversation, channel-info и др.).
  */
 const ALWAYS_VISIBLE = new Set([
-  // 时间/情绪 — 普遍适用
+  // Время/настроение — универсальны
   "wall-clock",
   "self-mood",
   "self-knowledge",
-  // 当前频道信息 — 由 contribute 限定 target
+  // Информация о текущем канале — привязана к target через contribute
   "channel-info",
   "channel-activity",
   "safety-warning",
   "escalation-check",
-  // 对话历史 — 由 timeline 限定 target
+  // История разговора — привязана к target через timeline
   "conversation",
   "conversation-recap",
   "action-echo",
-  // 学习 — per-group 生成
+  // Обучение — генерируется per-group
   "group-jargon",
   "learned-expressions",
-  // feeds — per-channel 注入
+  // Фиды — инжектируются per-channel
   "feeds-channel",
 ]);
 
 /**
- * 纯内务 key — 群聊中整体删除。
+ * Чисто служебные ключи — в групповых чатах удаляются целиком.
  *
- * 这些 section 是 Alice 的内部维护任务（记忆整理、衰减清理），
- * 对群聊决策无价值，且包含跨聊天联系人列表。
+ * Эти секции — внутренние задачи обслуживания Алисы (сортировка памяти, чистка затухания),
+ * не несут ценности для принятия решений в группе и содержат межчатовые списки контактов.
  *
- * 注意：联系人画像/情绪/反馈等社交信息已移入 ENTITY_SCOPED——
- * 群成员相关的社交认知对群聊决策有价值（如知道群友心情不好→说话收着点）。
- * @see ADR-172 原始设计 + 后续修正
+ * Примечание: социальная информация (профили/настроения/обратная связь) перенесена в ENTITY_SCOPED —
+ * социальное восприятие участников группы ценно для групповых решений (например, знать, что у друга плохое настроение → быть осторожнее).
+ * @see ADR-172 оригинальный дизайн + последующие правки
  */
 const GROUP_REDACTED = new Set([
-  "consolidation-hint", // 记忆整理提示（内务）
-  "memory-housekeeping", // 记忆维护（内务）
+  "consolidation-hint", // Подсказка сортировки памяти (служебное)
+  "memory-housekeeping", // Обслуживание памяти (служебное)
 ]);
 
 /**
- * 含多实体信息的 key — 需要逐行过滤。
+ * Ключи с многоэнтитийной информацией — требуют построчной фильтрации.
  *
- * 这些 section 聚合了来自多个频道/联系人的信息（如 situation lines 列出所有频道的状态），
- * 不能整体删除（当前 target 相关的行应保留），需要逐行判断。
+ * Эти секции агрегируют информацию из нескольких каналов/контактов (например situation-строки перечисляют статус всех каналов),
+ * их нельзя удалять целиком (строки, связанные с текущей целью, должны остаться); нужна построчная проверка.
  *
- * 群聊中保留"群成员相关"的行：通过 joined 边获取群成员 display_name，
- * 含群成员名的行 → 保留，含非群成员名的行 → 过滤。
+ * В группах сохраняются строки, связанные с участниками группы: через рёбра joined получаем display_name участников,
+ * строки с именами участников → оставляем, с именами сторонних → удаляем.
  */
 const ENTITY_SCOPED = new Set([
-  "situation", // 压力语义化 — 提及所有频道/联系人
-  "strategy-hints", // 策略提示 — 跨聊天的关系/注意力/危机信息
-  "threads", // 叙事线程 — 包含跨聊天的承诺和 beat
-  "thread-review-hint", // 线程审查提示
-  "scheduler-fired", // 已触发的定时任务 — 可能指向其他聊天
-  "scheduler-upcoming", // 即将触发的定时任务
-  "risk-flags", // 风险标记 — 引用其他频道
-  "outcome-history", // 行动反馈 — 引用其他 target
-  // 社交认知 — 从 GROUP_REDACTED 移入：群成员相关信息对群聊决策有价值
-  "contact-profile", // 联系人画像（群成员的性格/偏好帮助得体互动）
-  "first-impression", // 首次印象（群成员的历史帮助群聊应对）
-  "contact-mood", // 联系人情绪（知道群友心情→调整说话方式）
-  "feedback-loop", // 行为反馈（群内互动质量反思）
-  "strategy-reflection", // 策略反思（对群成员的交互模式认知）
+  "situation", // Семантизация давления — упоминает все каналы/контакты
+  "strategy-hints", // Подсказки стратегии — межчатовые данные об отношениях/внимании/кризисах
+  "threads", // Нарративные нити — содержат обязательства и биты из разных чатов
+  "thread-review-hint", // Подсказка проверки нитей
+  "scheduler-fired", // Сработавшие запланированные задачи — могут указывать на другие чаты
+  "scheduler-upcoming", // Предстоящие запланированные задачи
+  "risk-flags", // Флаги рисков — ссылаются на другие каналы
+  "outcome-history", // Обратная связь по действиям — ссылается на другие target
+  // Социальное восприятие — перенесено из GROUP_REDACTED: информация об участниках группы ценна для групповых решений
+  "contact-profile", // Профиль контакта (характер/предпочтения участника помогают взаимодействовать уместно)
+  "first-impression", // Первое впечатление (история участника помогает в групповом общении)
+  "contact-mood", // Настроение контакта (знать настроение участника → скорректировать тон)
+  "feedback-loop", // Поведенческая обратная связь (рефлексия качества взаимодействия в группе)
+  "strategy-reflection", // Стратегическая рефлексия (осознание паттернов взаимодействия с участниками)
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 过滤实现
+// Реализация фильтрации
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 判断 thread 行块是否对当前 audience 可见。 */
+/** Определяет, видим ли блок строк thread для текущей аудитории. */
 function isThreadBlockVisible(
   headerLine: string,
   audience: AudienceContext,
   G: WorldModel,
 ): boolean {
-  // 私聊不过滤线程 — 允许 Alice 和亲密联系人讨论所有线程
+  // Личные чаты — нити не фильтруются, Alice может обсуждать все нити с близкими контактами
   if (audience.chatType === "private") return true;
 
-  // 群聊中：系统线程不可见
+  // В группах: системные нити не видны
   if (headerLine.includes("[system]")) return false;
 
-  // 群聊中：检查线程 involves 是否包含当前群
+  // В группах: проверяем, входит ли текущая группа в involves нити
   const threadIdMatch = headerLine.match(/^\[#(\d+)\]/);
-  if (!threadIdMatch) return true; // 无法解析，保守放行
+  if (!threadIdMatch) return true; // Не удалось разобрать — пропускаем консервативно
   const threadNodeId = `thread_${threadIdMatch[1]}`;
-  if (!G.has(threadNodeId)) return true; // 图中不存在，保守放行
+  if (!G.has(threadNodeId)) return true; // Нет в графе — пропускаем консервативно
 
   const involves = G.getNeighbors(threadNodeId, "involves");
   return involves.some((id) => id === audience.targetChat || id === audience.targetContact);
 }
 
 /**
- * 对 ENTITY_SCOPED section 逐行过滤。
+ * Построчная фильтрация секций ENTITY_SCOPED.
  *
- * 对 "threads" key 特殊处理：按 thread 块（[#N] 标头开始的连续行）过滤。
- * 对其他 key（situation, strategy-hints 等）：逐行基于实体名可见性过滤。
+ * Для ключа "threads" особая обработка: фильтрация по блокам thread (непрерывные строки, начиная с заголовка [#N]).
+ * Для остальных ключей (situation, strategy-hints и др.): построчная фильтрация по видимости имени сущности.
  */
 function filterEntityScopedSection(
   item: ContributionItem,
@@ -168,26 +168,26 @@ function filterEntityScopedSection(
 ): ContributionItem | null {
   const key = item.key ?? "";
 
-  // ── threads / thread-review-hint：按 thread 块过滤 ──
+  // ── threads / thread-review-hint: фильтрация по блокам thread ──
   if (key === "threads" || key === "thread-review-hint") {
     return filterThreadSection(item, audience, G);
   }
 
-  // ── 其他 entity-scoped keys：逐行过滤 ──
-  // 私聊不过滤（允许完整可见性）
+  // ── Прочие entity-scoped ключи: построчная фильтрация ──
+  // Личные чаты не фильтруются (разрешена полная видимость)
   if (audience.chatType === "private") return item;
 
-  // 群聊：只保留与当前群相关的行
+  // Группы: оставляем только строки, связанные с текущей группой
   const targetNames = collectTargetNames(audience, G);
   const filteredLines = item.lines.filter((line) => {
     const text = String(line);
-    // 如果行中提到当前 target 的 display_name → 保留
+    // Если строка упоминает display_name текущей цели → оставляем
     for (const name of targetNames) {
       if (text.includes(name)) return true;
     }
-    // 通用信息行（如 "Several things happening at once."）→ 保留
+    // Общая информационная строка (например "Several things happening at once.") → оставляем
     if (!containsEntityReference(text, G)) return true;
-    // 提到其他实体 → 删除
+    // Упоминает другие сущности → удаляем
     return false;
   });
 
@@ -195,7 +195,7 @@ function filterEntityScopedSection(
   return { ...item, lines: filteredLines };
 }
 
-/** 按 thread 块过滤 threads section。 */
+/** Фильтрует секцию threads по блокам thread. */
 function filterThreadSection(
   item: ContributionItem,
   audience: AudienceContext,
@@ -207,7 +207,7 @@ function filterThreadSection(
   for (const line of item.lines) {
     const text = String(line);
 
-    // 检测 thread 标头行：[#42] "title" ...
+    // Определяем строку-заголовок thread: [#42] "title" ...
     if (text.match(/^\[#\d+\]/)) {
       currentBlockVisible = isThreadBlockVisible(text, audience, G);
     }
@@ -222,11 +222,11 @@ function filterThreadSection(
 }
 
 /**
- * 收集当前 target 相关的所有可能 display_name。
- * 用于逐行文本匹配 — 如果行中出现了这些名字，说明行与当前 target 相关。
+ * Собирает все возможные display_name, связанные с текущей целью.
+ * Используется для построчного текстового поиска — если имя встречается в строке, строка относится к текущей цели.
  *
- * 群聊时额外包含群成员的 display_name — 群成员相关的社交认知
- * 对群聊决策有价值（如知道群友心情不好→说话收着点）。
+ * Для групп дополнительно включает display_name участников — социальное восприятие участников
+ * ценно для групповых решений (знать, что у участника плохое настроение → говорить осторожнее).
  */
 function collectTargetNames(audience: AudienceContext, G: WorldModel): string[] {
   const names: string[] = [];
@@ -236,7 +236,7 @@ function collectTargetNames(audience: AudienceContext, G: WorldModel): string[] 
     const title = readTitle(G, audience.targetChat);
     if (title) names.push(title);
 
-    // 群成员：通过 joined 边获取群里出现过的联系人
+    // Участники группы: получаем контакты, появлявшиеся в группе, через рёбра joined
     const isGroup = audience.chatType === "group" || audience.chatType === "supergroup";
     if (isGroup) {
       for (const memberId of G.getNeighbors(audience.targetChat, "joined")) {
@@ -255,13 +255,13 @@ function collectTargetNames(audience: AudienceContext, G: WorldModel): string[] 
 }
 
 /**
- * 启发式检测：一行文本是否引用了图中的某个实体。
+ * Эвристическое определение: содержит ли строка текста ссылку на сущность из графа.
  *
- * 通过检查已知 display_name 是否出现在文本中来判断。
- * 不引用任何实体的行（如 "Several things happening at once."）被视为安全的通用信息。
+ * Проверяет, встречается ли известный display_name в тексте.
+ * Строки без ссылок на сущности (например "Several things happening at once.") считаются безопасной общей информацией.
  */
 function containsEntityReference(text: string, G: WorldModel): boolean {
-  // 检查所有 channel 和 contact 的 display_name
+  // Проверяем display_name всех channel и contact
   for (const nodeId of G.getEntitiesByType("channel")) {
     const dn = readDisplayName(G, nodeId);
     if (dn && text.includes(dn)) return true;
@@ -274,36 +274,37 @@ function containsEntityReference(text: string, G: WorldModel): boolean {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 主入口
+// Главная точка входа
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 对 mod 贡献列表应用可见性过滤。
+ * Применяет фильтр видимости к списку вкладов mod.
  *
- * 插入 Contribute → Rank → 【Filter】 → Trim → Inject 管线。
- * 根据 audience 的 chatType 和 target 信息，过滤/删除不应该在当前 prompt 中出现的内容。
+ * Вставляется в конвейер Contribute → Rank → 【Filter】 → Trim → Inject.
+ * Фильтрует/удаляет содержимое, которое не должно появляться в текущем промпте,
+ * исходя из chatType и target в audience.
  *
- * 私聊基本不过滤（Alice 和用户之间可以讨论任何话题）。
- * 群聊过滤（标准：对群聊决策是否有价值）：
- * - GROUP_REDACTED keys 整体删除（纯内务，无决策价值）
- * - ENTITY_SCOPED keys 逐行过滤，保留群成员相关 + 当前群相关的实体
- * - ALWAYS_VISIBLE keys 和 header/footer 直接放行
- * - 未分类的 key 默认放行（安全侧 — 新 mod 的 contribute 默认可见）
+ * Личные чаты практически не фильтруются (Alice и пользователь могут обсуждать любые темы).
+ * Групповые чаты фильтруются (критерий: ценность для принятия решений в группе):
+ * - GROUP_REDACTED ключи удаляются целиком (чисто служебные, без ценности для решений)
+ * - ENTITY_SCOPED ключи фильтруются построчно: сохраняются строки о членах группы + текущей группе
+ * - ALWAYS_VISIBLE ключи и header/footer пропускаются напрямую
+ * - Неклассифицированные ключи пропускаются по умолчанию (консервативная сторона — вклады новых mod видны)
  */
 export function applyVisibilityFilter(
   items: ContributionItem[],
   audience: AudienceContext,
   G: WorldModel,
 ): ContributionItem[] {
-  // 私聊不过滤 — Alice 和用户之间可以讨论任何话题
+  // Личные чаты не фильтруются — Alice и пользователь могут обсуждать любые темы
   if (audience.chatType === "private" || audience.chatType === null) {
     return items;
   }
 
-  // 群聊过滤
+  // Фильтрация группового чата
   const result: ContributionItem[] = [];
   for (const item of items) {
-    // header 和 footer 始终放行（人格、指令手册、脚注）
+    // header и footer всегда пропускаются (личность, руководство по командам, сноски)
     if (item.bucket === "header" || item.bucket === "footer") {
       result.push(item);
       continue;
@@ -311,7 +312,7 @@ export function applyVisibilityFilter(
 
     const key = item.key ?? "";
 
-    // group-dynamics-* key 是按 channelId 动态生成的，天然 scoped
+    // group-dynamics-* ключи генерируются динамически по channelId, по природе своей scoped
     if (key.startsWith("group-dynamics-")) {
       result.push(item);
       continue;
@@ -323,7 +324,7 @@ export function applyVisibilityFilter(
     }
 
     if (GROUP_REDACTED.has(key)) {
-      // 群聊中删除整个 section
+      // В группе удаляем секцию целиком
       continue;
     }
 
@@ -333,7 +334,7 @@ export function applyVisibilityFilter(
       continue;
     }
 
-    // 未分类 key — 默认放行（保守策略，避免意外丢失新 mod 的贡献）
+    // Неклассифицированный ключ — пропускаем по умолчанию (консервативная стратегия, чтобы случайно не потерять вклады новых mod)
     result.push(item);
   }
 

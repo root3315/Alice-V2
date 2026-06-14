@@ -1,16 +1,16 @@
 /**
- * Relationships Mod — 联系人档案 + 结构化画像 + 语言检测。
+ * Relationships Mod — профили контактов + структурированный портрет + определение языка.
  *
- * 对应叙事引擎的 relation mod + affect mod：
- * - 为每个联系人维护画像信息（语言偏好、互动次数、关系层级）
- * - M2: 结构化 ContactProfile（沟通风格、活跃时段、情绪基线、兴趣标签）
- * - 向 Storyteller 贡献联系人上下文（section 桶）
+ * Соответствует relation mod + affect mod нарративного движка:
+ * - Поддерживает профиль каждого контакта (языковые предпочтения, число взаимодействий, уровень отношений)
+ * - M2: структурированный ContactProfile (стиль общения, часы активности, эмоциональный базис, теги интересов)
+ * - Вносит контекст контактов в Storyteller (section-корзины)
  *
- * 指令：set_language, set_relation_type, note_active_hour, tag_interest, self_note, recall_fact, update_fact, delete_fact, synthesize_portrait, update_group_profile
- * 查询：contactProfile, languageOf
+ * Инструкции: set_language, set_relation_type, note_active_hour, tag_interest, self_note, recall_fact, update_fact, delete_fact, synthesize_portrait, update_group_profile
+ * Запросы: contactProfile, languageOf
  *
- * 参考: narrative-engine/mods/relation/index.ts
- * 参考: narrative-framework-paper §5 (P_ρ relationship priority)
+ * Ссылка: narrative-engine/mods/relation/index.ts
+ * Ссылка: narrative-framework-paper §5 (P_ρ relationship priority)
  */
 import { and, eq, gt, lte, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -63,13 +63,14 @@ import { retrievability as calcRetrievability } from "../utils/math.js";
 import { humanDurationAgo } from "../utils/time-format.js";
 
 /**
- * ADR-151 T3: Tier → 语气指导映射。
- * Zhao 2025 EMNLP: LLM 过度依赖消极礼貌（敬语、间接表达），
- * 显式注入礼貌策略可纠偏，让 intimate 联系人获得积极礼貌（随意、直接）。
+ * ADR-151 T3: Сопоставление Tier → тональные рекомендации.
+ * Zhao 2025 EMNLP: LLM чрезмерно опирается на негативную вежливость (обращения, косвенность);
+ * явное внедрение стратегии вежливости корректирует перекос, давая intimate-контактам
+ * позитивную вежливость (непринуждённость, прямота).
  *
- * IM 校准（ADR-151 Wave 1）：tier 50+ 向随意方向偏移一级。
- * 依据：IM 是非正式通信渠道，emoji/sticker 消解正式性，
- * 即使不太熟的人在 IM 中也很少使用极正式措辞。
+ * Калибровка для IM (ADR-151 Wave 1): tier 50+ смещается на одну ступень в сторону непринуждённости.
+ * Основание: IM — неформальный канал, emoji/стикеры снижают официальность,
+ * даже малознакомые люди в IM редко используют сугубо официальный стиль.
  * @see docs/adr/151-algorithm-audit/priority-ranking.md
  * @see docs/adr/151-algorithm-audit/research-online-calibration.md §4.1
  */
@@ -81,11 +82,11 @@ const TIER_TONE_GUIDANCE: Record<number, string> = {
   500: "С {name} будь вежливой и корректной",
 };
 
-// -- 图节点事实辅助 -----------------------------------------------------------
+// -- Вспомогательные функции для фактов графовых узлов ------------------------
 
 /**
- * ADR-47 G6: 归一化事实内容用于去重。
- * lowercase + trim + collapse whitespace → 宽松匹配。
+ * ADR-47 G6: Нормализовать содержимое факта для дедупликации.
+ * lowercase + trim + collapse whitespace → нестрогое сопоставление.
  */
 export function normalizeFactContent(content: string): string {
   return content.toLowerCase().trim().replace(/\s+/g, " ");
@@ -94,33 +95,33 @@ export function normalizeFactContent(content: string): string {
 /** Module-level counter for unique fact node IDs. */
 let _factIdCounter = 0;
 
-/** 生成唯一的 fact 节点 ID。 */
+/** Сгенерировать уникальный ID узла fact. */
 function nextFactId(): string {
   return `fact_${_factIdCounter++}_${Date.now()}`;
 }
 
 /**
- * 从 fact 节点属性计算 retrievability。
- * ADR-110: 接受 nowMs（墙钟毫秒），内部转为秒进行遗忘曲线计算。
- * ADR-46 F1: Δt 除以 FACT_TIME_SCALE 将秒级遗忘转换为天级遗忘。
- * 复用 utils/math.ts 的 retrievability 函数（传入缩放后的 gap）。
+ * Вычислить retrievability по атрибутам узла fact.
+ * ADR-110: Принимает nowMs (миллисекунды настенных часов), внутри переводит в секунды для расчёта кривой забывания.
+ * ADR-46 F1: Δt делится на FACT_TIME_SCALE, преобразуя забывание из секундного в дневное.
+ * Используется функция retrievability из utils/math.ts (передаётся масштабированный gap).
  * @see docs/adr/46-real-data-calibration.md §2 Wave 1
  */
 export function factRetrievabilityFromNode(attrs: FactAttrs, nowMs: number): number {
-  // ADR-154: FactAttrs 已统一为 last_access_ms（墙钟 ms）
+  // ADR-154: FactAttrs унифицированы в last_access_ms (настенные часы, мс)
   const gapS = Math.max(0, (nowMs - attrs.last_access_ms) / 1000);
-  const scaledGap = gapS / FACT_TIME_SCALE; // FACT_TIME_SCALE = 86400（秒/天）
-  // retrievability(t, t0, S, d) — 传入 scaledGap 作为 t，0 作为 t0
+  const scaledGap = gapS / FACT_TIME_SCALE; // FACT_TIME_SCALE = 86400 (секунд/день)
+  // retrievability(t, t0, S, d) — передаётся scaledGap как t, 0 как t0
   return calcRetrievability(scaledGap, 0, attrs.stability, FACT_DECAY_D);
 }
 
 /**
- * ADR-156: 计算事实的情感反应度 E(t)。
+ * ADR-156: Вычислить эмоциональную реактивность факта E(t).
  *
  * E(t) = E₀ · exp(-ln2 · Δt / τ_half)
  *
- * 半衰期 2h：t=0h→1.0, t=2h→0.5, t=4h→0.25, t=8h→0.06。
- * 无 reactivity 字段的事实返回 0（中性事实，向后兼容）。
+ * Период полураспада 2ч: t=0h→1.0, t=2h→0.5, t=4h→0.25, t=8h→0.06.
+ * Факты без поля reactivity возвращают 0 (нейтральные факты, обратная совместимость).
  *
  * @see docs/adr/156-emotional-reactivity-damping.md §E(t)
  */
@@ -132,8 +133,8 @@ export function factEmotionalReactivity(attrs: FactAttrs, nowMs: number): number
 }
 
 /**
- * 查找联系人/agent 的所有 fact 事实节点。
- * 通过 "knows" 边遍历邻居，过滤 fact 类型。
+ * Найти все узлы-факты контакта/агента.
+ * Обход соседей по рёбрам "knows" с фильтрацией по типу fact.
  */
 export function getContactFacts(
   graph: WorldModel,
@@ -150,37 +151,38 @@ export function getContactFacts(
 }
 
 /**
- * ADR-117 D2: 防御守卫 — 将传入的 ID 解析为 contact 类型节点。
- * LLM 可能传入 channel/fact 等非 contact ID，通过 `knows` 反向边追溯真实联系人。
- * @returns contact 节点 ID，或 null（无法解析时）。
+ * ADR-117 D2: Защитный guard — разрешить переданный ID в узел типа contact.
+ * LLM может передавать не-contact ID (channel/fact и т.д.); поиск реального контакта ведётся по обратным рёбрам `knows`.
+ * @returns ID узла contact или null (если разрешить не удалось).
  */
 function resolveContactId(graph: WorldModel, rawId: string): string | null {
   const telegramNativeId = extractNumericId(rawId);
   const nodeId = telegramNativeId != null ? telegramContactId(telegramNativeId) : rawId;
   if (!graph.has(nodeId)) return null;
   if (graph.getNodeType(nodeId) === "contact") return nodeId;
-  // 非 contact 类型 → 反向追溯 knows 边
+  // Не тип contact → обратный поиск по рёбрам knows
   const predecessors = graph.getPredecessors(nodeId, "knows");
   return predecessors.find((pid) => graph.has(pid) && graph.getNodeType(pid) === "contact") ?? null;
 }
 
-// -- ADR-206 W8: 频道社交全景 -------------------------------------------------
+// -- ADR-206 W8: Социальная панорама канала -----------------------------------
 
 const PANORAMA_MAX_CONTACTS = 8;
 const PANORAMA_MAX_CHARS = 400;
-// 放宽到 500：频道转发的社交全景需要兴趣匹配，而兴趣标签积累集中在 tier=500 的联系人
-//（close contacts 的 tag_interest 尚未充分生效）。PANORAMA_MAX_CONTACTS=8 + 排序逻辑
-// 保证只展示最相关的人，不会因为放宽 tier 而灌水。
+// Расширено до 500: социальная панорама для пересылки в канал требует совпадения интересов,
+// а накопление тегов интересов сосредоточено у контактов с tier=500
+// (tag_interest для close contacts ещё не набрал силу). PANORAMA_MAX_CONTACTS=8 + логика сортировки
+// гарантируют показ только наиболее релевантных людей без «разводнения» от расширения tier.
 const PANORAMA_MAX_TIER: DunbarTier = 500;
 const PANORAMA_MAX_INTERESTS = 2;
 
 /**
- * ADR-206 W8: 构建精简社交全景——频道 tick 中帮助 Alice 决定转发目标。
+ * ADR-206 W8: Сформировать компактную социальную панораму — помогает Alice выбрать цель пересылки в тик канала.
  *
- * 提取 close contacts（tier ≤ 50），为每人渲染一行摘要：
+ * Извлекает close contacts (tier ≤ 50), для каждого рендерит строку-резюме:
  *   display_name (tier_label) — interests | last interaction | share frequency
  *
- * @see docs/adr/206-channel-information-flow/ §12 收归转发职责
+ * @see docs/adr/206-channel-information-flow/ §12 консолидация ответственности за пересылку
  */
 export function buildSocialPanorama(
   G: WorldModel,
@@ -194,7 +196,7 @@ export function buildSocialPanorama(
   const lines: PromptLine[] = [];
   let totalChars = 0;
 
-  // -- 联系人段 --
+  // -- Секция контактов --
   const acquaintances = G.getNeighbors(ALICE_SELF, "acquaintance");
   const contactCandidates: Array<{
     name: string;
@@ -218,7 +220,7 @@ export function buildSocialPanorama(
     const name = safeDisplayName(G, cid);
     const profile = contactProfiles[cid];
 
-    // ADR-208: 优先使用结晶兴趣，回退旧 interests[]
+    // ADR-208: Приоритет — кристаллизованные интересы, fallback — старый interests[]
     const crystallized = Object.values(profile?.crystallizedInterests ?? {})
       .sort((a, b) => b.confidence - a.confidence)
       .slice(0, PANORAMA_MAX_INTERESTS)
@@ -233,7 +235,7 @@ export function buildSocialPanorama(
       ? Number(G.getDynamic(privateCh, "last_shared_ms") ?? 0)
       : 0;
 
-    // ADR-208 W2: top-1 特质（按 |value| 降序）
+    // ADR-208 W2: топ-1 черта характера (по убыванию |value|)
     const traitEntries = Object.entries(profile?.traits ?? {});
     const topTrait =
       traitEntries.length > 0
@@ -243,7 +245,7 @@ export function buildSocialPanorama(
     contactCandidates.push({ name, tier, interests, lastActiveMs, lastSharedToMs, topTrait });
   }
 
-  // 有兴趣标签的人优先（频道转发场景的核心信号），然后按 tier 升序、活跃度降序
+  // Приоритет — люди с тегами интересов (ключевой сигнал для пересылки в канал), затем по tier (по возрастанию) и активности (по убыванию)
   contactCandidates.sort((a, b) => {
     const aHas = a.interests.length > 0 ? 0 : 1;
     const bHas = b.interests.length > 0 ? 0 : 1;
@@ -266,7 +268,7 @@ export function buildSocialPanorama(
     lines.push(`- ${line}` as PromptLine);
   }
 
-  // -- ADR-208: 群组段 --
+  // -- ADR-208: Секция групп --
   const PANORAMA_MAX_GROUPS = 4;
   const joinedChannels = G.getNeighbors(ALICE_SELF, "joined");
   const groupCandidates: Array<{ name: string; interests: string[]; topic: string | null }> = [];
@@ -305,7 +307,7 @@ export function buildSocialPanorama(
   return lines;
 }
 
-/** 将毫秒时间差转为自然语言。 */
+/** Перевести разницу времени в миллисекундах в естественный язык. */
 function formatElapsed(ms: number): string {
   const mins = Math.floor(ms / 60_000);
   if (mins < 60) return `${mins}m`;
@@ -315,97 +317,97 @@ function formatElapsed(ms: number): string {
   return `${days}d`;
 }
 
-// -- Mod 状态 -----------------------------------------------------------------
+// -- Состояние Mod ------------------------------------------------------------
 
 /**
- * ADR-208: 结晶兴趣 — 单极 [0,1] 置信度，BeliefStore interest: 域沉淀。
- * 与 CrystallizedTrait 的双极 [-1,1] 不同：兴趣只有"有/无"，没有反面。
+ * ADR-208: Кристаллизованный интерес — унимодальная достоверность [0,1], осадок из домена interest: в BeliefStore.
+ * В отличие от биполярного [-1,1] CrystallizedTrait: интерес только «есть/нет», обратной стороны нет.
  * @see docs/adr/208-cognitive-label-interest-domain.md
  */
 export interface CrystallizedInterest {
-  /** 归一化标签（lowercase, underscore-separated）。 */
+  /** Нормализованный тег (lowercase, через подчёркивание). */
   label: string;
-  /** 置信度 [0,1]，从 BeliefStore μ 派生。 */
+  /** Достоверность [0,1], производная от μ BeliefStore. */
   confidence: number;
-  /** 结晶发生的 tick。 */
+  /** Тик, в котором произошла кристаллизация. */
   crystallizedAt: number;
-  /** 结晶发生的墙钟时间（ms）。 */
+  /** Время кристаллизации (настенные часы, мс). */
   crystallizedAtMs: number;
-  /** 上次被 tag_interest 强化的 tick。 */
+  /** Тик последнего усиления через tag_interest. */
   lastReinforced: number;
-  /** 上次被 tag_interest 强化的墙钟时间（ms）。 */
+  /** Время последнего усиления через tag_interest (настенные часы, мс). */
   lastReinforcedMs: number;
 }
 
 /**
- * ADR-89: 结晶特质 — 多次一致观察后从 BeliefStore 沉淀的持久特质。
+ * ADR-89: Кристаллизованная черта — устойчивая черта характера, осаждённая из BeliefStore после многократных согласованных наблюдений.
  * @see docs/adr/89-impression-formation-system.md §Wave 2
  */
 export interface CrystallizedTrait {
-  /** 特质值 [-1, 1]，正/负对应 bipolar 维度的两极。 */
+  /** Значение черты [-1, 1], положительное/отрицательное соответствует полюсам биполярного измерения. */
   value: number;
-  /** 结晶发生的 tick。 */
+  /** Тик, в котором произошла кристаллизация. */
   crystallizedAt: number;
-  /** ADR-110: 结晶发生的墙钟时间（ms）。新数据必有，旧数据可能缺失。 */
+  /** ADR-110: Время кристаллизации (настенные часы, мс). Обязательно для новых данных, может отсутствовать в старых. */
   crystallizedAtMs?: number;
-  /** 上次被 self_sense 强化的 tick。 */
+  /** Тик последнего усиления через self_sense. */
   lastReinforced: number;
-  /** ADR-110: 上次被 self_sense 强化的墙钟时间（ms）。新数据必有，旧数据可能缺失。 */
+  /** ADR-110: Время последнего усиления через self_sense (настенные часы, мс). Обязательно для новых данных, может отсутствовать в старых. */
   lastReinforcedMs?: number;
 }
 
-/** M2: 联系人结构化画像。 */
+/** M2: Структурированный профиль контакта. */
 export interface ContactProfile {
-  // ADR-198 F10: communicationStyle 已移除（与 portrait 重叠）
-  // ADR-198 F10: moodBaseline 已移除（传数值违反语义无障碍）
-  /** 活跃时段 EMA 直方图（24 小时槽位，归一化后的活跃度）。 */
+  // ADR-198 F10: communicationStyle удалён (пересекается с portrait)
+  // ADR-198 F10: moodBaseline удалён (числовой показатель нарушает семантическую доступность)
+  /** EMA-гистограмма часов активности (24 слота, нормализованная активность). */
   activeHours: number[];
-  /** 兴趣标签（LLM 通过 tag_interest 提取，最多 10 个）。 */
+  /** Теги интересов (извлекаются LLM через tag_interest, не более 10). */
   interests: string[];
-  /** 上次更新 tick。 */
+  /** Тик последнего обновления. */
   lastUpdatedTick: number;
-  /** ADR-110: 上次更新的墙钟时间（ms）。新数据必有，旧数据可能缺失。 */
+  /** ADR-110: Время последнего обновления (настенные часы, мс). Обязательно для новых данных, может отсутствовать в старых. */
   lastUpdatedMs?: number;
-  // ADR-198 F9: trust 字段已删除。信任度统一由 rv_trust（图属性）管理。
-  // 旧 state 中残留的 trust 值成为死数据，不再被读取。
-  /** 上次 tier 评估时的峰值活跃小时（用于检测模式变化）。 */
+  // ADR-198 F9: поле trust удалено. Доверие теперь единообразно управляется через rv_trust (атрибут графа).
+  // Остаточные значения trust в старом state становятся мёртвыми данными и больше не читаются.
+  /** Пиковый час активности на момент последней оценки tier (для обнаружения изменений паттерна). */
   previousPeakHour: number | null;
-  /** 最近检测到的日程变化描述（如果有）。 */
+  /** Описание последнего обнаруженного изменения расписания (если есть). */
   scheduleShift: string | null;
-  /** ADR-64 VI-3: 综合印象叙事（LLM 通过 synthesize_portrait 生成）。 */
+  /** ADR-64 VI-3: Сводный нарратив впечатлений (генерируется LLM через synthesize_portrait). */
   portrait: string | null;
-  /** ADR-64 VI-3: 印象上次更新 tick。 */
+  /** ADR-64 VI-3: Тик последнего обновления впечатления. */
   portraitTick: number | null;
-  /** ADR-110: 印象上次更新的墙钟时间（ms）。新数据必有，旧数据可能缺失。 */
+  /** ADR-110: Время последнего обновления впечатления (настенные часы, мс). Обязательно для новых данных, может отсутствовать в старых. */
   portraitMs?: number | null;
-  /** ADR-89: 结晶特质 (dimension → CrystallizedTrait)。多次一致观察后从 BeliefStore 沉淀。 */
+  /** ADR-89: Кристаллизованные черты (dimension → CrystallizedTrait). Осаждаются из BeliefStore после многократных согласованных наблюдений. */
   traits: Record<string, CrystallizedTrait>;
-  /** ADR-208: 结晶兴趣 (label → CrystallizedInterest)。从 BeliefStore interest: 域沉淀。旧数据可能缺失。 */
+  /** ADR-208: Кристаллизованные интересы (label → CrystallizedInterest). Осаждаются из домена interest: в BeliefStore. Могут отсутствовать в старых данных. */
   crystallizedInterests?: Record<string, CrystallizedInterest>;
 }
 
 /**
- * ADR-64 VI-4: 群组画像。
- * 追踪群组的主题定位、社交氛围、Alice 的角色和关键成员。
+ * ADR-64 VI-4: Профиль группы.
+ * Отслеживает тематику группы, социальную атмосферу, роль Alice и ключевых участников.
  */
 export interface GroupProfile {
-  /** 群组主题/话题方向（LLM 生成）。 */
+  /** Тема/направление обсуждений группы (генерируется LLM). */
   topic: string | null;
-  /** 群组社交氛围描述。 */
+  /** Описание социальной атмосферы группы. */
   atmosphere: string | null;
-  /** Alice 在群中的角色定位。 */
+  /** Роль Alice в группе. */
   aliceRole: string | null;
-  /** 关键成员描述。 */
+  /** Описание ключевых участников. */
   memberHighlights: string | null;
-  /** 上次更新 tick。 */
+  /** Тик последнего обновления. */
   portraitTick: number | null;
-  /** ADR-110: 上次更新的墙钟时间（ms）。新数据必有，旧数据可能缺失。 */
+  /** ADR-110: Время последнего обновления (настенные часы, мс). Обязательно для новых данных, может отсутствовать в старых. */
   portraitMs?: number | null;
-  /** ADR-208: 结晶兴趣/话题标签 (label → CrystallizedInterest)。旧数据可能缺失。 */
+  /** ADR-208: Кристаллизованные интересы/теги тем (label → CrystallizedInterest). Могут отсутствовать в старых данных. */
   crystallizedInterests?: Record<string, CrystallizedInterest>;
 }
 
-/** 创建空白画像。 */
+/** Создать пустой профиль. */
 function emptyProfile(tick: number, nowMs?: number): ContactProfile {
   return {
     activeHours: new Array(24).fill(0),
@@ -462,7 +464,7 @@ function normalizeContactProfileKeys(
   }
 }
 
-/** ADR-64 VI-4: 创建空白群组画像。 */
+/** ADR-64 VI-4: Создать пустой профиль группы. */
 function emptyGroupProfile(): GroupProfile {
   return {
     topic: null,
@@ -476,155 +478,155 @@ function emptyGroupProfile(): GroupProfile {
 }
 
 /**
- * 活跃时段 EMA 更新系数。
- * EMA α = 0.1: 10-sample effective window，适合慢变化信号（频率基线、活跃模式）。
- * 通信工程标准做法：α = 2/(N+1)，N=19 → α ≈ 0.1。
+ * Коэффициент EMA-обновления часов активности.
+ * EMA α = 0.1: эффективное окно 10 выборок — подходит для медленно меняющихся сигналов (частотный базис, паттерны активности).
+ * Стандарт теории связи: α = 2/(N+1), N=19 → α ≈ 0.1.
  */
 const ACTIVE_HOURS_ALPHA = 0.1;
 /**
- * 情绪基线 EMA 更新系数。
- * ADR-198: MOOD_BASELINE_ALPHA 已删除（moodBaseline 字段已移除）。
+ * Коэффициент EMA-обновления эмоционального базиса.
+ * ADR-198: MOOD_BASELINE_ALPHA удалён (поле moodBaseline удалено).
  */
 
-/** self 节点 facts 容量（高于普通联系人的 20 条）。 */
+/** Ёмкость фактов узла self (превышает 20 фактов обычного контакта). */
 const SELF_FACTS_LIMIT = 50;
-/** 普通联系人 facts 容量。 */
+/** Ёмкость фактов обычного контакта. */
 const CONTACT_FACTS_LIMIT = 20;
 
-// ADR-41: 选择性上下文——top-N 注入防止写入-读取回声室
+// ADR-41: Выборочный контекст — инжекция top-N предотвращает эхо-камеру запись–чтение
 /**
- * contribute() 注入目标联系人 memorized facts 的上限。
- * ADR-46 C5 (ADR-41 专家共识 5): 10 → 7。
- * 认知科学依据: Miller's Law 7±2 + LLM lost-in-the-middle 效应。
- * @see docs/adr/41-write-read-loop-self-evolution.md §专家圆桌共识 5
+ * Лимит memorized facts целевого контакта, инжектируемых в contribute().
+ * ADR-46 C5 (экспертный консенсус ADR-41 п.5): 10 → 7.
+ * Когнитивная наука: закон Миллера 7±2 + эффект lost-in-the-middle у LLM.
+ * @see docs/adr/41-write-read-loop-self-evolution.md §экспертный круглый стол, консенсус 5
  */
 const MAX_INJECTED_FACTS = 7;
 /**
- * contribute() 注入 self memorized facts 的上限。
- * ADR-46 C5: 15 → 10（自我知识配额仍高于联系人，但更紧凑）。
+ * Лимит self memorized facts, инжектируемых в contribute().
+ * ADR-46 C5: 15 → 10 (квота для собственных знаний по-прежнему выше, чем для контактов, но компактнее).
  */
 const MAX_INJECTED_SELF_FACTS = 10;
 
-// -- M4: Tier 演化引擎 --------------------------------------------------------
+// -- M4: Движок эволюции Tier -------------------------------------------------
 
 /**
- * Dunbar 层级阶梯。Tier 只沿阶梯移动，不跳级。
+ * Лесенка уровней Данбара. Tier движется только по ступеням, без пропусков.
  * 500(known) → 150(acquaintance) → 50(friend) → 15(close friend) → 5(intimate)
  */
 export const DUNBAR_TIERS = [500, 150, 50, 15, 5] as const;
 
-/** Tier 演化评估间隔（ticks）。 */
+/** Интервал оценки эволюции Tier (тики). */
 export const TIER_EVAL_INTERVAL = 100;
 /**
- * 升级连续阈值。
- * 阈值标定: 三分位设计 — 0.7 = top 30% 升级, 0.3 = bottom 30% 降级。
- * 基于 Granovetter (1973) 弱关系理论的非对称升降级：
- * 升级需要强信号（top 30%），降级需要持续弱信号（连续 5 次 bottom 30%）。
- * 非对称保护防止睡眠期误降级。
+ * Порог последовательного повышения tier.
+ * Калибровка: квартильная схема — 0.7 = повышение в top 30%, 0.3 = понижение в bottom 30%.
+ * Асимметричное повышение/понижение по Granovetter (1973), теория слабых связей:
+ * повышение требует сильного сигнала (top 30%), понижение — устойчивого слабого (5 раз подряд bottom 30%).
+ * Асимметрия защищает от ошибочного понижения во время сна.
  */
 export const TIER_UPGRADE_THRESHOLD = 0.7;
 /**
- * 降级连续阈值。
- * @see TIER_UPGRADE_THRESHOLD 阈值标定说明
+ * Порог последовательного понижения tier.
+ * @see TIER_UPGRADE_THRESHOLD — описание калибровки порогов
  */
 export const TIER_DOWNGRADE_THRESHOLD = 0.3;
-/** 升级连续次数要求。 */
+/** Требуемое число последовательных повышений для апгрейда. */
 export const TIER_CONSECUTIVE_REQUIRED = 3;
 /**
- * 降级连续次数要求（非对称，更保守）。
- * 关系建立比关系流失慢——升级 3 次（5 小时），降级 5 次（~8.3 小时）。
- * 避免 Alice 睡眠/离线期间的 5 小时静默触发 intimate → close_friend 误降级。
- * @see Gilbert & Karahalios (2009) — 关系强度评估的非对称性
+ * Требуемое число последовательных понижений для даунгрейда (асимметрично, более консервативно).
+ * Отношения строятся медленнее, чем разрушаются — апгрейд за 3 раза (5 ч), даунгрейд за 5 (~8.3 ч).
+ * Защита от ошибочного понижения intimate → close_friend при 5-часовом молчании во время сна/офлайна Alice.
+ * @see Gilbert & Karahalios (2009) — асимметрия оценки силы связей
  */
 export const TIER_DOWNGRADE_CONSECUTIVE = 5;
 
 /**
- * ADR-110: Frequency 评估窗口（秒）。
- * ADR-45 真实数据标定: D1=5.6/天, D2=2.3/天。
- * FREQUENCY_WINDOW_S=86400 (1 天 = 86400 秒)。
- * 与 TIER_EVAL_INTERVAL（评估频率）解耦：每 100 ticks 评估一次，但回看完整 1 天的数据。
+ * ADR-110: Окно оценки Frequency (секунды).
+ * ADR-45 калибровка по реальным данным: D1=5.6/день, D2=2.3/день.
+ * FREQUENCY_WINDOW_S=86400 (1 день = 86400 секунд).
+ * Отвязан от TIER_EVAL_INTERVAL (частота оценки): оценивается раз в 100 тиков, но смотрит на полный день данных.
  * @see docs/adr/45-real-data-validation.md §5 F5
  * @see docs/adr/46-real-data-calibration.md
  */
 const FREQUENCY_WINDOW_S = 86400;
 
-// -- ADR-89: 印象结晶参数 --------------------------------------------------
+// -- ADR-89: Параметры кристаллизации впечатлений --------------------------
 
-/** 结晶条件：σ² 低于此值（多次一致观察后方差收敛）。 */
+/** Условие кристаллизации: σ² ниже этого значения (дисперсия сходится после многократных согласованных наблюдений). */
 const CRYSTALLIZE_SIGMA2 = 0.05;
-/** 结晶条件：至少 N 次 self_sense 观察。 */
+/** Условие кристаллизации: не менее N наблюдений через self_sense. */
 const CRYSTALLIZE_MIN_OBS = 3;
-/** 结晶条件：|μ| 超过此值（排除中性特质）。 */
+/** Условие кристаллизации: |μ| превышает это значение (нейтральные черты исключаются). */
 const CRYSTALLIZE_MU_THRESHOLD = 0.2;
-/** ADR-110: 结晶特质慢衰减半衰期（秒）：604800 秒 = 7 天。 */
+/** ADR-110: Период полураспада медленного затухания кристаллизованной черты (секунды): 604800 с = 7 дней. */
 const CRYSTALLIZED_TRAIT_HALFLIFE_S = 604800;
-/** 结晶特质消亡阈值：|value| 低于此值时删除。 */
+/** Порог исчезновения кристаллизованной черты: удаляется при |value| ниже этого значения. */
 const CRYSTALLIZED_TRAIT_EPSILON = 0.05;
 
-// -- ADR-208: 兴趣结晶参数 ---------------------------------------------------
+// -- ADR-208: Параметры кристаллизации интересов ----------------------------
 // @see docs/adr/208-cognitive-label-interest-domain.md
 
-/** 兴趣结晶条件：σ² 低于此值（比 trait 的 0.05 略宽松，与 jargon 的 0.08 居中）。 */
+/** Условие кристаллизации интереса: σ² ниже этого значения (чуть мягче 0.05 для черт, среднее с 0.08 для jargon). */
 const INTEREST_CRYSTALLIZE_SIGMA2 = 0.06;
-/** 兴趣结晶条件：至少 N 次 tag_interest 观察（与 jargon 的 2 对齐）。 */
+/** Условие кристаллизации интереса: не менее N наблюдений через tag_interest (согласовано с 2 для jargon). */
 const INTEREST_CRYSTALLIZE_MIN_OBS = 2;
-/** 兴趣结晶条件：μ 超过此值（单极，仅正方向有意义）。 */
+/** Условие кристаллизации интереса: μ превышает это значение (унимодальная, значима только в положительном направлении). */
 const INTEREST_CRYSTALLIZE_MU_THRESHOLD = 0.3;
-/** 结晶兴趣慢衰减半衰期（秒）：30 天。兴趣比性格更稳定。 */
+/** Период полураспада медленного затухания кристаллизованного интереса (секунды): 30 дней. Интересы стабильнее личностных черт. */
 const CRYSTALLIZED_INTEREST_HALFLIFE_S = 2_592_000;
-/** 结晶兴趣消亡阈值：confidence 低于此值时删除。 */
+/** Порог исчезновения кристаллизованного интереса: удаляется при confidence ниже этого значения. */
 const CRYSTALLIZED_INTEREST_EPSILON = 0.05;
-/** ADR-121 Layer 3: Consolidation Hint — facts 数量阈值（≤ 此值时触发提示）。 */
+/** ADR-121 Layer 3: Consolidation Hint — порог количества фактов (подсказка срабатывает при ≤ этого значения). */
 const CONSOLIDATION_MAX_FACTS = 2;
-/** ADR-121 Layer 3: Consolidation Hint — 最少交互次数（> 此值时触发提示）。 */
+/** ADR-121 Layer 3: Consolidation Hint — минимальное число взаимодействий (подсказка срабатывает при > этого значения). */
 const CONSOLIDATION_MIN_INTERACTIONS = 5;
 
 /**
- * 每个 tier 期望的日交互频率（每 FREQUENCY_WINDOW_S 秒 = 1 天）。
- * ADR-45 真实数据标定: D1 = 5.6 条/天, D2 = 2.3 条/天。
+ * Ожидаемая дневная частота взаимодействий для каждого tier (за FREQUENCY_WINDOW_S секунд = 1 день).
+ * ADR-45 калибровка по реальным данным: D1 = 5.6 сообщений/день, D2 = 2.3/день.
  * @see docs/adr/45-real-data-validation.md §5 F5
  * @see docs/adr/46-real-data-calibration.md
- * @see Gilbert & Karahalios (2009) — 交互频率是关系强度最强预测器
+ * @see Gilbert & Karahalios (2009) — частота взаимодействий — сильнейший предиктор силы связи
  */
 const EXPECTED_FREQUENCY: Record<number, number> = {
-  5: 6, // intimate: ~6 interactions/day（典型亲密私聊）
+  5: 6, // intimate: ~6 interactions/day (типичный близкий приватный чат)
   15: 3, // close friend: ~3/day
   50: 1, // friend: ~1/day
-  150: 0.3, // acquaintance: ~every 3 days
-  500: 0.1, // known: ~every 10 days
+  150: 0.3, // acquaintance: ~раз в 3 дня
+  500: 0.1, // known: ~раз в 10 дней
 };
 
-/** Tier 演化跟踪器（per-contact）。 */
+/** Трекер эволюции Tier (per-contact). */
 interface TierTracker {
-  /** 连续高分次数。 */
+  /** Число последовательных высоких оценок. */
   consecutiveHigh: number;
-  /** 连续低分次数。 */
+  /** Число последовательных низких оценок. */
   consecutiveLow: number;
-  /** 上次评估 tick。 */
+  /** Тик последней оценки. */
   lastEvalTick: number;
-  /** ADR-110: 上次评估的墙钟时间（ms）。 */
+  /** ADR-110: Время последней оценки (настенные часы, мс). */
   lastEvalMs?: number;
 }
 
 /**
- * 计算 Tier 演化分数。
+ * Вычислить балл эволюции Tier.
  * ADR-47 G9: TierScore = 0.35 × Frequency + 0.25 × Quality + 0.25 × Depth + 0.15 × Trust
  *
- * 权重标定依据: Gilbert & Karahalios (2009) "Predicting tie strength with social media"
- * — 交互频率是关系强度最强预测器 (β=0.35)，通信深度和质量次之 (各 0.25)，
- *   信任是独立维度但主观性最强 (0.15)。偏差 ≤ 0.039。
+ * Калибровка весов: Gilbert & Karahalios (2009) "Predicting tie strength with social media"
+ * — частота взаимодействий — сильнейший предиктор силы связи (β=0.35), глубина и качество общения — вторые (по 0.25),
+ *   доверие — независимое измерение с наибольшей субъективностью (0.15). Погрешность ≤ 0.039.
  * @see https://doi.org/10.1145/1518701.1518736
  *
- * @param interactionCount - 最近 100 ticks 的交互次数
- * @param tier - 当前 tier
- * @param avgQuality - 最近行动质量均值 [-1, 1]
- * @param factCount - 事实数量
- * @param maxFacts - 事实上限
- * @param threadInvolvement - 参与的活跃 Thread 数
- * @param maxThreads - Thread 上限
- * @param trust - 信任度 [0, 1]，默认 0.5
- * @param aliceInitiated - Alice 主动发起对话次数（累积）
- * @param contactInitiated - 对方主动发起对话次数（累积）
+ * @param interactionCount - Число взаимодействий за последние 100 тиков
+ * @param tier - Текущий tier
+ * @param avgQuality - Средняя оценка качества последних действий [-1, 1]
+ * @param factCount - Количество фактов
+ * @param maxFacts - Лимит фактов
+ * @param threadInvolvement - Число активных Thread с участием
+ * @param maxThreads - Лимит Thread
+ * @param trust - Уровень доверия [0, 1], по умолчанию 0.5
+ * @param aliceInitiated - Число инициированных Alice диалогов (накопленное)
+ * @param contactInitiated - Число инициированных контактом диалогов (накопленное)
  */
 export function tierScore(
   interactionCount: number,
@@ -640,19 +642,19 @@ export function tierScore(
 ): number {
   const expected = EXPECTED_FREQUENCY[tier] ?? 2;
   const frequency = Math.min(1, interactionCount / expected);
-  const quality = (avgQuality + 1) / 2; // 归一化到 [0, 1]
+  const quality = (avgQuality + 1) / 2; // Нормализация в [0, 1]
   const depth =
     (maxFacts > 0 ? factCount / maxFacts : 0) +
     (maxThreads > 0 ? threadInvolvement / maxThreads : 0);
-  const normalizedDepth = Math.min(1, depth / 2); // depth 两项之和归一化
+  const normalizedDepth = Math.min(1, depth / 2); // Нормализация суммы двух составляющих depth
 
-  // 互惠系数：防止 Alice 单方面高频互动抬升 tier。
+  // Коэффициент взаимности: не позволяет Alice в одностороннем порядке поднять tier высокой активностью.
   // reciprocity = min(1, sqrt(contactInitiated / aliceInitiated))
-  // - 双方均衡 → 1.0（无影响）
-  // - Alice 发起 4× → sqrt(1/4) = 0.5（频率得分减半）
-  // - 对方发起更多 → 1.0（不过度加分）
-  // - 总互动 < 5 次 → 不激活（冷启动噪声保护）
-  // sqrt 阻尼避免过于苛刻（2:1 比例在健康关系中也常见）。
+  // - Баланс двух сторон → 1.0 (нет влияния)
+  // - Alice инициирует в 4× чаще → sqrt(1/4) = 0.5 (частотный балл вдвое меньше)
+  // - Контакт инициирует чаще → 1.0 (бонус не накапливается)
+  // - Суммарно < 5 взаимодействий → не активируется (защита от шума холодного старта)
+  // Демпфирование sqrt не слишком строгое (соотношение 2:1 нормально в здоровых отношениях).
   // @see docs/adr/151-algorithm-audit/research-online-calibration.md
   const totalInitiated = aliceInitiated + contactInitiated;
   let reciprocity = 1.0;
@@ -665,13 +667,13 @@ export function tierScore(
 }
 
 /**
- * 获取下一个更亲密的 tier（升级方向）。
- * 如果已在最亲密层级 (5) 则返回 null。
+ * Получить следующий более близкий tier (направление повышения).
+ * Возвращает null, если уже на самом близком уровне (5).
  */
 export function nextCloserTier(currentTier: number): DunbarTier | null {
   const idx = (DUNBAR_TIERS as readonly number[]).indexOf(currentTier);
   if (idx < 0) {
-    // 不在标准阶梯上，找最近的更低 tier（DUNBAR_TIERS 降序，正向遍历第一个 < currentTier 即最近）
+    // Не на стандартной лесенке — найти ближайший более низкий tier (DUNBAR_TIERS по убыванию, первый < currentTier — ближайший)
     for (const t of DUNBAR_TIERS) {
       if (t < currentTier) return t;
     }
@@ -681,13 +683,13 @@ export function nextCloserTier(currentTier: number): DunbarTier | null {
 }
 
 /**
- * 获取下一个更疏远的 tier（降级方向）。
- * 如果已在最疏远层级 (500) 则返回 null。
+ * Получить следующий более далёкий tier (направление понижения).
+ * Возвращает null, если уже на самом далёком уровне (500).
  */
 export function nextFartherTier(currentTier: number): DunbarTier | null {
   const idx = (DUNBAR_TIERS as readonly number[]).indexOf(currentTier);
   if (idx < 0) {
-    // 不在标准阶梯上，找最近的更高 tier（DUNBAR_TIERS 降序，反向遍历第一个 > currentTier 即最近）
+    // Не на стандартной лесенке — найти ближайший более высокий tier (DUNBAR_TIERS по убыванию, первый > currentTier с конца — ближайший)
     for (let i = DUNBAR_TIERS.length - 1; i >= 0; i--) {
       if (DUNBAR_TIERS[i] > currentTier) return DUNBAR_TIERS[i];
     }
@@ -697,19 +699,19 @@ export function nextFartherTier(currentTier: number): DunbarTier | null {
 }
 
 interface RelationshipsState {
-  /** 当前行动目标。 */
+  /** Текущая цель действия. */
   targetNodeId: string | null;
-  /** M2: 联系人结构化画像 (contactId → profile)。 */
+  /** M2: Структурированный профиль контакта (contactId → profile). */
   contactProfiles: Record<string, ContactProfile>;
-  /** M4: Tier 演化跟踪器 (contactId → tracker)。 */
+  /** M4: Трекер эволюции Tier (contactId → tracker). */
   tierTrackers: Record<string, TierTracker>;
-  /** ADR-64 VI-4: 群组画像 (channelId → profile)。 */
+  /** ADR-64 VI-4: Профиль группы (channelId → profile). */
   groupProfiles: Record<string, GroupProfile>;
-  /** ADR-208: interest 域观察计数 (key = "entityId::interest:label")。 */
+  /** ADR-208: Счётчик наблюдений в домене interest (ключ = "entityId::interest:label"). */
   interestObsCounts: Record<string, number>;
 }
 
-// -- Mod 定义 -----------------------------------------------------------------
+// -- Определение Mod ----------------------------------------------------------
 
 export const relationshipsMod = createMod<RelationshipsState>("relationships", {
   category: "mechanic",
@@ -748,9 +750,9 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
     },
   })
   /**
-   * ADR-43 P1: 设置联系人的关系类型（与 tier 正交）。
-   * 由 LLM 在对话中推断并调用。
-   * 安全约束：romantic 只能在 tier ≤ 50 时设置。
+   * ADR-43 P1: задать тип отношений с контактом (ортогонально tier).
+   * Выводится и вызывается LLM в ходе разговора.
+   * Ограничение безопасности: romantic можно задать только при tier ≤ 50.
    * @see docs/adr/43-m1.5-feedback-loop-relation-type.md §P1
    */
   .instruction("set_relation_type", {
@@ -783,7 +785,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
     },
     impl(ctx, args) {
       const contactId = String(args.contactId);
-      // Zod z.enum([...]) 已校验合法值
+      // Zod z.enum([...]) уже проверил допустимые значения
       const relationType = String(args.relationType);
 
       if (!ctx.graph.has(contactId)) {
@@ -794,7 +796,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
       const currentTier = attrs.tier ?? 150;
       const previous = attrs.relation_type ?? "unknown";
 
-      // 安全约束：romantic 需要至少 friend 级别（tier ≤ 50）
+      // Защитное ограничение: romantic требует уровня не ниже friend (tier ≤ 50)
       if (relationType === "romantic" && currentTier > 50) {
         return {
           success: false,
@@ -803,14 +805,14 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         };
       }
 
-      // Zod z.enum 已校验 relationType 为合法 RelationType 值，安全 cast
+      // Zod z.enum уже проверил, что relationType является допустимым значением RelationType — безопасный cast
       ctx.graph.updateContact(contactId, {
         relation_type: relationType as RelationType,
         relation_type_set_ms: ctx.nowMs,
       });
 
-      // ADR-123: 结构通道更新 tier 信念（自动记录 changelog）
-      // SET_RELATION_TYPE 是 LLM 明确判定，用 structural channel（覆写，σ² → ε）
+      // ADR-123: Обновить убеждение tier через структурный канал (автоматически пишет changelog)
+      // SET_RELATION_TYPE — явное суждение LLM, используется structural channel (перезапись, σ² → ε)
       // @see paper-pomdp/ Def 3.2
       ctx.graph.beliefs.update(contactId, "tier", currentTier, "structural", ctx.nowMs);
 
@@ -824,10 +826,10 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
     },
   })
   /**
-   * ADR-198 F11: 记录联系人活跃时段。
-   * 原 update_contact_profile 的 moodBaseline + communicationStyle 字段已移除：
-   * - moodBaseline: 传数值违反语义无障碍
-   * - communicationStyle: 与 portrait 完全重叠
+   * ADR-198 F11: записать активный период контакта.
+   * Поля moodBaseline + communicationStyle из прежнего update_contact_profile удалены:
+   * - moodBaseline: передача числового значения нарушает семантическую доступность
+   * - communicationStyle: полностью перекрывается portrait
    */
   .instruction("note_active_hour", {
     params: z.object({
@@ -866,7 +868,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
       profile.lastUpdatedTick = ctx.tick;
       profile.lastUpdatedMs = ctx.nowMs;
 
-      // EMA 更新对应小时槽位
+      // EMA-обновление соответствующего часового слота
       for (let h = 0; h < 24; h++) {
         profile.activeHours[h] *= 1 - ACTIVE_HOURS_ALPHA;
       }
@@ -876,8 +878,8 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
     },
   })
   /**
-   * ADR-208: 为联系人或群组标记兴趣/话题标签。
-   * 写入 BeliefStore interest: 域 → 多次观察后结晶 → 持久标签 + 30 天慢衰减。
+   * ADR-208: пометить интерес/тематический тег контакта или группы.
+   * Записывается в BeliefStore interest: домен → кристаллизуется после нескольких наблюдений → постоянный тег + медленный распад за 30 дней.
    * @see docs/adr/208-cognitive-label-interest-domain.md
    */
   .instruction("tag_interest", {
@@ -908,10 +910,10 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         return { success: false, error: "tag_interest only applies to contacts or channels" };
       }
 
-      // ADR-50: 标签归一化（代码侧完成）
+      // ADR-50: Нормализация тега (выполняется на стороне кода)
       const label = String(args.interest).toLowerCase().trim().replace(/\s+/g, "_");
 
-      // BeliefStore EMA 融合（semantic 通道，observation=1.0 = 一次正向观察）
+      // EMA-слияние в BeliefStore (канал semantic, observation=1.0 = одно положительное наблюдение)
       const belief = ctx.graph.beliefs.update(
         entityId,
         `interest:${label}`,
@@ -920,13 +922,13 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         ctx.nowMs,
       );
 
-      // 观察计数（用于结晶条件）
+      // Счётчик наблюдений (для условий кристаллизации)
       if (!ctx.state.interestObsCounts) ctx.state.interestObsCounts = {};
       const countKey = `${entityId}::interest:${label}`;
       ctx.state.interestObsCounts[countKey] = (ctx.state.interestObsCounts[countKey] ?? 0) + 1;
       const obsCount = ctx.state.interestObsCounts[countKey];
 
-      // 定位结晶兴趣存储
+      // Найти хранилище кристаллизованных интересов
       let crystallized: Record<string, CrystallizedInterest>;
       if (nodeType === "contact") {
         if (!ctx.state.contactProfiles[entityId]) {
@@ -950,7 +952,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
 
       const existing = crystallized[label];
       if (existing) {
-        // 已结晶 → 强化（刷新 lastReinforced + 更新 confidence）
+        // Уже кристаллизован → усиление (обновить lastReinforced + confidence)
         existing.lastReinforced = ctx.tick;
         existing.lastReinforcedMs = ctx.nowMs;
         existing.confidence = Math.min(1, belief.mu);
@@ -964,7 +966,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         };
       }
 
-      // 结晶检查：σ² < threshold && obs >= N && μ > threshold
+      // Проверка кристаллизации: σ² < threshold && obs >= N && μ > threshold
       if (
         belief.sigma2 < INTEREST_CRYSTALLIZE_SIGMA2 &&
         obsCount >= INTEREST_CRYSTALLIZE_MIN_OBS &&
@@ -992,14 +994,14 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
     },
   })
   /**
-   * M3: 记录带遗忘曲线的事实 → fact 图节点。
-   * 事实存储为 fact 节点，通过 "knows" 边连接到 contact/agent。
-   * 支持 P2 遗忘曲线遍历。
+   * M3: записать факт с кривой забывания → узел fact в графе.
+   * Факты хранятся как узлы fact, связанные с contact/agent рёбрами "knows".
+   * Поддерживает обход по кривой забывания P2.
    */
   .instruction("note", {
     deriveParams: {
-      // TARGET_CONTACT 已是正确的 contact:xxx 格式（由 buildContextVars 解析）。
-      // 旧逻辑从 TARGET_CHAT（channel:xxx）转换会产出错误格式。
+      // TARGET_CONTACT уже в правильном формате contact:xxx (разобран buildContextVars).
+      // Старая логика преобразования из TARGET_CHAT (channel:xxx) давала неверный формат.
       // @see docs/adr/115-evolve-observability/alice-injection-audit.md §2.4
       contactId: (cv: Record<string, unknown>) => cv.TARGET_CONTACT,
     },
@@ -1020,24 +1022,24 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
       whenNotToUse: "No new personal information shared",
     },
     impl(ctx, args) {
-      // ADR-204 C10: LLM 可能提供 display_name，代码侧解析为 nodeId
+      // ADR-204 C10: LLM может передать display_name — код разрешает его в nodeId
       const rawId = String(args.contactId);
       const contactId = resolveDisplayName(ctx.graph, rawId) ?? rawId;
-      // Zod z.string().trim().min(1).max(500) 保证非空已 trim
+      // Zod z.string().trim().min(1).max(500) гарантирует непустую trimmed строку
       const content = String(args.fact);
 
       const factType = args.type ? String(args.type) : "general";
 
-      // ADR-47 G6: 归一化去重（宽松匹配：大小写 + 空白不敏感）
+      // ADR-47 G6: Нормализация для дедупликации (нестрогое: без учёта регистра + пробелов)
       const normalized = normalizeFactContent(content);
       const existingFacts = getContactFacts(ctx.graph, contactId);
       const existing = existingFacts.find(
         (f) => normalizeFactContent(f.attrs.content ?? "") === normalized,
       );
       if (existing) {
-        // 重复提及 → 被动强化：stability × 1.2，last_access 刷新。
-        // 高稳定性 facts（preference S=40）被重复提及后变得更稳定（S→48→57.6…），
-        // 低稳定性 facts（observation S=1）也因重复提及而延长半衰期（S→1.2→1.44…）。
+        // Повторное упоминание → пассивное усиление: stability × 1.2, last_access обновляется.
+        // Высокостабильные факты (preference S=40) становятся ещё стабильнее при повторении (S→48→57.6…),
+        // низкостабильные (observation S=1) тоже удлиняют период полураспада (S→1.2→1.44…).
         ctx.graph.updateFact(existing.id, {
           last_access_ms: ctx.nowMs,
           stability: existing.attrs.stability * STABILITY_REINFORCE_FACTOR,
@@ -1052,16 +1054,16 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         };
       }
 
-      // 创建 fact 节点 + knows 边
+      // Создать узел fact + ребро knows
       const iid = nextFactId();
-      // ADR-69 T2.4: source 字段区分 LLM 创建 vs perceive 自动创建
-      // ADR-104: source_channel 从当前行动目标推断
+      // ADR-69 T2.4: поле source различает создание LLM и автоматическое создание через perceive
+      // ADR-104: source_channel выводится из текущей цели действия
       const sourceChannel = ctx.state.targetNodeId ?? undefined;
-      // ADR-156: observation 类型的事实自带情感反应度（刚发生的观察往往带情绪）。
-      // 其他类型（interest/preference/skill/general）视为中性事实，不设 reactivity。
+      // ADR-156: факты типа observation несут эмоциональную реактивность (свежее наблюдение обычно окрашено эмоционально).
+      // Остальные типы (interest/preference/skill/general) считаются нейтральными фактами, reactivity не задаётся.
       const isEmotionalFact = factType === "observation";
-      // 连续稳定性频谱：初始 stability 由 fact_type 决定。
-      // preference/skill (S₀=40) → ~3年半衰期；observation (S₀=1) → ~27天半衰期。
+      // Непрерывный спектр стабильности: начальная stability определяется fact_type.
+      // preference/skill (S₀=40) → период полураспада ~3 года; observation (S₀=1) → ~27 дней.
       const initialStability = factTypeInitialStability(factType);
       ctx.graph.addFact(iid, {
         content,
@@ -1081,9 +1083,9 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
       });
       ctx.graph.addRelation(contactId, "knows", iid);
 
-      // 容量控制：self 50 条，其他 20 条。超出时淘汰 R 最低的节点。
-      // 连续稳定性频谱下 R 对所有 fact_type 都有意义——高稳定性 facts 自然 R 更高，
-      // 受到淘汰保护；低稳定性 + 旧 facts 自然 R 更低，优先淘汰。
+      // Контроль ёмкости: self — 50 записей, остальные — 20. При превышении вытесняется узел с наименьшим R.
+      // В непрерывном спектре стабильности R значим для всех fact_type: высокостабильные факты
+      // имеют более высокий R и защищены от вытеснения; низкостабильные + старые — более низкий R, вытесняются первыми.
       const allFacts = getContactFacts(ctx.graph, contactId);
       const limit = contactId === ALICE_SELF ? SELF_FACTS_LIMIT : CONTACT_FACTS_LIMIT;
       while (allFacts.length > limit) {
@@ -1100,7 +1102,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         allFacts.splice(worstIdx, 1);
       }
 
-      // ADR-204: 意识流 reinforce — remember 强化关联事件
+      // ADR-204: Усиление потока сознания — reinforce связанных событий памяти
       try {
         reinforceConsciousness(getDb(), [contactId], 0.1);
       } catch {
@@ -1111,8 +1113,8 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
     },
   })
   /**
-   * M3: 引用事实——更新 last_access 和 stability（巩固机制）。
-   * 当 LLM 在回复中引用了某条事实时调用此指令。
+   * M3: обратиться к факту — обновить last_access и stability (механизм консолидации).
+   * Вызывается, когда LLM ссылается на факт в своём ответе.
    */
   .instruction("recall_fact", {
     params: z.object({
@@ -1132,7 +1134,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
       const facts = getContactFacts(ctx.graph, contactId);
       if (facts.length === 0) return { success: false, error: "no facts for contact" };
 
-      // G6: 归一化匹配
+      // G6: Нормализованное сопоставление
       const normalized = normalizeFactContent(content);
       const fact = facts.find((f) => normalizeFactContent(f.attrs.content ?? "") === normalized);
       if (!fact) return { success: false, error: "fact not found" };
@@ -1158,9 +1160,9 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
     },
   })
   /**
-   * ADR-47 G2: 修改已记忆的事实内容。
-   * 保留 stability 和 created，更新内容和 last_access。
-   * 如果新内容与另一条事实重复，执行合并（取最高 stability，累加 reinforcement_count）。
+   * ADR-47 G2: изменить содержимое записанного факта.
+   * Сохраняет stability и created, обновляет содержимое и last_access.
+   * Если новое содержимое совпадает с другим фактом, выполняет слияние (берёт максимальный stability, суммирует reinforcement_count).
    */
   .instruction("update_fact", {
     params: z.object({
@@ -1178,7 +1180,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
     impl(ctx, args) {
       const contactId = String(args.contactId);
       const oldNorm = normalizeFactContent(String(args.oldContent));
-      // Zod .trim().min(1).max(500) 保证非空已 trim
+      // Zod .trim().min(1).max(500) гарантирует непустую trimmed строку
       const newContent = String(args.newContent);
 
       const facts = getContactFacts(ctx.graph, contactId);
@@ -1187,13 +1189,13 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
       const target = facts.find((f) => normalizeFactContent(f.attrs.content ?? "") === oldNorm);
       if (!target) return { success: false, error: "fact not found" };
 
-      // 检查新内容是否与其他事实重复
+      // Проверить, не дублирует ли новое содержимое другой факт
       const newNorm = normalizeFactContent(newContent);
       const dup = facts.find(
         (f) => f.id !== target.id && normalizeFactContent(f.attrs.content ?? "") === newNorm,
       );
       if (dup) {
-        // 合并：删除 target，更新 dup
+        // Слияние: удалить target, обновить dup
         const mergedStability = Math.max(dup.attrs.stability, target.attrs.stability);
         const mergedRc =
           (dup.attrs.reinforcement_count ?? 1) + (target.attrs.reinforcement_count ?? 1);
@@ -1214,8 +1216,8 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
     },
   })
   /**
-   * ADR-47 G2: 删除已记忆的事实。
-   * 用于清理过时或错误的信息。归一化匹配。
+   * ADR-47 G2: удалить записанный факт.
+   * Используется для очистки устаревшей или ошибочной информации. Нормализованное сопоставление.
    */
   .instruction("delete_fact", {
     params: z.object({
@@ -1244,7 +1246,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
       return { success: true, deleted, factCount: facts.length - 1 };
     },
   })
-  /** 设置当前行动目标（由 act.ts 调用）。 */
+  /** Установить текущую цель действия (вызывается из act.ts). */
   .instruction("SET_CONTACT_TARGET", {
     params: z.object({
       nodeId: z.string().optional().describe("ID целевого узла"),
@@ -1255,11 +1257,11 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
       return ctx.state.targetNodeId;
     },
   })
-  // ADR-198 F8: update_trust 已删除。trust 统一由 rv_trust（图属性）管理，
-  // 通过 rate_outcome / self_sense 隐式积累。
+  // ADR-198 F8: update_trust удалён. Доверие теперь единообразно управляется через rv_trust (атрибут графа),
+  // накапливается неявно через rate_outcome / self_sense.
   /**
-   * ADR-64 VI-3: 生成联系人综合印象叙事。
-   * LLM 在 Reflection 中调用，将离散 facts + profile 综合为 2-3 句话的连续印象。
+   * ADR-64 VI-3: сформировать нарративное сводное впечатление о контакте.
+   * Вызывается LLM в Reflection, синтезирует разрозненные facts + profile в связное впечатление из 2-3 предложений.
    */
   .instruction("synthesize_portrait", {
     params: z.object({
@@ -1275,7 +1277,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
     },
     impl(ctx, args) {
       const contactId = String(args.contactId);
-      // Zod .trim().min(1).max(2000) 保证非空已 trim
+      // Zod .trim().min(1).max(2000) гарантирует непустую trimmed строку
       const portrait = String(args.portrait);
 
       if (!ctx.state.contactProfiles[contactId]) {
@@ -1292,8 +1294,8 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
     },
   })
   /**
-   * ADR-64 VI-4: 更新群组画像。
-   * LLM 在 Reflection 中调用，记录群组的主题、氛围、Alice 角色和关键成员。
+   * ADR-64 VI-4: обновить portrait группы.
+   * Вызывается LLM в Reflection, фиксирует тему, атмосферу, роль Алисы и ключевых участников группы.
    */
   .instruction("update_group_profile", {
     params: z.object({
@@ -1319,7 +1321,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
       }
       const gp = ctx.state.groupProfiles[channelId];
 
-      // Zod .trim().optional() 已处理 trim
+      // Zod .trim().optional() уже выполнил trim
       if (args.topic != null) gp.topic = String(args.topic) || null;
       if (args.atmosphere != null) gp.atmosphere = String(args.atmosphere) || null;
       if (args.aliceRole != null) gp.aliceRole = String(args.aliceRole) || null;
@@ -1355,7 +1357,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
 
       const attrs = ctx.graph.getContact(contactId);
 
-      // M3: 从图节点返回 memorized facts + retrievability
+      // M3: Вернуть memorized facts + retrievability из узлов графа
       const facts = getContactFacts(ctx.graph, contactId);
       const memorizedWithR = facts.map((f) => ({
         content: f.attrs.content ?? "",
@@ -1365,11 +1367,11 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         created_ms: f.attrs.created_ms,
         reinforcement_count: f.attrs.reinforcement_count ?? 1,
         retrievability: factRetrievabilityFromNode(f.attrs, ctx.nowMs),
-        // ADR-156: 情感反应度 E(t)，用于 prompt 呈现调制
+        // ADR-156: Эмоциональная реактивность E(t) для модуляции отображения в prompt
         emotionalReactivity: factEmotionalReactivity(f.attrs, ctx.nowMs),
       }));
 
-      // ADR-198 F7c: 在 impl 中预计算 trust 标签（format 不接收 ctx）
+      // ADR-198 F7c: Предварительно вычислить метку trust в impl (format не получает ctx)
       const rvTrust = readRV(attrs).trust;
       const trustLabel =
         rvTrust >= 0.8
@@ -1420,17 +1422,17 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         for (const f of facts) {
           const rv = Number(f.retrievability);
           const ev = Number(f.emotionalReactivity ?? 0);
-          // ADR-156: 情感反应度调制 clarity 标签。
-          // E > VIVID_THRESHOLD → 用情感驱动标签（vivid/noted）
-          // E ≤ NOTED_THRESHOLD → 回退到纯信息 clarity（不带情感标签）
-          // 效果：同一条 "管我叫鱼酥"，2h 后从 (vivid) 降为 (noted)，4h 后变为纯信息
+          // ADR-156: Модуляция метки clarity через эмоциональную реактивность.
+          // E > VIVID_THRESHOLD → использовать эмоционально-ориентированные метки (vivid/noted)
+          // E ≤ NOTED_THRESHOLD → откат к информационной метке clarity (без эмоционального подтекста)
+          // Эффект: один и тот же факт через 2ч меняется с (vivid) на (noted), через 4ч — только информация
           let clarity: string;
           if (ev > EMOTIONAL_VIVID_THRESHOLD) {
             clarity = "vivid";
           } else if (ev > EMOTIONAL_NOTED_THRESHOLD) {
             clarity = "noted";
           } else {
-            // 纯信息 clarity，不带情感暗示
+            // Чисто информационная метка clarity, без эмоционального подтекста
             clarity = rv > 0.7 ? "clear" : rv > 0.4 ? "fading" : rv > 0.15 ? "dim" : "distant";
           }
           m.list([`[${f.fact_type}] ${f.content} (${clarity})`]);
@@ -1440,7 +1442,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
       const profile = r.profile as Record<string, unknown> | null;
       if (profile) {
         if (profile.portrait) m.kv("Portrait", String(profile.portrait));
-        // ADR-208: 优先结晶兴趣
+        // ADR-208: Приоритет — кристаллизованные интересы
         const ci208 = Object.values(
           (profile.crystallizedInterests as Record<string, CrystallizedInterest> | undefined) ?? {},
         )
@@ -1453,7 +1455,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
           if (interests?.length) m.kv("Interests", interests.join(", "));
         }
       }
-      // ADR-198 F7c: trust 标签从 impl 预计算（基于 rv_trust），不再读取 profile.trust
+      // ADR-198 F7c: метка trust предварительно вычислена в impl (на основе rv_trust), profile.trust больше не читается
       if (r.trustLabel) m.kv("Trust", String(r.trustLabel));
       return m.build();
     },
@@ -1479,9 +1481,9 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
     },
   })
   /**
-   * ADR-47 G5: 返回最高 tier 联系人的活跃峰值小时。
-   * 从 ContactProfile.activeHours（24 槽 EMA 数组）推断 argmax。
-   * 供 evolve.ts 学习型节律使用。
+   * ADR-47 G5: вернуть час пиковой активности контакта с наибольшим tier.
+   * Определяется как argmax из ContactProfile.activeHours (EMA-массив из 24 слотов).
+   * Используется в evolve.ts для обучающегося ритма.
    * @see docs/adr/47-gap-closure.md §G5
    */
   .query("best_time", {
@@ -1507,10 +1509,10 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         }
       }
       if (!bestProfile?.activeHours) return { peakHour: undefined };
-      // 检查是否有任何非零值（全零表示无数据）
+      // Проверить, есть ли хотя бы одно ненулевое значение (все нули = нет данных)
       const maxVal = Math.max(...bestProfile.activeHours);
       if (maxVal <= 0) return { peakHour: undefined };
-      let peakHour = 14; // 默认
+      let peakHour = 14; // по умолчанию
       let peakVal = -1;
       for (let h = 0; h < 24; h++) {
         if (bestProfile.activeHours[h] > peakVal) {
@@ -1526,14 +1528,14 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
     const target = ctx.state.targetNodeId;
     const items: ContributionItem[] = [];
 
-    // 1. Self-knowledge 注入（无论是否有目标都注入）
+    // 1. Инжекция Self-knowledge (инжектируется всегда, независимо от наличия цели)
     const mSelf = new PromptBuilder();
 
-    // ADR-41: memorized self facts — top-N 注入防止写入-读取回声室
-    // 连续稳定性频谱：统一按 R 排序（R 已包含 fact_type 稳定性差异）。
+    // ADR-41: memorized self facts — инжекция top-N предотвращает эхо-камеру запись–чтение
+    // Непрерывный спектр стабильности: единая сортировка по R (R уже учитывает разницу стабильности fact_type).
     const selfFacts = getContactFacts(ctx.graph, ALICE_SELF);
     if (selfFacts.length > 0) {
-      // 按 R 过滤可检索事实，R 排序选 top-N
+      // Фильтровать извлекаемые факты по R, сортировать по R, выбрать top-N
       const retrievableSelf = selfFacts
         .filter((f) => factRetrievabilityFromNode(f.attrs, ctx.nowMs) >= FACT_FORGET_THRESHOLD)
         .sort(
@@ -1541,15 +1543,15 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
             factRetrievabilityFromNode(b.attrs, ctx.nowMs) -
             factRetrievabilityFromNode(a.attrs, ctx.nowMs),
         );
-      // ADR-196 F7: 匿名 Activity 行不渲染——"Activity: 3 messages in (a group)" 零决策信息
+      // ADR-196 F7: Анонимные строки Activity не рендерятся — "Activity: 3 messages in (a group)" несёт нулевую информацию для решений
       const ANON_MARKERS = ["(a group)", "(a private chat)", "(someone)", "(unknown)"];
       const isAnonymousActivity = (content: string) =>
         content.startsWith("Activity:") && ANON_MARKERS.some((m) => content.includes(m));
       const topSelf = retrievableSelf
         .filter((f) => !isAnonymousActivity(f.attrs.content ?? ""))
         .slice(0, MAX_INJECTED_SELF_FACTS);
-      // ADR-66 F15: 去标签化——CowAgent 原则"自然使用记忆，就像你本来就知道"。
-      // RC2 修复：时间标注让 LLM 知道 self-note 是什么时候记录的
+      // ADR-66 F15: Снятие меток — принцип CowAgent «используй память естественно, как будто сам знал».
+      // RC2 fix: временная метка даёт LLM понять, когда была сделана self-note
       mSelf.list(
         topSelf.map((f) => {
           const content = f.attrs.content ?? "";
@@ -1574,15 +1576,15 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
 
     if (!target) return items;
 
-    // 2. 目标联系人画像（增强：全量 facts 注入）
+    // 2. Профиль целевого контакта (расширенный: полная инжекция фактов)
     const { contactId, channelId } = resolveContactAndChannel(target, (id) => ctx.graph.has(id));
 
-    // ADR-206: 频道 target 不渲染联系人画像（频道不是社交对等体）
+    // ADR-206: Профиль контакта не рендерится для target-канала (канал — не социальный партнёр)
     const targetChatType =
       channelId && ctx.graph.has(channelId) ? ctx.graph.getChannel(channelId).chat_type : undefined;
     if (targetChatType === "channel") {
-      // ADR-206 W8: 注入精简社交全景——帮助 Alice 在频道 tick 内决定转发目标
-      // @see docs/adr/206-channel-information-flow/ §12 收归转发职责
+      // ADR-206 W8: Инжектировать компактную социальную панораму — помогает Alice выбрать цель пересылки в тик канала
+      // @see docs/adr/206-channel-information-flow/ §12 консолидация ответственности за пересылку
       const panorama = buildSocialPanorama(
         ctx.graph,
         ctx.state.contactProfiles,
@@ -1599,7 +1601,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
     if (contactId && ctx.graph.has(contactId)) {
       const attrs = ctx.graph.getContact(contactId);
 
-      // ADR-91 Layer 3: Bot 联系人功能性渲染（无人格画像、无 formality）
+      // ADR-91 Layer 3: Функциональный рендеринг для бота-контакта (без портрета личности и formality)
       if (attrs.is_bot === true) {
         const displayName = safeDisplayName(ctx.graph, contactId);
         const botLines = [
@@ -1613,22 +1615,22 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
 
       const mContact = new PromptBuilder();
 
-      // --- P1-A: 叙事散文画像 (ADR-55) ---
-      // @see docs/adr/55-prompt-style-research — 叙事引擎 95号 + CowAgent 自然记忆
+      // --- P1-A: Нарративный прозаический портрет (ADR-55) ---
+      // @see docs/adr/55-prompt-style-research — нарративный движок №95 + CowAgent естественная память
       const displayName = safeDisplayName(ctx.graph, contactId);
       const tier = attrs.tier ?? 50;
-      // ADR-43: tier + relationType 组合展示
+      // ADR-43: Комбинированный показ tier + relationType
       const relationType = attrs.relation_type ?? "unknown";
       const tierDesc = tierLabel(tier);
       const relationDesc = relationType !== "unknown" ? `${tierDesc} (${relationType})` : tierDesc;
 
       const profile = ctx.state.contactProfiles[contactId];
-      // ADR-198 F7b: 迁移到 rv_trust（图属性），替代 profile.trust（旧标量）
+      // ADR-198 F7b: Мигрировано на rv_trust (атрибут графа), заменяет profile.trust (старый скаляр)
       const trustVal = readRV(attrs).trust;
 
-      // ADR-66 F14: 核心身份改为自然语言，不暴露 tier 数字和 trust 标签。
-      // 天然结构：让 LLM 感受关系亲疏，不需要知道系统内部评分。
-      // ADR-198: 下界从 <= 0.3 调为 < 0.25（rv_trust 初始值 = 0.3，避免新联系人都显示 "still getting to know"）
+      // ADR-66 F14: Основная идентификация переведена на естественный язык без числа tier и метки trust.
+      // Органичная структура: LLM чувствует близость отношений, не зная внутренних оценок системы.
+      // ADR-198: Нижняя граница изменена с <= 0.3 на < 0.25 (rv_trust начальное значение = 0.3, чтобы новые контакты не отображались как "still getting to know")
       const trustPhrase =
         trustVal >= 0.7
           ? " you trust deeply"
@@ -1644,18 +1646,18 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
             : "";
       mContact.line(`Talking to ${displayName} — ${relationDesc}${trustPhrase}.${historyPhrase}`);
 
-      // ADR-151 T3: 动态礼貌 — 根据 tier 注入语气指导
+      // ADR-151 T3: Динамическая вежливость — инжекция тональных рекомендаций по tier
       const toneTemplate = TIER_TONE_GUIDANCE[tier];
       if (toneTemplate) {
         mContact.line(`tone: ${toneTemplate.replace("{name}", displayName)}`);
       }
 
-      // 第二行：语言（ADR-198: communicationStyle 已移除，与 portrait 重叠）
+      // Вторая строка: язык (ADR-198: communicationStyle удалён, пересекается с portrait)
       if (attrs.language_preference) {
         mContact.line(`They communicate in ${attrs.language_preference}.`);
       }
 
-      // 第三行：兴趣（ADR-208: 优先结晶兴趣，回退旧 interests[]）
+      // Третья строка: интересы (ADR-208: приоритет — кристаллизованные, fallback — старый interests[])
       if (profile) {
         const ci = Object.values(profile.crystallizedInterests ?? {})
           .sort((a, b) => b.confidence - a.confidence)
@@ -1667,7 +1669,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         }
       }
 
-      // 第四行：活跃时段 + 日程变化（ADR-198: moodBaseline 渲染已移除）
+      // Четвёртая строка: часы активности + изменение расписания (ADR-198: рендеринг moodBaseline удалён)
       if (profile) {
         const peakHour = profile.activeHours.indexOf(Math.max(...profile.activeHours));
         const peakVal = profile.activeHours[peakHour];
@@ -1679,8 +1681,8 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         }
       }
 
-      // --- ADR-89: 结晶特质渲染 ---
-      // 在 Portrait 之前展示已结晶的 character traits，最多 5 个，按 |value| 降序。
+      // --- ADR-89: Рендеринг кристаллизованных черт ---
+      // Отображать кристаллизованные черты характера перед Portrait, до 5 штук, по убыванию |value|.
       // @see docs/adr/89-impression-formation-system.md §Wave 2C
       if (profile && Object.keys(profile.traits).length > 0) {
         const sorted = Object.entries(profile.traits)
@@ -1698,9 +1700,9 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         mContact.kv("Portrait", profile.portrait);
       }
 
-      // --- P1-B: 记忆引用提示 (ADR-55) ---
-      // @see docs/adr/55-prompt-style-research — 126号 "缺陷即暗示"
-      // 连续稳定性频谱：统一按 R 排序（R 已包含 fact_type 稳定性差异）。
+      // --- P1-B: Подсказки для ссылок на память (ADR-55) ---
+      // @see docs/adr/55-prompt-style-research — №126 "дефект как подсказка"
+      // Непрерывный спектр стабильности: единая сортировка по R (R уже учитывает разницу стабильности fact_type).
       const contactFacts = getContactFacts(ctx.graph, contactId);
       if (contactFacts.length > 0) {
         const retrievableFacts = contactFacts
@@ -1716,13 +1718,13 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
 
         if (retrievableFacts.length > 0) {
           const topFacts = retrievableFacts.slice(0, MAX_INJECTED_FACTS);
-          // ADR-66 F4: 分条目展示，避免 lost-in-the-middle。
-          // CowAgent 原则："自然使用记忆，就像你本来就知道。"
-          // ADR-69: 归因渲染 — "Your notes" + "you noted this" 闭合因果感知环
+          // ADR-66 F4: Показ отдельными пунктами во избежание lost-in-the-middle.
+          // Принцип CowAgent: «Используй память естественно, как будто сам знал».
+          // ADR-69: Атрибуционный рендеринг — "Your notes" + "you noted this" замыкает причинно-следственную петлю восприятия
           mContact.line("notes:");
           for (const f of topFacts) {
-            // ADR-121 Layer 1: Source Attribution — 展示事实来源频道
-            // RC2 修复：时间标注让 LLM 知道 fact 是什么时候记录的，避免重复 remember()
+            // ADR-121 Layer 1: Атрибуция источника — показать канал-источник факта
+            // RC2 fix: временная метка даёт LLM понять, когда был записан факт, предотвращает повторные remember()
             const createdMs = f.attrs.created_ms ?? 0;
             const agoS = createdMs > 0 ? (ctx.nowMs - createdMs) / 1000 : 0;
             const agoLabel = agoS > 0 ? humanDurationAgo(agoS) : "";
@@ -1745,19 +1747,20 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         }
       }
 
-      // ADR-66: 无 facts 时用事实性描述，不用指令。
+      // ADR-66: При отсутствии фактов использовать фактическое описание, а не инструкцию.
       if (contactFacts.length === 0) {
         mContact.line("Not much known about them yet.");
       }
 
       items.push(section("contact-profile", mContact.build(), undefined, 25, 75));
 
-      // ADR-180: consecutive_caution_acts 升级自检已移除——IAUS 折叠 Caution 为
-      // U_conflict_avoidance 共享 Consideration，不再产出 "caution" action type。
+      // ADR-180: Самодиагностика эскалации consecutive_caution_acts удалена — IAUS свернул Caution
+      // в общий U_conflict_avoidance Consideration, тип действия "caution" больше не генерируется.
 
-      // -- Formative Memories: 首次互动上下文注入 --
-      // 当 Alice 首次与新联系人真正对话时，从共享群聊的 message_log 中收集
-      // 该联系人的历史发言，注入 contribute() 上下文让 LLM 自然形成初始印象。
+      // -- Formative Memories: Инжекция контекста первого взаимодействия --
+      // При первом реальном диалоге Alice с новым контактом собирает его исторические
+      // сообщения из message_log общих групповых чатов и инжектирует их в contribute(),
+      // чтобы LLM естественно сформировал начальное впечатление.
       // @see docs/adr/86-voyager-concordia-cross-analysis.md §C5 Formative Memories
       if (contactFacts.length === 0 && interactionCount <= 2) {
         try {
@@ -1769,7 +1772,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
             );
             for (const msg of senderMessages) {
               if (!msg.text) continue;
-              // ADR-172: 使用 safeDisplayName — 永不返回 raw graph ID
+              // ADR-172: Использовать safeDisplayName — никогда не возвращает raw graph ID
               const chatLabel = safeDisplayName(ctx.graph, msg.chatId);
               const truncated = msg.text.length > 150 ? `${msg.text.slice(0, 147)}...` : msg.text;
               mFirstImpression.line(`[${chatLabel}] "${truncated}"`);
@@ -1780,12 +1783,12 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
             items.push(section("first-impression", mFirstImpression.build(), undefined, 26, 70));
           }
         } catch {
-          // DB 不可用时跳过（测试环境等）
+          // Пропустить, если DB недоступна (тестовое окружение и т.д.)
         }
       }
 
-      // -- ADR-121 Layer 3: Consolidation Hint — 引导 LLM 固化跨群情节 --
-      // 触发条件：少量 facts + 足够多次互动 + 有非私聊共享频道
+      // -- ADR-121 Layer 3: Consolidation Hint — направляет LLM консолидировать кросс-групповые эпизоды --
+      // Условие срабатывания: мало фактов + достаточно взаимодействий + есть общие каналы не в приватном чате
       // @see docs/adr/121-social-peripheral-vision/README.md §3.4 Layer 3
       if (
         contactFacts.length <= CONSOLIDATION_MAX_FACTS &&
@@ -1813,14 +1816,14 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         }
       }
 
-      // Spreading Activation 关联记忆——拓扑上与目标相关但非直接连接的事实
+      // Spreading Activation: ассоциативная память — факты, топологически связанные с целью, но не напрямую
       // @see paper/ §3.4 "Pressure Propagation via Weighted Laplacian"
       const seedEntities = [contactId, ...(channelId ? [channelId] : [])].filter((id) =>
         ctx.graph.has(id),
       );
       const activationHits = activationRetrieval(ctx.graph, seedEntities, ctx.nowMs);
       if (activationHits.length > 0) {
-        // 排除已在 contactFacts 中展示的
+        // Исключить уже отображённые в contactFacts
         const directFactIds = new Set(contactFacts.map((f) => f.id));
         const associatedFacts = activationHits
           .filter((h) => !directFactIds.has(h.entityId) && ctx.graph.has(h.entityId))
@@ -1846,9 +1849,9 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         }
       }
 
-      // ADR-43: relationType 推断提醒
-      // ADR-81: 压力门控——低压力时注入关系分类提示
-      // @see docs/adr/81-reflection-separation.md §Mod 贡献从声部门控改为压力门控
+      // ADR-43: Напоминание о выводе relationType
+      // ADR-81: Управление по давлению — подсказка классификации отношений при низком давлении
+      // @see docs/adr/81-reflection-separation.md §Вклад Mod переведён с голосового управления на управление давлением
       const modApi = readPressureApi(ctx);
       if (relationType === "unknown" && tier <= 50 && modApi < 0.6) {
         items.push(
@@ -1866,11 +1869,11 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         );
       }
 
-      // 关系轨迹信号 — 互动频率趋势（warming / stable / cooling）
+      // Сигнал траектории отношений — тренд частоты взаимодействий (warming / stable / cooling)
       try {
         const db = getDb();
         const trajectoryChId = ensureChannelId(contactId) ?? contactId;
-        // ADR-110: 最近 50 分钟（3_000_000 ms）的互动次数
+        // ADR-110: Число взаимодействий за последние 50 минут (3_000_000 мс)
         const recentCount = db
           .select({ count: sql<number>`count(*)` })
           .from(actionLog)
@@ -1881,7 +1884,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
             ),
           )
           .get();
-        // ADR-110: 之前 50 分钟的互动次数
+        // ADR-110: Число взаимодействий за предшествующие 50 минут
         const olderCount = db
           .select({ count: sql<number>`count(*)` })
           .from(actionLog)
@@ -1924,14 +1927,14 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
           );
         }
       } catch {
-        // DB 不可用时跳过
+        // DB недоступна — пропустить
       }
 
-      // ADR-64 VI-3: portrait 综合提示
-      // ADR-81: 压力门控——低压力时注入 portrait 更新提示
+      // ADR-64 VI-3: Подсказка к синтезу portrait
+      // ADR-81: Управление по давлению — подсказка обновления portrait при низком давлении
       if (profile && modApi < 0.6) {
         const memorizedCount = contactFacts.length;
-        // ADR-110: 12 小时 = 43200 秒
+        // ADR-110: 12 часов = 43200 секунд
         const portraitStale =
           profile.portraitMs != null
             ? (ctx.nowMs - profile.portraitMs) / 1000 > 43200
@@ -1950,13 +1953,13 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
       }
     }
 
-    // 3. 目标频道属性
+    // 3. Атрибуты целевого канала
     if (target && ctx.graph.has(target) && ctx.graph.getNodeType(target) === "channel") {
       const attrs = ctx.graph.getChannel(target);
       const mChannel = new PromptBuilder();
       const chatType = attrs.chat_type ?? "unknown";
       const unread = attrs.unread ?? 0;
-      // ADR-124: 使用 effectiveObligation 替代 pending_directed
+      // ADR-124: Использовать effectiveObligation вместо pending_directed
       // @see docs/adr/126-obligation-field-decay.md §D6
       const directed = effectiveObligation(ctx.graph, target, ctx.nowMs);
       const channelName = safeDisplayName(ctx.graph, target);
@@ -1964,7 +1967,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
       if (unread > 0) mChannel.kv("Unread", String(unread));
       if (directed > 0.1) mChannel.line("Directed here — reply needed");
 
-      // ADR-64 VI-4: 群组画像展示
+      // ADR-64 VI-4: Отображение профиля группы
       const isGroup = ChatTarget.isGroupChat(chatType);
       const gp = ctx.state.groupProfiles?.[target];
       if (isGroup && gp) {
@@ -1972,16 +1975,16 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         if (gp.atmosphere) mChannel.kv("Atmosphere", gp.atmosphere);
         if (gp.aliceRole) mChannel.kv("Role here", gp.aliceRole);
         if (gp.memberHighlights) mChannel.kv("Key members", gp.memberHighlights);
-        // ADR-208: 群组结晶兴趣
+        // ADR-208: Кристаллизованные интересы группы
         const gInterests = Object.values(gp.crystallizedInterests ?? {})
           .sort((a, b) => b.confidence - a.confidence)
           .slice(0, 4);
         if (gInterests.length > 0) {
           mChannel.kv("Topics noticed", gInterests.map((ci) => ci.label).join(", "));
         }
-        // ADR-66 F6: GroupProfile 过期提醒（对标 ContactProfile 的 12h portrait 过期）
-        // ADR-81: 压力门控——低压力时注入群组画像更新提示
-        // ADR-110: 12 小时 = 43200 秒
+        // ADR-66 F6: Напоминание об устаревании GroupProfile (аналог 12ч portrait для ContactProfile)
+        // ADR-81: Управление по давлению — подсказка обновления профиля группы при низком давлении
+        // ADR-110: 12 часов = 43200 секунд
         if (
           gp.portraitMs != null &&
           (ctx.nowMs - gp.portraitMs) / 1000 > 43200 &&
@@ -1990,13 +1993,13 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
           mChannel.line("This group profile hasn't been updated in a while.");
         }
       } else if (isGroup && !gp) {
-        // ADR-81: 压力门控——低压力时提示创建群组画像
+        // ADR-81: Управление по давлению — подсказка создать профиль группы при низком давлении
         if (readPressureApi(ctx) < 0.6) {
           mChannel.line("No group profile yet — a description of this group's vibe would help.");
         }
       }
 
-      // ADR-78 P1: 向 LLM 传达最近消息的内容类型，帮助 reading the room
+      // ADR-78 P1: передать LLM тип контента последних сообщений, помогая reading the room
       // @see .claude/sessions/review-naturalness-h7l9At/prompt-diagnosis.md §D
       const lastContentType = attrs.last_content_type;
       if (lastContentType && lastContentType !== "text") {
@@ -2012,40 +2015,40 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
     return items;
   })
   /**
-   * M4: Tier 演化引擎。
+   * M4: Движок эволюции Tier.
    *
-   * 理论基础——Dunbar 层级模型 (Dunbar 1992, 2010):
-   * 人类社交圈层呈现 ~5/15/50/150/500 的嵌套结构。
-   * Alice 的 Tier 系统映射此结构，tier 值通过三维评分自动演化：
+   * Теоретическая основа — модель уровней Данбара (Dunbar 1992, 2010):
+   * Социальные круги человека образуют вложенную структуру ~5/15/50/150/500.
+   * Система Tier Alice отображает эту структуру; значение tier автоматически эволюционирует через трёхмерный балл:
    *   TierScore = 0.35 × Frequency + 0.25 × Quality + 0.25 × Depth + 0.15 × Trust
    *
-   * 升降规则（防止单次波动触发）：
-   * - 连续 N=3 次 score > 0.7 → 升级（更亲密）
-   * - 连续 N=3 次 score < 0.3 → 降级（更疏远）
-   * - 只沿 Dunbar 阶梯 [500, 150, 50, 15, 5] 移动，不跳级
+   * Правила повышения/понижения (защита от единичных всплесков):
+   * - N=3 раза подряд score > 0.7 → апгрейд (стать ближе)
+   * - N=3 раза подряд score < 0.3 → даунгрейд (стать дальше)
+   * - Движение только по лесенке Данбара [500, 150, 50, 15, 5], без пропусков
    */
   .onTickEnd((ctx) => {
     normalizeContactProfileKeys(ctx.graph, ctx.state);
 
-    // 每 TIER_EVAL_INTERVAL ticks 评估一次
+    // Оценивать раз в TIER_EVAL_INTERVAL тиков
     if (ctx.tick % TIER_EVAL_INTERVAL !== 0 || ctx.tick === 0) return;
 
-    // 获取 observer 的 outcomeHistory（用于计算 Quality 维度）
+    // Получить outcomeHistory от observer (для вычисления измерения Quality)
     const obsState = readModState(ctx, "observer");
     const outcomeHistory = obsState?.outcomeHistory ?? [];
 
     for (const contactId of ctx.graph.getEntitiesByType("contact")) {
       const attrs = ctx.graph.getContact(contactId);
 
-      // ADR-91 Layer 3: Bot 不参与 tier 演化和结晶，锁定 tier=500
+      // ADR-91 Layer 3: Бот не участвует в эволюции tier и кристаллизации, зафиксирован на tier=500
       if (attrs.is_bot === true) {
         if ((attrs.tier ?? 150) !== 500) {
           ctx.graph.updateContact(contactId, { tier: 500 });
         }
-        continue; // 跳过后续 tier 评估 + 活跃模式检测 + 结晶扫描
+        continue; // Пропустить дальнейшую оценку tier + обнаружение активных паттернов + сканирование кристаллизации
       }
 
-      // ADR-178: rv_* 每维度独立衰减
+      // ADR-178: rv_* затухает независимо по каждому измерению
       const rvPatch: Record<string, number | string> = {};
       let rvChanged = false;
       for (const dim of RV_DIMENSIONS) {
@@ -2065,7 +2068,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
       if (rvChanged) {
         // biome-ignore lint/suspicious/noExplicitAny: dynamic rv_${dim} keys cannot be statically typed as ContactAttrs
         ctx.graph.updateContact(contactId, rvPatch as any);
-        // 重算导出量
+        // Пересчитать производные величины
         const updatedAttrs = ctx.graph.getContact(contactId);
         const v = readRV(updatedAttrs);
         const vel = readVelocity(updatedAttrs);
@@ -2076,7 +2079,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
 
       const currentTier = attrs.tier ?? 150;
 
-      // 初始化 tracker
+      // Инициализировать трекер
       if (!ctx.state.tierTrackers[contactId]) {
         ctx.state.tierTrackers[contactId] = {
           consecutiveHigh: 0,
@@ -2089,19 +2092,19 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
       tracker.lastEvalTick = ctx.tick;
       tracker.lastEvalMs = ctx.nowMs;
 
-      // -- 三维评分 --
+      // -- Трёхмерная оценка --
 
-      // 1. Frequency: 最近 FREQUENCY_WINDOW ticks（1 天）的交互次数
-      // 优先用 DB action_log，fallback 到图属性 interaction_count
-      // P1-mods-1 修复: 使用窗口计数而非累积计数。
-      // P2-1 修复: 窗口从 100 ticks（1.67h）扩大到 1440 ticks（1 天），
-      // 配合日级 EXPECTED_FREQUENCY 值，避免 frequency 分数高度随机。
+      // 1. Frequency: число взаимодействий за последние FREQUENCY_WINDOW тиков (1 день)
+      // Приоритет — DB action_log, fallback — атрибут графа interaction_count
+      // P1-mods-1 fix: использовать оконный счётчик, а не накопленный.
+      // P2-1 fix: окно расширено с 100 тиков (1.67ч) до 1440 тиков (1 день),
+      // согласовано с дневными значениями EXPECTED_FREQUENCY, чтобы избежать высокой случайности балла frequency.
       // @see docs/adr/45-real-data-validation.md §3 Critical-1
       let interactionCount = 0;
       try {
         const db = getDb();
         const chatIdVariant = ensureChannelId(contactId) ?? contactId;
-        // ADR-110: 使用 createdAt 替代 tick 窗口查询
+        // ADR-110: Использовать createdAt вместо запроса по окну тиков
         const row = db
           .select({ count: sql<number>`count(*)` })
           .from(actionLog)
@@ -2114,10 +2117,10 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
           .get();
         interactionCount = row?.count ?? 0;
       } catch {
-        // DB 不可用时 frequency 为 0（保守策略，不影响其他维度）
+        // При недоступности DB frequency = 0 (консервативная стратегия, не влияет на другие измерения)
       }
 
-      // 2. Quality: 最近 10 条与该联系人相关的 outcome rating 均值
+      // 2. Quality: Среднее значение последних 10 оценок outcome, связанных с этим контактом
       const contactChatId = ensureChannelId(contactId) ?? contactId;
       const relevantOutcomes = outcomeHistory.filter(
         (r) => r.target === contactId || r.target === contactChatId,
@@ -2128,7 +2131,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
           ? recentOutcomes.reduce((s, r) => s + r.quality, 0) / recentOutcomes.length
           : 0;
 
-      // 3. Depth: 事实数量 + Thread 参与度
+      // 3. Depth: количество фактов + участие в Thread
       const factCount = getContactFacts(ctx.graph, contactId).length;
       const maxFacts = CONTACT_FACTS_LIMIT;
 
@@ -2143,10 +2146,10 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         }
       }
 
-      // ADR-198 F7a: 迁移到 rv_trust（图属性），替代 profile.trust（旧标量）
+      // ADR-198 F7a: Мигрировано на rv_trust (атрибут графа), заменяет profile.trust (старый скаляр)
       const contactTrust = readRV(attrs).trust;
 
-      // 互惠系数输入：从 contact 节点读取双方发起对话计数
+      // Входные данные коэффициента взаимности: читать счётчики инициации диалога из узла contact
       const aliceInit = Number(attrs.alice_initiated_count ?? 0);
       const contactInit = Number(attrs.contact_initiated_count ?? 0);
 
@@ -2157,13 +2160,13 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         factCount,
         maxFacts,
         threadInvolvement,
-        15, // maxThreads (门控上限)
+        15, // maxThreads (верхний предел управления)
         contactTrust,
         aliceInit,
         contactInit,
       );
 
-      // -- 连续阈值判定 --
+      // -- Определение последовательного порога --
       if (score >= TIER_UPGRADE_THRESHOLD) {
         tracker.consecutiveHigh++;
         tracker.consecutiveLow = 0;
@@ -2171,12 +2174,12 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         tracker.consecutiveLow++;
         tracker.consecutiveHigh = 0;
       } else {
-        // 中间区域：重置两个计数器
+        // Средняя зона: сбросить оба счётчика
         tracker.consecutiveHigh = 0;
         tracker.consecutiveLow = 0;
       }
 
-      // -- 升降级 --
+      // -- Повышение/понижение tier --
       if (tracker.consecutiveHigh >= TIER_CONSECUTIVE_REQUIRED) {
         const nextTier = nextCloserTier(currentTier);
         if (nextTier !== null) {
@@ -2185,9 +2188,9 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
             tier_changed_ms: ctx.nowMs,
             tier_direction: "upgrade",
           });
-          // ADR-123: tier 变更是结构性观测（自动记录 changelog）
+          // ADR-123: изменение tier — структурное наблюдение (автоматически записывается в changelog)
           ctx.graph.beliefs.update(contactId, "tier", nextTier, "structural", ctx.nowMs);
-          // ADR-204: 意识流 — tier 升级事件
+          // ADR-204: поток сознания — событие повышения tier
           try {
             const name = attrs.display_name ?? contactId;
             emitConsciousness(getDb(), ctx.tick, ctx.nowMs, {
@@ -2209,9 +2212,9 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
             tier_changed_ms: ctx.nowMs,
             tier_direction: "downgrade",
           });
-          // ADR-123: tier 变更是结构性观测（自动记录 changelog）
+          // ADR-123: изменение tier — структурное наблюдение (автоматически записывается в changelog)
           ctx.graph.beliefs.update(contactId, "tier", nextTier, "structural", ctx.nowMs);
-          // ADR-204: 意识流 — tier 降级事件
+          // ADR-204: поток сознания — событие понижения tier
           try {
             const name = attrs.display_name ?? contactId;
             emitConsciousness(getDb(), ctx.tick, ctx.nowMs, {
@@ -2227,9 +2230,9 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         tracker.consecutiveHigh = 0;
       }
 
-      // -- 活跃模式变化检测（场景 5: 长期陪伴增强） --
-      // 在 tier 评估周期中比较当前峰值活跃小时与上次记录的峰值，
-      // 检测显著日程变化（>= 3 小时偏移），如 "你最近又开始熬夜了"。
+      // -- Обнаружение изменения паттерна активности (сценарий 5: усиление долгосрочного сопровождения) --
+      // В цикле оценки tier сравниваем текущий пиковый час активности с последним записанным,
+      // выявляем значительные изменения расписания (смещение >= 3 ч), например "ты снова стал засиживаться допоздна".
       const traitBeliefs = ctx.graph.beliefs.getByEntityAttrPrefix(contactId, "trait:");
       let profile = ctx.state.contactProfiles[contactId];
       if (!profile && traitBeliefs.length > 0) {
@@ -2242,7 +2245,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
           const currentPeakHour = profile.activeHours.indexOf(maxActivity);
           if (profile.previousPeakHour !== null) {
             const shift = Math.abs(currentPeakHour - profile.previousPeakHour);
-            // 考虑跨午夜的环形距离（例如 23→1 = 2h，不是 22h）
+            // Учитываем круговое расстояние через полночь (напр. 23→1 = 2ч, а не 22ч)
             const circularShift = Math.min(shift, 24 - shift);
             if (circularShift >= 3) {
               const hourPeriod = (h: number) =>
@@ -2255,29 +2258,29 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
                     : `shifted from ${hourPeriod(profile.previousPeakHour)} to ${hourPeriod(currentPeakHour)}`;
               profile.scheduleShift = direction;
             } else {
-              profile.scheduleShift = null; // 变化不显著，清除
+              profile.scheduleShift = null; // изменение незначительно, очищаем
             }
           }
           profile.previousPeakHour = currentPeakHour;
         }
       }
 
-      // -- ADR-89 §Wave 2B: 印象结晶 + §Wave 3B: 结晶慢衰减 --
-      // 每 TIER_EVAL_INTERVAL 同时扫描该联系人的 trait beliefs。
+      // -- ADR-89 §Wave 2B: кристаллизация впечатлений + §Wave 3B: медленный распад кристаллизаций --
+      // Каждые TIER_EVAL_INTERVAL одновременно сканируем trait beliefs данного контакта.
       // @see docs/adr/89-impression-formation-system.md §Wave 2B/3B
       if (profile) {
         const obsState2 = readModState(ctx, "observer");
         const impressionCounts = obsState2?.impressionCounts ?? {};
 
         for (const [attr, belief] of traitBeliefs) {
-          // attr 形如 "trait:warmth"
+          // attr имеет вид "trait:warmth"
           const dimension = attr.slice("trait:".length);
           const countKey = `${contactId}::${attr}`;
           const obsCount = impressionCounts[countKey] ?? 0;
           const existing = profile.traits[dimension];
 
           if (existing) {
-            // ADR-110: 结晶慢衰减：半衰期 604800 秒 = 7 天，向 0（中性）回归
+            // ADR-110: медленный распад кристаллизации: период полураспада 604800 с = 7 дней, возврат к 0 (нейтральному)
             const lastMs =
               existing.lastReinforcedMs ??
               estimateEventMs({ tick: existing.lastReinforced }, ctx.nowMs, ctx.tick);
@@ -2285,17 +2288,17 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
             if (elapsedS > 0) {
               existing.value *= 2 ** -(elapsedS / CRYSTALLIZED_TRAIT_HALFLIFE_S);
             }
-            // |value| 太小 → 删除（特质已自然消退）
+            // |value| слишком мал → удалить (черта естественно угасла)
             if (Math.abs(existing.value) < CRYSTALLIZED_TRAIT_EPSILON) {
               delete profile.traits[dimension];
               continue;
             }
-            // μ 方向反转 → 解晶（认知更新：以前觉得友善，现在发现冷漠）
+            // μ меняет знак → декристаллизация (когнитивное обновление: раньше казался тёплым, теперь — холодным)
             if (existing.value > 0 !== belief.mu > 0 && belief.sigma2 < CRYSTALLIZE_SIGMA2) {
               delete profile.traits[dimension];
               continue;
             }
-            // self_sense 继续更新 → 刷新 lastReinforced
+            // self_sense продолжает обновляться → обновить lastReinforced
             const lastReinforcedMs =
               existing.lastReinforcedMs ??
               estimateEventMs({ tick: existing.lastReinforced }, ctx.nowMs, ctx.tick);
@@ -2305,7 +2308,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
               existing.value = Math.max(-1, Math.min(1, belief.mu));
             }
           } else {
-            // 未结晶 → 检查三条件结晶
+            // Не кристаллизована → проверить три условия кристаллизации
             if (
               belief.sigma2 < CRYSTALLIZE_SIGMA2 &&
               obsCount >= CRYSTALLIZE_MIN_OBS &&
@@ -2323,8 +2326,8 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         }
       }
 
-      // -- ADR-208: interest 结晶慢衰减（contact）--
-      // 与 trait 结晶衰减同频扫描（每 TIER_EVAL_INTERVAL ticks）。
+      // -- ADR-208: медленный распад кристаллизации интересов (contact) --
+      // Сканируем с той же частотой, что и распад trait (каждые TIER_EVAL_INTERVAL тиков).
       if (profile?.crystallizedInterests) {
         for (const [label, entry] of Object.entries(profile.crystallizedInterests)) {
           const elapsedS = (ctx.nowMs - entry.lastReinforcedMs) / 1000;
@@ -2341,7 +2344,7 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
       }
     }
 
-    // -- ADR-208: interest 结晶慢衰减（group）--
+    // -- ADR-208: медленный распад кристаллизации интересов (group) --
     for (const [channelId, gp] of Object.entries(ctx.state.groupProfiles ?? {})) {
       if (!gp.crystallizedInterests) continue;
       for (const [label, entry] of Object.entries(gp.crystallizedInterests)) {

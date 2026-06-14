@@ -1,14 +1,14 @@
 /**
- * ADR-220 + ADR-237: 频道场景渲染器。
+ * ADR-220 + ADR-237: Рендерер сцены канала.
  *
- * 频道是信息流实体——阅读 + react + 转发给朋友。
- * 不出现 bot/awareness/feedback/threads/conversation state。
+ * Канал — это сущность информационного потока: чтение + react + пересылка друзьям.
+ * Отсутствуют: bot/awareness/feedback/threads/conversation state.
  *
- * Sections（按顺序）：
- * 1. 时间 + 心情 — LLM 感知当前时刻和情绪状态
- * 2. 转发目标 — 联系人（@id + 兴趣）+ 群组（@id + topic），频道核心
- * 3. 消息流（带 msgId）— 频道核心，msgId 用于 irc forward --ref
- * 4. 内心低语 — 从 facetId 获取的 whisper
+ * Sections (по порядку):
+ * 1. Время + настроение — LLM воспринимает текущий момент и эмоциональное состояние
+ * 2. Цели пересылки — контакты (@id + интересы) + группы (@id + topic), ядро канала
+ * 3. Поток сообщений (с msgId) — ядро канала, msgId используется для irc forward --ref
+ * 4. Внутренний шёпот — whisper, полученный из facetId
  */
 
 import type { UserPromptSnapshot } from "../types.js";

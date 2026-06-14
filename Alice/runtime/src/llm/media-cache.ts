@@ -1,8 +1,8 @@
 /**
- * 媒体语义缓存 — 独立 SQLite KV（与主 alice.db 隔离）。
+ * Семантический кеш медиа — отдельная SQLite KV (изолирована от основной alice.db).
  *
- * 使用 raw better-sqlite3（无 Drizzle）——schema 简单，不需要 migration 体系。
- * 缓存贴纸集标题和 VLM 图片/GIF 描述，重启不丢失。
+ * Использует raw better-sqlite3 (без Drizzle) — схема простая, система миграций не нужна.
+ * Кешируются заголовки стикерпаков и описания изображений/GIF от VLM; не теряются при перезапуске.
  *
  * @see docs/adr/88-multimodal-proactive-behavior.md
  */
@@ -15,7 +15,7 @@ const log = createLogger("media-cache");
 
 let _db: InstanceType<typeof Database> | null = null;
 
-// prepared statements（initMediaCache 时初始化，closeMediaCache 时清空）
+// prepared statements (инициализируются в initMediaCache, очищаются в closeMediaCache)
 let _descGet: Statement | null = null;
 let _descSet: Statement | null = null;
 let _stickerGet: Statement | null = null;
@@ -24,8 +24,8 @@ let _ocrGet: Statement | null = null;
 let _ocrSet: Statement | null = null;
 
 /**
- * 初始化媒体缓存数据库：CREATE TABLE IF NOT EXISTS + WAL 模式。
- * 遵循 db/connection.ts 的单例模式：模块级 _db 变量 + init/close 生命周期。
+ * Инициализировать БД медиакеша: CREATE TABLE IF NOT EXISTS + режим WAL.
+ * Следует паттерну синглтона из db/connection.ts: модульная переменная _db + жизненный цикл init/close.
  */
 export function initMediaCache(dbPath = "media-cache.db"): void {
   if (_db) {
@@ -55,7 +55,7 @@ export function initMediaCache(dbPath = "media-cache.db"): void {
     );
   `);
 
-  // 预编译 prepared statements
+  // Предварительная компиляция prepared statements
   _descGet = _db.prepare("SELECT description FROM media_descriptions WHERE file_unique_id = ?");
   _descSet = _db.prepare(
     "INSERT OR REPLACE INTO media_descriptions (file_unique_id, media_type, description) VALUES (?, ?, ?)",
@@ -69,7 +69,7 @@ export function initMediaCache(dbPath = "media-cache.db"): void {
     "INSERT OR REPLACE INTO media_ocr (file_unique_id, ocr_text) VALUES (?, ?)",
   );
 
-  // 定期清理：删除 30 天前的记录（TTL = 30 天），防止无限增长
+  // Периодическая очистка: удаление записей старше 30 дней (TTL = 30 дней), предотвращение бесконечного роста
   const CACHE_TTL_SECONDS = 30 * 24 * 3600;
   const pruned = _db
     .prepare(`DELETE FROM media_descriptions WHERE created_at < unixepoch() - ?`)
@@ -91,7 +91,7 @@ export function initMediaCache(dbPath = "media-cache.db"): void {
   log.info("Media cache initialized", { dbPath });
 }
 
-/** 关闭媒体缓存数据库。 */
+/** Закрыть БД медиакеша. */
 export function closeMediaCache(): void {
   _descGet = null;
   _descSet = null;
@@ -106,17 +106,17 @@ export function closeMediaCache(): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 媒体描述缓存（photo / gif）
+// Кеш описаний медиа (photo / gif)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 获取缓存的媒体描述。 */
+/** Получить закешированное описание медиа. */
 export function getCachedDescription(fileUniqueId: string): string | undefined {
   if (!_descGet) return undefined;
   const row = _descGet.get(fileUniqueId) as { description: string } | undefined;
   return row?.description;
 }
 
-/** 写入媒体描述缓存。 */
+/** Записать описание медиа в кеш. */
 export function setCachedDescription(
   fileUniqueId: string,
   mediaType: string,
@@ -126,10 +126,10 @@ export function setCachedDescription(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 贴纸集标题缓存
+// Кеш заголовков стикерпаков
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 获取缓存的贴纸集标题。 */
+/** Получить закешированный заголовок стикерпака. */
 export function getCachedStickerSetTitle(
   setId: string,
 ): { title: string; shortName: string } | undefined {
@@ -139,23 +139,23 @@ export function getCachedStickerSetTitle(
   return { title: row.title, shortName: row.short_name };
 }
 
-/** 写入贴纸集标题缓存。 */
+/** Записать заголовок стикерпака в кеш. */
 export function setCachedStickerSetTitle(setId: string, title: string, shortName: string): void {
   _stickerSet?.run(setId, title, shortName);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// OCR 文字缓存
+// Кеш OCR-текста
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 获取缓存的 OCR 文字。 */
+/** Получить закешированный OCR-текст. */
 export function getCachedOcrText(fileUniqueId: string): string | undefined {
   if (!_ocrGet) return undefined;
   const row = _ocrGet.get(fileUniqueId) as { ocr_text: string } | undefined;
   return row?.ocr_text;
 }
 
-/** 写入 OCR 文字缓存。 */
+/** Записать OCR-текст в кеш. */
 export function setCachedOcrText(fileUniqueId: string, ocrText: string): void {
   _ocrSet?.run(fileUniqueId, ocrText);
 }

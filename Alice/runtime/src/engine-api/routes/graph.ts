@@ -1,30 +1,30 @@
 /**
- * Engine API — 图路由。
+ * Engine API — граф-маршруты.
  *
  * GET  /graph/:entity/:attr → { "value": ... }
  * POST /graph/:entity/:attr → body { "value": ... }
  *
- * entity 格式：self, contact:<platform>:xxx, channel:<platform>:xxx
+ * Формат entity: self, contact:<platform>:xxx, channel:<platform>:xxx
  *
  * @see docs/adr/202-engine-api.md
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { EngineApiDeps } from "../server.js";
 
-/** entity 格式白名单：self | contact:<platform>:id | channel:<platform>:id。 */
+/** Белый список форматов entity: self | contact:<platform>:id | channel:<platform>:id. */
 const ENTITY_PATTERN = /^(?:self|(?:contact|channel):[a-z][a-z0-9_-]*:.+)$/u;
 
-/** 将 URL 中的 entity 段解析为 graph nodeId。格式不合法返回 null。 */
+/** Разбирает сегмент entity из URL в graph nodeId. При неверном формате возвращает null. */
 function resolveEntityId(entity: string): string | null {
   const decoded = decodeURIComponent(entity);
   if (!ENTITY_PATTERN.test(decoded)) return null;
   return decoded;
 }
 
-/** Body 大小上限（1 MB）——防止恶意/异常客户端 OOM。 */
+/** Лимит размера тела запроса (1 МБ) — защита от OOM при вредоносных/аномальных клиентах. */
 const MAX_BODY = 1024 * 1024;
 
-/** 从 request body 收集 JSON。超过 MAX_BODY 时 reject。 */
+/** Читает JSON из тела запроса. Отклоняет при превышении MAX_BODY. */
 function readBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -50,7 +50,7 @@ function readBody(req: IncomingMessage): Promise<unknown> {
 }
 
 /**
- * 处理 GET /graph/:entity/:attr。
+ * Обрабатывает GET /graph/:entity/:attr.
  */
 export function handleGraphGet(
   entity: string,
@@ -76,10 +76,10 @@ export function handleGraphGet(
 }
 
 /**
- * 处理 POST /graph/:entity/:attr。
+ * Обрабатывает POST /graph/:entity/:attr.
  *
- * 写入限制：attr 必须以 `last_` 开头（编译器生成的 resultAttrKey 都以此为前缀）。
- * 防止 Skill 覆盖内部图属性（display_name、trust_tier 等）。
+ * Ограничение записи: attr должен начинаться с `last_` (все resultAttrKey, генерируемые компилятором, имеют этот префикс).
+ * Защищает внутренние атрибуты графа (display_name, trust_tier и др.) от перезаписи Skill-ом.
  */
 export async function handleGraphSet(
   entity: string,
@@ -94,7 +94,7 @@ export async function handleGraphSet(
     res.end(JSON.stringify({ error: "invalid entity format" }));
     return;
   }
-  // 写入白名单：只允许 last_* 前缀（编译器生成的 resultAttrKey）
+  // Белый список записи: разрешён только префикс last_* (resultAttrKey от компилятора)
   if (!attr.startsWith("last_")) {
     res.writeHead(403, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "write restricted to last_* attributes" }));

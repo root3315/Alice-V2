@@ -1,17 +1,17 @@
 /**
- * ReAct Pipeline — Clean-room 实现（ADR-140）。
+ * ReAct Pipeline — реализация с нуля (ADR-140).
  *
- * 替代 act/ 目录的核心循环、prompt 构建、结果处理。
- * 叶子模块（timeline, messages, presence, group-meta）
- * 仍从 act/ 导入。
+ * Заменяет основной цикл, построение prompt и обработку результата в директории act/.
+ * Листовые модули (timeline, messages, presence, group-meta)
+ * по-прежнему импортируются из act/.
  *
  * @see docs/adr/140-react-efficiency-architecture.md
  */
 
 export { formatQueryObservations } from "../../telegram/query-observations.js";
 export { extractRuntimeConfig } from "../act/runtime-config.js";
-// 修正
-// 反馈闭环
+// Исправление
+// Цикл обратной связи
 export {
   type AdaptiveCooldownOpts,
   adaptiveGamma,
@@ -25,8 +25,8 @@ export {
   processResult,
   updateReachability,
 } from "./feedback-arc.js";
-// 核心循环
+// Основной цикл
 export { type ActContext, startReActLoop } from "./orchestrator.js";
-// Prompt — buildLayeredPrompt / callLLM 已迁入 tick 管线，不再从此处导出
-// 类型
+// Prompt — buildLayeredPrompt / callLLM перенесены в конвейер tick, больше не экспортируются отсюда
+// Типы
 export type { SubcycleResult } from "./types.js";

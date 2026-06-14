@@ -1,7 +1,7 @@
 /**
- * 首次启动：iterDialogs + getContacts → 初始图。
+ * Первый запуск: iterDialogs + getContacts → начальный граф.
  *
- * 从 Telegram 获取对话列表和联系人，构建初始 WorldModel。
+ * Получает список диалогов и контакты из Telegram, строит начальную WorldModel.
  */
 import type { TelegramClient } from "@mtcute/node";
 import { Chat, User } from "@mtcute/node";
@@ -13,35 +13,35 @@ import { createLogger } from "../utils/logger.js";
 const log = createLogger("bootstrap");
 
 /**
- * 从 Telegram 构建初始图。
+ * Строит начальный граф из Telegram.
  *
- * 步骤：
- * 1. 获取自身信息 → AGENT 节点
- * 2. iterDialogs → CHANNEL 节点
- * 3. 对私聊和小群的对方/成员 → CONTACT 节点 + 边
+ * Шаги:
+ * 1. Получаем собственные данные → узел AGENT
+ * 2. iterDialogs → узлы CHANNEL
+ * 3. Для собеседников/участников в личных чатах и малых группах → узлы CONTACT + рёбра
  */
 export async function buildInitialGraph(client: TelegramClient): Promise<WorldModel> {
   const G = new WorldModel();
   G.tick = 0;
 
-  // 1. 自身节点
+  // 1. Собственный узел
   const self = await client.getMe();
   const selfId = `self`;
   G.addAgent(selfId);
   log.info("Agent node created", { userId: self.id });
 
-  // 2. 遍历对话
+  // 2. Перебираем диалоги
   let dialogCount = 0;
   for await (const dialog of client.iterDialogs()) {
     const peer = dialog.peer;
 
-    // 跳过 Saved Messages（self-chat）——Alice 不应向自己发消息
+    // Пропускаем Saved Messages (self-chat) — Алиса не должна писать самой себе
     if (peer instanceof User && peer.id === self.id) continue;
 
     const chatId = String(peer.id);
     const channelId = telegramChannelId(chatId);
 
-    // 判断 peer 类型：User 是私聊，Chat 是群/频道
+    // Определяем тип peer: User — личный чат, Chat — группа/канал
     const isUser = peer instanceof User;
     const isChat = peer instanceof Chat;
 
@@ -57,19 +57,19 @@ export async function buildInitialGraph(client: TelegramClient): Promise<WorldMo
       chatType = "group";
     }
 
-    // ADR-206: 频道不再跳过，作为独立实体进入世界模型
-    // 推测 tier：私聊 → 50，群聊 → 150，频道 → 500（低优先级信息源）
+    // ADR-206: каналы больше не пропускаются, входят в мировую модель как самостоятельные сущности
+    // Предполагаемый tier: личный чат → 50, группа → 150, канал → 500 (низкоприоритетный источник)
     const tierContact: DunbarTier =
       chatType === "private" ? 50 : chatType === "channel" ? 500 : 150;
 
-    // ADR-206 W7: 从 Chat 对象探测 alice_role（零 API 成本）
+    // ADR-206 W7: определяем alice_role из объекта Chat (без затрат на API)
     let aliceRole: string | undefined;
     if (isChat) {
       if (peer.isCreator) aliceRole = "owner";
       else if (peer.isAdmin) aliceRole = "admin";
     }
 
-    // ADR-220: 写入 display_name（群组/频道使用 title，私聊使用 displayName）
+    // ADR-220: записываем display_name (для групп/каналов используем title, для личных чатов — displayName)
     const channelDisplayName = isChat ? peer.title : isUser ? peer.displayName : undefined;
 
     G.addChannel(channelId, {
@@ -80,10 +80,10 @@ export async function buildInitialGraph(client: TelegramClient): Promise<WorldMo
       ...(aliceRole ? { alice_role: aliceRole } : {}),
     });
 
-    // 自己 monitors 频道
+    // self monitors канал
     G.addRelation(selfId, "monitors", channelId);
 
-    // 私聊 → 创建 CONTACT 节点
+    // Личный чат → создаём узел CONTACT
     if (isUser) {
       const contactId = telegramContactId(chatId);
       if (!G.has(contactId)) {

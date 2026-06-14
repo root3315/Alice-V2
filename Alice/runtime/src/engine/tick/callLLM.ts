@@ -1,10 +1,10 @@
 /**
- * Tick LLM 调用 — structured block transport。
+ * Tick LLM вызов — транспорт структурированных блоков.
  *
- * 语义：
- * - 单次 generateText 输出 JSON {script, afterward, residue?}
- * - Host 只做本地脚本预验证，失败时允许 1 次结构化修正
- * - 验证通过后直接执行脚本；续轮由外层 tick / engagement 控制
+ * Семантика:
+ * - Один вызов generateText выводит JSON {script, afterward, residue?}
+ * - Host выполняет только локальную предварительную валидацию скрипта; при ошибке допускается 1 структурированная правка
+ * - После прохождения валидации скрипт выполняется напрямую; следующие раунды контролирует внешний tick / engagement
  *
  * @see docs/adr/246-transport-separation-block-first-execution.md
  * @see docs/adr/213-tool-calling-act-thread.md

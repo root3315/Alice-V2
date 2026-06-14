@@ -1,20 +1,20 @@
 /**
- * Channel Mod — ADR-206: 频道信息流。
+ * Channel Mod — ADR-206: лента каналов.
  *
- * Alice 的 Telegram 视觉：订阅频道是她的原生信息源。
- * 与 Feed Mod（互联网信息源）互补：
- * - Feed Mod = "刷手机看到的"（API 拉取外部数据源）
- * - Channel Mod = "刷 Telegram 看到的"（Telegram 频道未读）
+ * Telegram-зрение Алисы: подписанные каналы — её нативный источник информации.
+ * Дополняет Feed Mod (интернет-источники):
+ * - Feed Mod = "увидела в ленте телефона" (API-получение внешних источников)
+ * - Channel Mod = "листала Telegram" (непрочитанное в Telegram-каналах)
  *
- * 架构要点（复用 Feed Mod 模式）：
- * - contribute 同步读取 WorldModel 中频道节点的未读状态
- * - 行为门控：压力 > 0.5 不刷频道、冷却期、概率跳过
- * - Token budget 与 Feed Mod 共享上限（ADR-206 C2）
- * - 不创建线程——频道内容是环境信息，不是事务
- * - 不新增 action——LLM 用现有 send_message/forward_message 分享
+ * Ключевые архитектурные решения (переиспользуют паттерн Feed Mod):
+ * - contribute синхронно читает состояние непрочитанного узлов каналов в WorldModel
+ * - поведенческий gate: давление > 0.5 — не листать каналы; кулдаун; вероятностный пропуск
+ * - Token budget общий с Feed Mod (ADR-206 C2)
+ * - Не создаёт треды — контент канала это фоновая информация, не транзакция
+ * - Не добавляет новых action — LLM делится через существующие send_message/forward_message
  *
  * @see docs/adr/206-channel-information-flow/206-channel-information-flow.md §4
- * @see docs/adr/167-rsshub-perception-channel.md — Feed Mod 架构参考
+ * @see docs/adr/167-rsshub-perception-channel.md — архитектурный референс Feed Mod
  */
 import { createMod } from "../core/mod-builder.js";
 import { PromptBuilder } from "../core/prompt-style.js";
@@ -25,34 +25,34 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("channel-mod");
 
-// ── 行为真实性参数（与 Feed Mod 对齐）──────────────────────────────────────
+// ── Параметры реалистичности поведения (согласованы с Feed Mod) ────────────
 
-/** 压力阈值：高于此值时 Alice 在"忙正事"，不刷频道。 */
+/** Порог давления: при превышении Алиса "занята делами" и не листает каналы. */
 const PRESSURE_GATE = 0.5;
 
-/** 注入冷却期（ms）：距上次注入不足此时间则跳过。 */
+/** Кулдаун инжекции (мс): если с последней инжекции прошло меньше — пропустить. */
 const INJECT_COOLDOWN_MS = 10 * 60_000; // 10 min
 
-/** 概率性跳过：即使满足条件也有此概率不注入（模拟"这次没看 Telegram"）。 */
+/** Вероятностный пропуск: даже при выполнении условий с этой вероятностью не инжектировать (имитация "в этот раз не зашла в Telegram"). */
 const SKIP_PROBABILITY = 0.3;
 
-/** 每次最多展示频道数。 */
+/** Максимальное число каналов для отображения за раз. */
 const MAX_CHANNELS_PER_INJECT = 3;
 
-/** ADR-206 C2: Channel + Feed 共享 token 预算的 channel 份额上限（字符数近似）。 */
+/** ADR-206 C2: верхний предел доли канала в совместном token-бюджете Channel + Feed (приблизительно в символах). */
 const MAX_CHARS = 600;
 
-/** ADR-206 C3: 同一频道的内容分享冷却时间（ms）。避免刷屏式转发。 */
+/** ADR-206 C3: кулдаун репоста контента одного и того же канала (мс). Предотвращает спам-пересылку. */
 const SHARE_COOLDOWN_MS = 30 * 60_000; // 30 min
 
-// ── Mod 状态 ─────────────────────────────────────────────────────────────────
+// ── Состояние Mod ─────────────────────────────────────────────────────────────
 
 interface ChannelModState {
-  /** 上次成功注入频道动态的时间（ms）。 */
+  /** Время последней успешной инжекции обновлений канала (мс). */
   lastInjectMs: number;
 }
 
-// ── Mod 定义 ─────────────────────────────────────────────────────────────────
+// ── Определение Mod ─────────────────────────────────────────────────────────
 
 export const channelMod = createMod<ChannelModState>("channel", {
   category: "mechanic",
@@ -60,22 +60,22 @@ export const channelMod = createMod<ChannelModState>("channel", {
   initialState: { lastInjectMs: 0 },
 })
   .contribute((ctx): ContributionItem[] => {
-    // ── 行为门控：模拟真实"刷 Telegram"条件 ──
+    // ── Поведенческий gate: имитация реального "листания Telegram" ──
 
-    // 1. 压力门控：忙着处理消息时不刷频道
+    // 1. gate по давлению: не листать каналы когда занята обработкой сообщений
     const pressure = readPressureApi(ctx);
     if (pressure > PRESSURE_GATE) return [];
 
-    // 2. 冷却期：刚看过频道不会马上又看
+    // 2. кулдаун: только что смотрела каналы — не будет смотреть снова сразу
     const now = ctx.nowMs;
     if (ctx.state.lastInjectMs > 0 && now - ctx.state.lastInjectMs < INJECT_COOLDOWN_MS) {
       return [];
     }
 
-    // 3. 概率性跳过：人不是每时每刻都在刷 Telegram
+    // 3. вероятностный пропуск: человек не сидит в Telegram каждую секунду
     if (Math.random() < SKIP_PROBABILITY) return [];
 
-    // ── 收集频道未读状态 ──
+    // ── Сбор состояния непрочитанного каналов ──
 
     const G = ctx.graph;
     const channelSummaries: Array<{
@@ -87,7 +87,7 @@ export const channelMod = createMod<ChannelModState>("channel", {
 
     for (const nodeId of G.getEntitiesByType("channel")) {
       const attrs = G.getChannel(nodeId);
-      // 只处理 Telegram channel 类型（不是 private/group/supergroup）
+      // обрабатывать только тип Telegram channel (не private/group/supergroup)
       if (attrs.chat_type !== "channel") continue;
       // Недостижимые/удалённые каналы (кикнули/удалили) — не показываем как живые.
       if (attrs.failure_type === "permanent" || (attrs.reachability_score ?? 1) <= 0) continue;
@@ -96,7 +96,7 @@ export const channelMod = createMod<ChannelModState>("channel", {
       const role = String(attrs.alice_role ?? "subscriber");
       const name = safeDisplayName(G, nodeId);
 
-      // 跳过无未读且非 admin 的频道
+      // пропускать каналы без непрочитанных и не admin
       if (unread === 0 && role === "subscriber") continue;
 
       channelSummaries.push({ name, unread, role, nodeId });
@@ -104,14 +104,14 @@ export const channelMod = createMod<ChannelModState>("channel", {
 
     if (channelSummaries.length === 0) return [];
 
-    // 按未读数降序排列，取 top N
+    // сортировать по убыванию непрочитанных, брать top N
     channelSummaries.sort((a, b) => b.unread - a.unread);
     const toShow = channelSummaries.slice(0, MAX_CHANNELS_PER_INJECT);
 
-    // 记录注入时间
+    // фиксируем время инжекции
     ctx.state.lastInjectMs = now;
 
-    // 渲染为 prompt section
+    // рендерим как prompt section
     let totalChars = 0;
     const lines = [];
     for (const ch of toShow) {
@@ -120,7 +120,7 @@ export const channelMod = createMod<ChannelModState>("channel", {
       if (ch.role === "owner" || ch.role === "admin") {
         line = `${ch.name} (твой канал, ${ch.role})`;
         if (ch.unread > 0) line += ` — новых сообщений: ${ch.unread}`;
-        // ADR-206 C4: 发布冷却提示
+        // ADR-206 C4: подсказка о кулдауне публикации
         const lastPubMs = Number(attrs.last_publish_ms ?? 0);
         if (lastPubMs > 0) {
           const hoursSincePub = Math.floor((now - lastPubMs) / 3_600_000);
@@ -133,14 +133,14 @@ export const channelMod = createMod<ChannelModState>("channel", {
       } else {
         line = `${ch.name} — непрочитанных: ${ch.unread}`;
       }
-      // ADR-206 C3: 分享频率提示——让 LLM 知道最近已分享过
+      // ADR-206 C3: подсказка о частоте репостов — LLM должен знать о недавнем шаринге
       const lastSharedMs = Number(attrs.last_shared_ms ?? 0);
       if (lastSharedMs > 0 && now - lastSharedMs < SHARE_COOLDOWN_MS) {
         line += " (недавно уже делилась)";
       }
 
       totalChars += line.length;
-      if (totalChars > MAX_CHARS) break; // ADR-206 C2: token budget
+      if (totalChars > MAX_CHARS) break; // ADR-206 C2: token-бюджет
 
       lines.push(PromptBuilder.of(line));
     }
@@ -154,8 +154,8 @@ export const channelMod = createMod<ChannelModState>("channel", {
         "channel-updates",
         lines,
         "Что нового в каналах",
-        41, // order: 在 feed-items (40) 之后
-        25, // priority: 低于 feed（feed=30），可被 token 预算裁剪
+        41, // order: после feed-items (40)
+        25, // priority: ниже feed (feed=30), может быть урезан token-бюджетом
       ),
     ];
   })

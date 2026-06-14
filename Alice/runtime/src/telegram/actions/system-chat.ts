@@ -41,9 +41,9 @@ async function runAliceChat(
   args: string[],
   chatId?: number,
 ): Promise<string> {
-  // 显式传递 --in flag 替代隐式 ALICE_TARGET_CHAT 环境变量。
-  // --in 必须在 subcommand 之后（citty 解析要求），
-  // 且仅在 buildAliceChatArgs 未包含 --in 时注入。
+  // Явно передаём флаг --in вместо неявной переменной окружения ALICE_TARGET_CHAT.
+  // --in должен идти после subcommand (требование парсера citty),
+  // и добавляется только если buildAliceChatArgs ещё не включил --in.
   const targetChat = chatId ?? Number(ctx.contextVars?.TARGET_CHAT ?? NaN);
   const hasExplicitIn = args.includes("--in");
   const fullArgs =

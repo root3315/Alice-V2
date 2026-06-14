@@ -1,14 +1,14 @@
 /**
- * ADR-233: TC 循环 — 原生 tool_use + BT 可变尾部。
+ * ADR-233: TC-цикл — нативный tool_use + изменяемый хвост BT.
  *
- * 核心循环：LLM call → tool_use → execute → tool_result → 回 LLM
- * 终止条件：LLM end_turn（无 tool_use）或触及 TC_MAX_TOOL_CALLS 预算
+ * Основной цикл: вызов LLM → tool_use → выполнение → tool_result → обратно в LLM
+ * Условие завершения: LLM end_turn (нет tool_use) или исчерпан бюджет TC_MAX_TOOL_CALLS
  *
- * 执行复用：直接调用 shell-executor.ts → docker.ts（ADR-207 persistent session）。
+ * Повторное использование выполнения: прямой вызов shell-executor.ts → docker.ts (ADR-207 persistent session).
  *
- * 双区模型：
- * - 累积区：messages 数组（自然 append-only，LLM 看到完整 tool 历史）
- * - 可变区：system prompt 可变尾部（每 episode 由 contribute() 重算）
+ * Двухзонная модель:
+ * - Накопительная зона: массив messages (естественный append-only, LLM видит полную историю инструментов)
+ * - Изменяемая зона: изменяемый хвост system prompt (пересчитывается при каждом episode через contribute())
  *
  * @see docs/adr/233-native-toolcall-bt-hybrid.md
  * @see docs/adr/234-wave5-session-erratum.md
@@ -30,10 +30,10 @@ import { createLogger } from "../../utils/logger.js";
 
 const log = createLogger("tick/tc-loop");
 
-/** ADR-233: 单 episode 内最多 tool_use 次数（含 signal）。 */
+/** ADR-233: Максимальное количество вызовов tool_use в одном episode (включая signal). */
 export const TC_MAX_TOOL_CALLS = 8;
 
-// 工具名常量
+// Константы имён инструментов
 const BASH_TOOL_NAME = "bash";
 const SIGNAL_TOOL_NAME = "signal";
 type ToolChoice = "required" | "auto";
@@ -74,7 +74,7 @@ export interface TCAssistantRoundTrace {
 }
 
 /**
- * TC 循环上下文。
+ * Контекст TC-цикла.
  */
 export interface TCLoopContext {
   openai: OpenAI;
@@ -82,31 +82,31 @@ export interface TCLoopContext {
   providerName: string;
   systemPrompt: string;
   userMessage: string;
-  /** ADR-234: 执行命令时需要的 contextVars（传给 executeShellScript）。 */
+  /** ADR-234: contextVars, необходимые при выполнении команд (передаются в executeShellScript). */
   contextVars?: Record<string, unknown>;
 }
 
 /**
- * TC 循环执行结果 — tool 编排元数据 + 命令执行结果。
+ * Результат выполнения TC-цикла — метаданные оркестрации инструментов + результат выполнения команд.
  */
 export interface TCLoopResult extends ScriptExecutionResult {
-  /** signal 工具的 afterward 值（tc-loop 内保证非 undefined）。 */
+  /** Значение afterward инструмента signal (внутри tc-loop гарантированно не undefined). */
   afterward: Afterward;
-  /** tool_use 调用次数。 */
+  /** Количество вызовов tool_use. */
   toolCallCount: number;
-  /** assistant 轮次数（一次 ChatCompletion 响应算一轮）。 */
+  /** Количество assistant-раундов (один ответ ChatCompletion = один раунд). */
   assistantTurnCount?: number;
-  /** bash 工具调用次数。 */
+  /** Количество вызовов инструмента bash. */
   bashCallCount?: number;
-  /** signal 工具调用次数。 */
+  /** Количество вызовов инструмента signal. */
   signalCallCount?: number;
-  /** 是否触及 TC_MAX_TOOL_CALLS 预算上限。 */
+  /** Исчерпан ли бюджет TC_MAX_TOOL_CALLS. */
   budgetExhausted: boolean;
-  /** 原始脚本（LLM 生成的命令行，用于诊断日志）。 */
+  /** Исходный скрипт (командная строка, сгенерированная LLM, для диагностических логов). */
   rawScript: string;
-  /** 聚合的 `$ cmd\noutput` 块（完整命令 + 输出对）。 */
+  /** Агрегированные блоки `$ cmd\noutput` (полные пары команда + вывод). */
   commandOutput: string;
-  /** TC 内部真实 transcript（按 assistant round 保真）。 */
+  /** Реальный внутренний transcript TC-цикла (с точностью до assistant-раунда). */
   transcript?: TCAssistantRoundTrace[];
 }
 
@@ -164,7 +164,7 @@ function normalizeSignalAfterward(value: unknown): Afterward {
 }
 
 /**
- * 运行 TC 循环 — 使用 shell-executor 执行（复用 docker.ts persistent session）。
+ * Запустить TC-цикл — выполнение через shell-executor (повторно использует docker.ts persistent session).
  */
 export async function runTCLoop(ctx: TCLoopContext): Promise<TCLoopResult> {
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
@@ -184,7 +184,7 @@ export async function runTCLoop(ctx: TCLoopContext): Promise<TCLoopResult> {
   const transcript: TCAssistantRoundTrace[] = [];
   const stopLossCounts = new Map<StopLossErrorClass, number>();
 
-  // ADR-234: 聚合每次执行的结果
+  // ADR-234: Агрегируем результаты каждого выполнения
   const executionResult: ScriptExecutionResult = {
     logs: [],
     errors: [],
@@ -202,8 +202,8 @@ export async function runTCLoop(ctx: TCLoopContext): Promise<TCLoopResult> {
 
   try {
     tcLoop: while (toolCallCount < TC_MAX_TOOL_CALLS) {
-      // ADR-233: 首轮强制 tool_choice="required"，确保模型至少调用一次工具（bash 或 signal）。
-      // 后续轮次 "auto" 允许自然 end_turn。
+      // ADR-233: В первом раунде принудительно tool_choice="required", чтобы модель вызвала хотя бы один инструмент (bash или signal).
+      // В последующих раундах "auto" допускает естественный end_turn.
       const choice: ToolChoice = toolCallCount === 0 ? "required" : "auto";
       const response = await withResilience(
         () =>
@@ -287,10 +287,10 @@ export async function runTCLoop(ctx: TCLoopContext): Promise<TCLoopResult> {
 
           rawScripts.push(command);
 
-          // ADR-234: 使用 shell-executor 执行（复用 docker.ts persistent session）
+          // ADR-234: Выполнение через shell-executor (повторно использует docker.ts persistent session)
           const result = await executeShellScript(command, { contextVars: ctx.contextVars });
 
-          // ADR-234: 聚合 ScriptExecutionResult
+          // ADR-234: Агрегируем ScriptExecutionResult
           executionResult.logs.push(...result.logs);
           executionResult.errors.push(...result.errors);
           executionResult.instructionErrors.push(...result.instructionErrors);
@@ -426,7 +426,7 @@ export async function runTCLoop(ctx: TCLoopContext): Promise<TCLoopResult> {
     signalCallCount,
     budgetExhausted,
     transcript,
-    // ScriptExecutionResult 字段
+    // Поля ScriptExecutionResult
     logs: executionResult.logs,
     errors: executionResult.errors,
     instructionErrors: executionResult.instructionErrors,

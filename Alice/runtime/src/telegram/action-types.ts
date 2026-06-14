@@ -1,12 +1,12 @@
 /**
- * Telegram 动作类型系统 — 判别联合 + 执行上下文。
+ * Система типов Telegram-действий — размеченное объединение + контекст выполнения.
  *
- * TelegramActionDef 是 WriteAction | QueryAction 判别联合：
- * - WriteAction: 终端批量执行，无 CQRS 字段
- * - QueryAction: 立即执行，结果注入下一轮 observation
+ * TelegramActionDef — размеченное объединение WriteAction | QueryAction:
+ * - WriteAction: финальное пакетное выполнение, без CQRS-полей
+ * - QueryAction: немедленное выполнение, результат инжектируется в observation следующего тика
  *
- * 判别器: `returnsResult` — true 为 QueryAction，undefined/absent 为 WriteAction。
- * 编译期强制 CQRS 四字段全有或全无，消除无效组合。
+ * Дискриминатор: `returnsResult` — true для QueryAction, undefined/absent для WriteAction.
+ * Компилятор принудительно требует все четыре CQRS-поля вместе или ни одного.
  *
  * @see docs/adr/51-m5-interaction-primitives-implementation.md
  * @see docs/adr/105-react-cqrs-read-during-next.md
@@ -20,31 +20,31 @@ import type { ChannelNodeId, TelegramId } from "../graph/entities.js";
 import type { WorldModel } from "../graph/world-model.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 参数定义
+// Определения параметров
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 参数类型，决定沙箱注入时的 coerce 行为。 */
+/** Тип параметра — определяет поведение coerce при инжекции в sandbox. */
 export type ActionParamType = "string" | "number" | "array";
 
-/** 单个参数定义（同时服务于注入 coerce 和声明生成）。 */
+/** Определение одного параметра (обслуживает как coerce при инжекции, так и генерацию объявлений). */
 export interface ActionParamDef {
   type: ActionParamType;
-  /** 必填参数缺失时 coerce 为默认值（string→""，number→0）。 */
+  /** Если обязательный параметр отсутствует, coerce подставляет значение по умолчанию (string→"", number→0). */
   required: boolean;
-  /** 人类可读描述（写入 LLM 手册）。 */
+  /** Описание для человека (записывается в руководство LLM). */
   description: string;
-  /** 可选 Zod schema——存在时覆盖 type/required 的自动推导 coerce 逻辑。 */
+  /** Опциональная Zod-схема — при наличии переопределяет автовыводимую логику coerce для type/required. */
   schema?: z.ZodTypeAny;
   /**
-   * 上下文自动注入 — 值为 contextVars 中的键名。
+   * Автоматический инжект из контекста — значение является ключом в contextVars.
    *
-   * 设置后该参数对 LLM 完全不可见：
-   * - 不写入手册声明（declaration.ts 跳过）
-   * - 不占位置参数位（沙箱注入时跳过，LLM 无需传入）
-   * - 执行时从 contextVars[inject] 自动填充
+   * После установки параметр полностью невидим для LLM:
+   * - не записывается в объявление руководства (declaration.ts пропускает)
+   * - не занимает позиционный слот (sandbox пропускает при инжекции, LLM не передаёт)
+   * - при выполнении заполняется автоматически из contextVars[inject]
    *
-   * 这是四柱隔离模型的结构性实现：不是限制 LLM 填错值，
-   * 而是让 LLM 根本无法指定值 — make invalid states unrepresentable。
+   * Это структурная реализация модели четырёхстороннего разделения: не ограничиваем LLM от ввода неверного значения,
+   * а делаем так, чтобы LLM вообще не мог указать значение — make invalid states unrepresentable.
    *
    * @example chatId with inject: "TARGET_CHAT"
    *   → LLM writes react(msgId, emoji) instead of react(chatId, msgId, emoji)
@@ -54,41 +54,41 @@ export interface ActionParamDef {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 执行上下文
+// Контекст выполнения
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** impl 函数的执行上下文（由 action-executor 创建并注入）。 */
+/** Контекст выполнения функции impl (создаётся и инжектируется action-executor). */
 export interface ActionImplContext {
   client: TelegramClient;
   G: WorldModel;
   dispatcher: Dispatcher;
   tick: number;
-  /** 当前轮的上下文变量（如 TARGET_CHAT），供 exec/system commands 透传。 */
+  /** Переменные контекста текущего тика (например, TARGET_CHAT), пробрасываются в exec/system commands. */
   contextVars?: Readonly<Record<string, unknown>>;
   log: {
     info(msg: string, data?: Record<string, unknown>): void;
     warn(msg: string, data?: Record<string, unknown>): void;
   };
-  /** chatId（number / channel:xxx / contact:xxx / 纯数字字符串）→ Telegram 数字 ID。 */
+  /** chatId (number / channel:xxx / contact:xxx / строка с цифрами) → числовой Telegram ID. */
   parseChatId(chatId: string | number | TelegramId): TelegramId;
-  /** chatId → 图节点 ID（channel:xxx 格式）。 */
+  /** chatId → ID узла графа (формат channel:xxx). */
   ensureGraphId(chatId: string | number | TelegramId): ChannelNodeId;
 
-  // ── 注入式配置（取代模块级全局变量）──
+  // ── Инжектируемая конфигурация (вместо глобальных переменных уровня модуля) ──
 
-  /** TTS 配置（send_voice 使用）。未配置时各字段为空字符串。 */
+  /** Конфигурация TTS (используется send_voice). При отсутствии настроек все поля — пустые строки. */
   ttsConfig: TtsConfig;
-  /** Exa API key（google / visit 使用）。空字符串表示未配置。 */
+  /** Exa API key (используется google / visit). Пустая строка означает отсутствие настройки. */
   exaApiKey: string;
-  /** ADR-132 Wave 3: 音乐 API base URL（NeteaseCloudMusicApi）。空 = 禁用。 */
+  /** ADR-132 Wave 3: base URL музыкального API (NeteaseCloudMusicApi). Пусто = отключено. */
   musicApiBaseUrl: string;
-  /** ADR-132 Wave 4: YouTube Data API v3 key。空 = 仅 Bilibili。 */
+  /** ADR-132 Wave 4: ключ YouTube Data API v3. Пусто = только Bilibili. */
   youtubeApiKey: string;
-  /** 时区偏移小时数（App Toolkit 使用）。默认 8（UTC+8）。 */
+  /** Смещение часового пояса в часах (используется App Toolkit). По умолчанию 8 (UTC+8). */
   timezoneOffset: number;
 }
 
-/** TTS 语音合成配置。 */
+/** Конфигурация синтеза речи TTS. */
 export interface TtsConfig {
   ttsBaseUrl: string;
   ttsApiKey: string;
@@ -98,31 +98,31 @@ export interface TtsConfig {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 返回值
+// Возвращаемые значения
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * impl 返回的结构化结果。
- * 发送类动作用此返回 msgId 和 obligationsConsumed，
- * 非发送类动作可继续返回 boolean（executor 自动适配）。
+ * Структурированный результат, возвращаемый из impl.
+ * Действия отправки используют его для возврата msgId и obligationsConsumed;
+ * прочие действия могут по-прежнему возвращать boolean (executor адаптируется автоматически).
  *
  * @see docs/adr/ Pillar 4: Closed Feedback Arc
  */
 export interface ActionImplResult {
   success: boolean;
-  /** Telegram 消息 ID（send_message 成功时返回）。 */
+  /** Telegram message ID (возвращается при успешном send_message). */
   msgId?: number;
-  /** 此动作消解的 directed 义务数（默认 0）。 */
+  /** Количество погашенных directed-обязательств этим действием (по умолчанию 0). */
   obligationsConsumed?: number;
-  /** 诊断信息（失败时流入修正轮次 observation，帮助 LLM 学习）。 */
+  /** Диагностическая информация (при ошибке попадает в observation корректирующего тика, помогает LLM обучаться). */
   error?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 动作类别
+// Категории действий
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 动作类别 — strategy.mod 用于条件注入 capability hints。 */
+/** Категория действия — используется в strategy.mod для условного инжекта capability hints. */
 export type ActionCategory =
   | "messaging"
   | "reaction"
@@ -138,43 +138,43 @@ export type ActionCategory =
   | "skills";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 判别联合：TelegramActionDef = WriteAction | QueryAction
+// Размеченное объединение: TelegramActionDef = WriteAction | QueryAction
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 所有动作共享的基础字段。 */
+/** Базовые поля, общие для всех действий. */
 interface TelegramActionBase {
-  /** 动作名称（= 沙箱函数名 = executor 查找键）。 */
+  /** Имя действия (= имя функции в sandbox = ключ поиска в executor). */
   name: string;
-  /** 描述行（写入 LLM 手册，每行前自动加 2 空格缩进）。 */
+  /** Строки описания (записываются в руководство LLM, каждая строка автоматически получает отступ 2 пробела). */
   description: string[];
-  /** 参数列表，按位置顺序排列。 */
+  /** Список параметров в порядке позиций. */
   params: [name: string, def: ActionParamDef][];
   /**
-   * 动作类别（用于 strategy.mod 按类别生成 capability hints）。
-   * 省略时默认 "messaging"。
+   * Категория действия (используется в strategy.mod для генерации capability hints по категориям).
+   * При отсутствии — по умолчанию "messaging".
    */
   category?: ActionCategory;
   /**
-   * 策略提示（LLM 在对应上下文中看到的使用指导）。
-   * strategy.mod 从此字段自动生成引用，不再硬编码函数名。
-   * 省略时不生成额外提示（手册本身已包含基本描述）。
+   * Стратегическая подсказка (инструкция по использованию, видимая LLM в соответствующем контексте).
+   * strategy.mod автоматически генерирует ссылку из этого поля, без хардкода имён функций.
+   * При отсутствии дополнительная подсказка не генерируется (руководство само содержит базовое описание).
    */
   usageHint?: string;
   /**
-   * 执行实现。接收上下文和 coerce 后的参数。
-   * 返回 boolean（简单成功/失败）或 ActionImplResult（含 msgId / obligationsConsumed）。
+   * Реализация выполнения. Получает контекст и параметры после coerce.
+   * Возвращает boolean (простой успех/неудача) или ActionImplResult (с msgId / obligationsConsumed).
    * @see narrative-engine/mods/types.ts InstructionDefinition.impl
    */
   impl(ctx: ActionImplContext, args: Record<string, unknown>): Promise<boolean | ActionImplResult>;
 
   /**
-   * ADR-142: Affordance 声明 — 工具可发现性元数据。
+   * ADR-142: объявление Affordance — метаданные обнаруживаемости инструмента.
    * @see docs/adr/142-action-space-architecture/README.md
    */
   affordance?: AffordanceDeclaration;
 }
 
-/** 写动作——终端批量执行，无 CQRS 结果字段。 */
+/** Write-действие — финальное пакетное выполнение, без CQRS-полей результата. */
 export interface WriteActionFields {
   returnsResult?: undefined;
   resultSource?: undefined;
@@ -184,52 +184,52 @@ export interface WriteActionFields {
 }
 
 /**
- * CQRS 运行时字段 — resultContract 工厂满足的最小契约。
- * store() 和 formatResult() 的运行时行为由此定义。
+ * Runtime-поля CQRS — минимальный контракт, удовлетворяемый фабрикой resultContract.
+ * Здесь определяется runtime-поведение store() и formatResult().
  */
 export interface QueryRuntimeFields {
-  /** ADR-105 CQRS: 标记读操作。 */
+  /** ADR-105 CQRS: помечает операцию чтения. */
   returnsResult: true;
-  /** CQRS: 结果存储节点——"self"（Alice 自身）或 "target"（当前目标聊天）。 */
+  /** CQRS: узел хранения результата — "self" (сама Alice) или "target" (текущий целевой чат). */
   resultSource: "self" | "target";
-  /** CQRS: 图属性名——结果存储在此属性中。 */
+  /** CQRS: имя атрибута графа — результат хранится в этом атрибуте. */
   resultAttrKey: string;
   /**
-   * CQRS: 格式化 observation 文本。使用 Zod safeParse 做运行时类型验证。
-   * 返回 null 表示数据为空/无效，不生成 observation。
+   * CQRS: форматирует текст observation. Использует Zod safeParse для runtime-валидации типов.
+   * null означает пустые/невалидные данные — observation не генерируется.
    */
   formatResult: (data: unknown) => string[] | null;
 }
 
 /**
- * 查询动作完整字段 — 运行时 CQRS + 手册元数据。
- * 编译期强制 action 注册时提供 returnDoc。
+ * Полные поля query-действия — runtime CQRS + метаданные руководства.
+ * Компилятор принудительно требует returnDoc при регистрации action.
  */
 export interface QueryActionFields extends QueryRuntimeFields {
   /**
-   * 返回值语义说明（读操作专用，CQRS formatQueryObservations 消费）。
-   * 描述结果存储位置和获取方式，写入 LLM 手册的 @returns 行。
+   * Описание семантики возвращаемого значения (только для операций чтения, потребляется CQRS formatQueryObservations).
+   * Описывает место хранения результата и способ его получения; записывается в строку @returns руководства LLM.
    */
   returnDoc: string;
 }
 
-/** 写动作（终端批量执行）。 */
+/** Write-действие (финальное пакетное выполнение). */
 export type TelegramWriteAction = TelegramActionBase & WriteActionFields;
 
-/** 查询动作（CQRS 立即执行 + observation 注入）。 */
+/** Query-действие (CQRS немедленное выполнение + инжект в observation). */
 export type TelegramQueryAction = TelegramActionBase & QueryActionFields;
 
 /**
- * 单个 Telegram 动作的完整定义（元数据 + 实现）。
- * 判别联合：returnsResult === true 为 QueryAction，否则为 WriteAction。
+ * Полное определение одного Telegram-действия (метаданные + реализация).
+ * Размеченное объединение: returnsResult === true → QueryAction, иначе → WriteAction.
  */
 export type TelegramActionDef = TelegramWriteAction | TelegramQueryAction;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 类型守卫
+// Type guards
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 判断动作是否为 CQRS 查询动作。用于替代 `def?.returnsResult` 手动检查。 */
+/** Проверяет, является ли действие CQRS query-действием. Заменяет ручную проверку `def?.returnsResult`. */
 export function isQueryAction(def: TelegramActionDef): def is TelegramQueryAction {
   return def.returnsResult === true;
 }

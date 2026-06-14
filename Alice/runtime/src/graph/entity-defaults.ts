@@ -1,15 +1,15 @@
 /**
- * 实体默认值工厂 — 从 WorldModel.addEntity() 提取的纯函数。
+ * Фабрика значений по умолчанию для сущностей — чистые функции, выделенные из WorldModel.addEntity().
  *
- * 每个工厂函数：
- *   1. 设置 entity_type 判别字段
- *   2. 填充 Core 层默认值（保证非 ? 字段存在）
- *   3. 接受 partial 覆盖默认值
+ * Каждая фабричная функция:
+ *   1. Устанавливает поле-дискриминатор entity_type
+ *   2. Заполняет значения по умолчанию уровня Core (гарантирует наличие не-? полей)
+ *   3. Принимает partial для переопределения значений по умолчанию
  *
- * 从 addEntity() 提取为独立函数的好处：
- *   - 可独立单测（不依赖 WorldModel 实例）
- *   - 消除 Record<string, unknown> 类型转换
- *   - 调用侧得到精确类型返回值
+ * Преимущества выделения из addEntity() в отдельные функции:
+ *   - Можно тестировать изолированно (без экземпляра WorldModel)
+ *   - Устраняет приведения типов через Record<string, unknown>
+ *   - Вызывающая сторона получает точный тип возврата
  *
  * @see docs/adr/154-world-model-rewrite.md
  */
@@ -27,9 +27,9 @@ import type {
 } from "./entities.js";
 
 /**
- * Agent（自身）节点默认属性。
+ * Атрибуты по умолчанию для узла Agent (собственный узел).
  *
- * 默认值：mood_valence=0, mood_set_ms=0（中性情绪，尚未设置）。
+ * Значения по умолчанию: mood_valence=0, mood_set_ms=0 (нейтральное настроение, ещё не задано).
  */
 export function agentDefaults(partial?: Partial<Omit<AgentAttrs, "entity_type">>): AgentAttrs {
   return {
@@ -41,9 +41,9 @@ export function agentDefaults(partial?: Partial<Omit<AgentAttrs, "entity_type">>
 }
 
 /**
- * 联系人节点默认属性。
+ * Атрибуты по умолчанию для узла контакта.
  *
- * 默认值：tier=150（熟人圈）, last_active_ms=0, auth_level=0, interaction_count=0。
+ * Значения по умолчанию: tier=150 (круг знакомых), last_active_ms=0, auth_level=0, interaction_count=0.
  */
 export function contactDefaults(
   partial?: Partial<Omit<ContactAttrs, "entity_type">>,
@@ -59,9 +59,9 @@ export function contactDefaults(
 }
 
 /**
- * 频道节点默认属性。
+ * Атрибуты по умолчанию для узла канала.
  *
- * 特殊逻辑：当 unread > 0 且无 EWMS 数据时，自动初始化 EWMS 累加器。
+ * Специальная логика: если unread > 0 и данные EWMS отсутствуют, автоматически инициализирует аккумулятор EWMS.
  * @see docs/adr/150-ewms-exact-unread-decay.md §D1
  */
 export type ChannelDefaultsInput = Partial<Omit<ChannelAttrs, "entity_type" | "chat_type">> &
@@ -84,7 +84,7 @@ export function requireChannelDefaultsInput(
 export function channelDefaults(partial: ChannelDefaultsInput): ChannelAttrs {
   const unread = partial.unread ?? 0;
 
-  // ADR-150: EWMS 与 unread 保持一致——初始化时视为所有消息刚到达。
+  // ADR-150: EWMS согласован с unread — при инициализации считаем, что все сообщения только что поступили.
   let unread_ewms = partial.unread_ewms;
   let unread_ewms_ms = partial.unread_ewms_ms;
   if (unread > 0 && unread_ewms == null) {
@@ -103,7 +103,7 @@ export function channelDefaults(partial: ChannelDefaultsInput): ChannelAttrs {
     habituation: 0,
     habituation_ms: 0,
     ...partial,
-    // EWMS 字段在 partial spread 之后覆盖，确保自动初始化逻辑生效
+    // Поля EWMS переопределяются после spread partial, чтобы логика автоинициализации вступила в силу
     unread_ewms,
     unread_ewms_ms,
     entity_type: "channel",
@@ -111,10 +111,10 @@ export function channelDefaults(partial: ChannelDefaultsInput): ChannelAttrs {
 }
 
 /**
- * 线程节点默认属性。
+ * Атрибуты по умолчанию для узла потока.
  *
- * 自动从 weight 计算 w = THREAD_WEIGHTS[weight]。
- * 默认值：status="open", weight="minor", created_ms=Date.now(), deadline=Infinity。
+ * Автоматически вычисляет w = THREAD_WEIGHTS[weight] из weight.
+ * Значения по умолчанию: status="open", weight="minor", created_ms=Date.now(), deadline=Infinity.
  */
 export function threadDefaults(partial?: Partial<Omit<ThreadAttrs, "entity_type">>): ThreadAttrs {
   const weight: ThreadWeight = partial?.weight ?? "minor";
@@ -125,7 +125,7 @@ export function threadDefaults(partial?: Partial<Omit<ThreadAttrs, "entity_type"
     created_ms: Date.now(),
     deadline: Infinity,
     ...partial,
-    // weight 和 w 在 spread 之后覆盖，确保 w 与 weight 一致
+    // weight и w переопределяются после spread, чтобы w оставался согласованным с weight
     weight,
     w,
     entity_type: "thread",
@@ -133,12 +133,12 @@ export function threadDefaults(partial?: Partial<Omit<ThreadAttrs, "entity_type"
 }
 
 /**
- * 事实节点默认属性。
+ * Атрибуты по умолчанию для узла факта.
  *
- * ADR-154: info_item → fact 重命名；created/last_access tick → created_ms/last_access_ms wall-clock ms。
+ * ADR-154: переименование info_item → fact; тики created/last_access → wall-clock мс created_ms/last_access_ms.
  *
- * 默认值：importance=0.5, stability=1.0, volatility=0.5, novelty=1.0,
- *         tracked=false, created_ms=Date.now(), last_access_ms=Date.now()。
+ * Значения по умолчанию: importance=0.5, stability=1.0, volatility=0.5, novelty=1.0,
+ *         tracked=false, created_ms=Date.now(), last_access_ms=Date.now().
  */
 export function factDefaults(partial?: Partial<Omit<FactAttrs, "entity_type">>): FactAttrs {
   const now = Date.now();
@@ -156,11 +156,11 @@ export function factDefaults(partial?: Partial<Omit<FactAttrs, "entity_type">>):
 }
 
 /**
- * 对话会话节点默认属性。
+ * Атрибуты по умолчанию для узла диалоговой сессии.
  *
- * 默认值：channel="", participants=[], state="pending", turn_state="open",
+ * Значения по умолчанию: channel="", participants=[], state="pending", turn_state="open",
  *         pace=0, message_count=0, alice_message_count=0,
- *         start_ms=0, last_activity_ms=0。
+ *         start_ms=0, last_activity_ms=0.
  */
 export function conversationDefaults(
   partial?: Partial<Omit<ConversationAttrs, "entity_type">>,

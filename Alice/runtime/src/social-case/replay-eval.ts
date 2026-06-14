@@ -117,9 +117,10 @@ const REPEATED_BOUNDARY_TEXT = [
   "boundary",
 ] as const;
 
-const PUBLIC_REPAIR_TEXT = ["публичн", "в этом чате", "здесь", "в чате", "при всех"] as const;
+const PUBLIC_REPAIR_TEXT = ["公开", "публичн", "в этом чате", "здесь", "в чате", "при всех"] as const;
 
 const ALICE_CORRECTION_TEXT = [
+  "道歉",
   "ошиблась",
   "не так поняла",
   "неправа",
@@ -221,7 +222,7 @@ export const SOCIAL_CASE_REPLAY_SCENARIOS: readonly SocialCaseReplayScenario[] =
         "## Social cases",
         "Social case with A",
         "Mostly repaired, with a boundary",
-        "In Техчат",
+        "In 技术群",
       ],
       forbiddenText: [
         "angry and spoke too harshly",
@@ -600,7 +601,7 @@ export const SOCIAL_CASE_REPLAY_SCENARIOS: readonly SocialCaseReplayScenario[] =
           ],
         },
       ],
-      requiredAnyText: ["издев", "публичн", "при всех", "так не пойдёт", "провокаци", "taunt"],
+      requiredAnyText: ["嘲讽", "издев", "публичн", "при всех", "так не пойдёт", "провокаци", "taunt"],
       forbiddenText: [
         "Я на твоей стороне",
         "A реально перегнул",

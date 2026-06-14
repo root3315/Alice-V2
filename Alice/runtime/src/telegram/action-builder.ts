@@ -1,11 +1,11 @@
 /**
- * defineAction Builder — Telegram 动作类型安全化。
+ * defineAction Builder — типизация Telegram-действий.
  *
- * 用 z.object() 定义参数 → impl 得到编译期类型推断，
- * 内部转换为现有 [name, ActionParamDef][] tuple，消费者零改动。
+ * Параметры задаются через z.object() → impl получает вывод типов на этапе компиляции,
+ * внутри преобразуется в существующий tuple [name, ActionParamDef][], потребители не меняются.
  *
  * @see docs/adr/149-define-action-builder.md
- * @see src/core/mod-builder.ts — createMod builder（同类先例）
+ * @see src/core/mod-builder.ts — createMod builder (аналогичный прецедент)
  */
 
 import { z } from "zod";
@@ -22,13 +22,13 @@ import type {
 } from "./action-types.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 配置类型
+// Типы конфигурации
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** inject 映射：参数名 → contextVars 键名（如 `{ chatId: "TARGET_CHAT" }`）。 */
+/** Карта inject: имя параметра → ключ в contextVars (например, `{ chatId: "TARGET_CHAT" }`). */
 type InjectMap<T extends z.ZodRawShape> = Partial<Record<keyof T & string, string>>;
 
-/** 写动作配置。 */
+/** Конфигурация write-действия. */
 interface WriteActionConfig<T extends z.ZodRawShape> {
   name: string;
   category: ActionCategory;
@@ -43,7 +43,7 @@ interface WriteActionConfig<T extends z.ZodRawShape> {
   ) => Promise<boolean | ActionImplResult>;
 }
 
-/** 查询动作配置（多 contract + returnDoc）。 */
+/** Конфигурация query-действия (с contract + returnDoc). */
 interface QueryActionConfig<T extends z.ZodRawShape, R extends z.ZodTypeAny>
   extends Omit<WriteActionConfig<T>, "impl"> {
   contract: ResultContract<R>;
@@ -55,10 +55,10 @@ interface QueryActionConfig<T extends z.ZodRawShape, R extends z.ZodTypeAny>
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 内部 helpers
+// Внутренние хелперы
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 从 Zod schema 推断 ActionParamType。 */
+/** Определяет ActionParamType из Zod-схемы. */
 function inferParamType(schema: z.ZodTypeAny): ActionParamType {
   const typeName = (schema._def as { typeName?: string }).typeName;
   switch (typeName) {
@@ -79,29 +79,29 @@ function inferParamType(schema: z.ZodTypeAny): ActionParamType {
   }
 }
 
-/** 检测 schema 是否已经是 ZodEffects（带 preprocess）。 */
+/** Проверяет, является ли схема ZodEffects (с preprocess). */
 function isZodEffects(schema: z.ZodTypeAny): boolean {
   return (schema._def as { typeName?: string }).typeName === "ZodEffects";
 }
 
-/** 检测 schema 是否为 optional。 */
+/** Проверяет, является ли схема optional. */
 function isOptional(schema: z.ZodTypeAny): boolean {
   const typeName = (schema._def as { typeName?: string }).typeName;
   return typeName === "ZodOptional" || typeName === "ZodDefault";
 }
 
 /**
- * 将 clean Zod schema 包装为带 coercion 的 runtime schema。
+ * Оборачивает чистую Zod-схему в runtime-схему с coercion.
  *
- * 目的：保持 sandbox buildActionParamSchema 的现有 coercion 行为。
- * 已有 preprocess（如 TelegramReactionSchema）不重复包装。
+ * Цель: сохранить существующее поведение coercion в sandbox buildActionParamSchema.
+ * Схемы с уже имеющимся preprocess (например, TelegramReactionSchema) не оборачиваются повторно.
  */
 function wrapCoercion(
   schema: z.ZodTypeAny,
   type: ActionParamType,
   required: boolean,
 ): z.ZodTypeAny {
-  // 已有 preprocess → 不重复包装
+  // Уже есть preprocess → не оборачиваем повторно
   if (isZodEffects(schema)) return schema;
 
   switch (type) {
@@ -128,14 +128,14 @@ function wrapCoercion(
 }
 
 /**
- * z.object shape + inject → [name, ActionParamDef][] params tuple。
+ * z.object shape + inject → tuple [name, ActionParamDef][].
  *
- * 输出的 tuple 与手写的 params 完全兼容：
- * - description 从 .describe() 提取
- * - type 从 schema 推断
- * - required 从 optional 推断
- * - schema 带 coercion 包装
- * - inject 从 InjectMap 映射
+ * Получаемый tuple полностью совместим с params, написанными вручную:
+ * - description извлекается из .describe()
+ * - type выводится из схемы
+ * - required выводится из optional
+ * - schema оборачивается с coercion
+ * - inject маппится из InjectMap
  */
 function shapeToParams<T extends z.ZodRawShape>(
   zodObj: z.ZodObject<T>,
@@ -164,18 +164,18 @@ function shapeToParams<T extends z.ZodRawShape>(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 公开 API
+// Публичное API
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 定义写动作（无 contract）。 */
+/** Определяет write-действие (без contract). */
 export function defineAction<T extends z.ZodRawShape>(
   config: WriteActionConfig<T>,
 ): TelegramActionDef;
-/** 定义查询动作（有 contract + returnDoc）。 */
+/** Определяет query-действие (с contract + returnDoc). */
 export function defineAction<T extends z.ZodRawShape, R extends z.ZodTypeAny>(
   config: QueryActionConfig<T, R>,
 ): TelegramActionDef;
-/** 统一实现。 */
+/** Единая реализация. */
 export function defineAction<T extends z.ZodRawShape, R extends z.ZodTypeAny>(
   config: WriteActionConfig<T> | QueryActionConfig<T, R>,
 ): TelegramActionDef {
@@ -188,12 +188,12 @@ export function defineAction<T extends z.ZodRawShape, R extends z.ZodTypeAny>(
     usageHint: config.usageHint,
     affordance: config.affordance,
     params,
-    // impl 签名转换：typed args → Record<string, unknown>
-    // runtime 调用时 args 已经被 sandbox coerce 过，类型安全由编译期 defineAction 保证
+    // Преобразование сигнатуры impl: typed args → Record<string, unknown>
+    // При runtime-вызове args уже прошли coerce в sandbox; типобезопасность гарантирована defineAction на этапе компиляции
     impl: config.impl as TelegramActionDef["impl"],
   };
 
-  // 判断 Query vs Write
+  // Определяем Query vs Write
   if ("contract" in config && config.contract != null) {
     const q = config as QueryActionConfig<T, R>;
     return {

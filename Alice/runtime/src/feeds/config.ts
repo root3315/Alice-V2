@@ -1,8 +1,8 @@
 /**
- * ADR-167: Feed 感知通道 — 独立配置。
+ * ADR-167: Канал восприятия Feed — отдельная конфигурация.
  *
- * 人设 feeds 硬编码于此（和 SOUL_CORE 同等地位——Alice 的品味）。
- * 数据源直接对接公开 API（60s.viki.moe + Bangumi 等），不依赖 RSSHub。
+ * Персональные feeds жёстко заданы здесь (равнозначны SOUL_CORE — вкусы Alice).
+ * Источники данных напрямую подключены к публичным API (60s.viki.moe + Bangumi и др.), без зависимости от RSSHub.
  *
  * @see docs/adr/167-rsshub-perception-channel.md
  */
@@ -15,45 +15,45 @@ import {
   fetchTodayInHistory,
 } from "./sources.js";
 
-/** 单条 feed 定义。 */
+/** Определение одного feed. */
 export interface FeedDef {
-  /** LLM 可见的语义标签（如 "B站热搜"）。 */
+  /** Семантический тег, видимый LLM (например "Тренды Bilibili"). */
   label: string;
-  /** 拉取间隔（分钟）。 */
+  /** Интервал опроса (минуты). */
   intervalMin: number;
-  /** 数据拉取函数。 */
+  /** Функция получения данных. */
   fetcher: () => Promise<FeedItem[]>;
 }
 
-/** Feed 感知通道配置。 */
+/** Конфигурация канала восприятия Feed. */
 export interface FeedsConfig {
-  /** 人设 feeds。 */
+  /** Персональные feeds. */
   feeds: FeedDef[];
-  /** 单条条目最大曝光次数（注入 prompt 的次数），超过后不再展示。 */
+  /** Максимальное число показов одной записи (количество инъекций в prompt); после превышения не отображается. */
   maxExposures: number;
-  /** 条目保质期（小时）。超过后即使未曝光也丢弃。 */
+  /** Срок хранения записи (часы). По истечении удаляется, даже если не была показана. */
   shelfLifeHours: number;
 }
 
-// ── 人设 feeds：反映 Alice 的品味和兴趣 ────────────────────────────────────
-// 选择标准：公开热门内容源，贴近 16 岁数码原住民的日常刷机体验。
-// 数据源：60s.viki.moe（聚合 API，免费无 key）+ Bangumi 官方 API。
-// 后续按 Alice 人设演化调整。
+// ── Персональные feeds: отражают вкусы и интересы Alice ────────────────────────────────────
+// Критерии отбора: популярные публичные источники контента, близкие к повседневному опыту 16-летнего цифрового аборигена.
+// Источники данных: 60s.viki.moe (агрегирующий API, бесплатно без ключа) + официальный API Bangumi.
+// В дальнейшем корректируется по мере эволюции персонажа Alice.
 
 const PERSONA_FEEDS: FeedDef[] = [
-  // 社交热点——知道大家在聊什么
+  // Социальные тренды — знать, о чём все говорят
   { label: "Тренды Bilibili", intervalMin: 120, fetcher: () => fetchBiliHot(5) },
-  // 技术前沿——数码原住民的日常
+  // Технологии — повседневная жизнь цифрового аборигена
   { label: "Популярное на HackerNews", intervalMin: 360, fetcher: () => fetchHackerNewsTop(5) },
-  // 游戏——Epic 免费游戏是天然的 pebbling 素材
+  // Игры — бесплатные игры Epic как естественный материал для разговора
   { label: "Бесплатные игры недели в Epic", intervalMin: 720, fetcher: fetchEpicFreeGames },
-  // ACG——今日新番
+  // ACG — новые серии аниме сегодня
   { label: "Новые серии аниме сегодня", intervalMin: 720, fetcher: () => fetchBangumiToday(5) },
-  // 冷知识——历史上的今天（聊天话题素材）
+  // Занимательные факты — день в истории (материал для тем разговора)
   { label: "Этот день в истории", intervalMin: 1440, fetcher: () => fetchTodayInHistory(3) },
 ];
 
-/** 加载 feeds 配置。 */
+/** Загрузить конфигурацию feeds. */
 export function loadFeedsConfig(): FeedsConfig {
   return {
     feeds: PERSONA_FEEDS,

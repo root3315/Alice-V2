@@ -1,8 +1,8 @@
 /**
- * App Toolkit — 统一导出。
+ * App Toolkit — единая точка экспорта.
  *
- * 每个 App 是纯业务逻辑模块（零框架依赖），
- * action-defs.ts 消费这些函数组装 TelegramActionDef。
+ * Каждый App — чистый модуль бизнес-логики (без зависимостей от фреймворка);
+ * action-defs.ts потребляет эти функции для сборки TelegramActionDef.
  *
  * @see docs/adr/132-app-toolkit.md
  */

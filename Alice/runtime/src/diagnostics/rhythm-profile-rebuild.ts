@@ -1,8 +1,8 @@
 /**
  * ADR-261: rebuildable rhythm profile projection writer.
  *
- * 这里是脚本和 runtime maintenance 的共享实现。事实源仍然是 message_log；
- * rhythm_profiles 只是可重建 projection，不是活跃事实权威。
+ * Общая реализация для скриптов и runtime-обслуживания. Источником истины остаётся message_log;
+ * rhythm_profiles — лишь пересчитываемая проекция, а не авторитетный источник фактов.
  *
  * @see docs/adr/261-rhythm-profile-projection.md
  */

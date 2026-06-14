@@ -1,11 +1,11 @@
 /**
- * D5: Social Cost Function — Brown-Levinson 礼貌理论的计算实现。
+ * D5: Social Cost Function — вычислительная реализация теории вежливости Brown-Levinson.
  *
- * 四个子组件量化"打扰别人的代价"：
- *   C_dist  — 社交距离（互惠失衡、tier 差异、时间间隔）
- *   C_power — 权力差异（群组角色、领地效应）
- *   C_imp   — 行动侵入性（上下文敏感度、行动类型排序）
- *   C_temp  — 时间序列惩罚（行动密度、行动重复度）
+ * Четыре подкомпонента количественно измеряют "стоимость беспокойства другого человека":
+ *   C_dist  — социальная дистанция (дисбаланс взаимности, разница tier, временной интервал)
+ *   C_power — разница власти (роль в группе, территориальный эффект)
+ *   C_imp   — навязчивость действия (чувствительность к контексту, ранжирование типов действий)
+ *   C_temp  — временной штраф (плотность действий, повторяемость действий)
  *
  * @see paper/ Definition 8: Social Cost Function
  * @see docs/adr/62-d5-social-cost-paper-alignment.md
@@ -26,36 +26,36 @@ import {
   effectiveRisk,
 } from "./signal-decay.js";
 
-// -- 行动侵入性排序表 -------------------------------------------------------
+// -- Таблица ранжирования навязчивости действий -------------------------------------------------------
 
 /**
- * 行动类型 → 侵入性评分 ∈ [0, 1]（私聊基准）。
+ * Тип действия → оценка навязчивости ∈ [0, 1] (базовая линия для приватного чата).
  *
  * @see paper/ Definition 8, C_imp: intrusiveness(a)
  * @see docs/adr/113-online-social-recalibration.md
  */
 export const INTRUSIVENESS: Record<string, number> = {
-  proactive_message: 1.0, // 主动发消息（最高侵入性）
-  send_message: 0.8, // 一般发消息
-  sociability: 0.8, // 声部: 社交 → 会发消息
-  reply: 0.6, // 回复
-  diligence: 0.6, // 声部: 尽责 → 通常是回复
-  react: 0.3, // 表情反应
-  curiosity: 0.3, // 声部: 好奇 → 轻量互动
-  mark_read: 0.1, // 已读
-  caution: 0.1, // 声部: 谨慎 → 低侵入
+  proactive_message: 1.0, // активное сообщение (максимальная навязчивость)
+  send_message: 0.8, // обычное сообщение
+  sociability: 0.8, // голос: общительность → отправит сообщение
+  reply: 0.6, // ответ
+  diligence: 0.6, // голос: усердие → обычно ответ
+  react: 0.3, // реакция эмодзи
+  curiosity: 0.3, // голос: любопытство → лёгкое взаимодействие
+  mark_read: 0.1, // прочитано
+  caution: 0.1, // голос: осторожность → низкая навязчивость
 };
 
 /**
- * 群组/超级群组行动侵入性评分。
- * 群组是共享空间，大多数行动的侵入性低于私聊。
+ * Оценка навязчивости действий для группы/супергруппы.
+ * Группа — общее пространство; большинство действий менее навязчивы, чем в приватном чате.
  *
  * @see docs/adr/113-online-social-recalibration.md §D1
  */
 const INTRUSIVENESS_GROUP: Record<string, number> = {
-  // ADR-113 修正：群聊参与门槛低，但公开发言有内容风险（N 人可见）。
-  // 主动发言和 proactive 提高到 0.4（不是"几乎无成本"）。
-  // reply 保持 0.2（回应已有话题确实门槛最低）。
+  // ADR-113 правка: порог участия в группе низкий, но публичная речь несёт риск содержания (N человек видят).
+  // Активная речь и proactive подняты до 0.4 (не "почти бесплатно").
+  // reply остаётся 0.2 (ответ на существующую тему действительно имеет самый низкий порог).
   proactive_message: 0.4,
   send_message: 0.4,
   sociability: 0.4,
@@ -68,8 +68,8 @@ const INTRUSIVENESS_GROUP: Record<string, number> = {
 };
 
 /**
- * 按 chat_type 查询行动侵入性。
- * 群组中参与门槛低于私聊，但公开发言有内容风险（说错话 N 人看到）。
+ * Получить навязчивость действия по chat_type.
+ * В группе порог участия ниже, чем в приватном чате, но публичная речь несёт риск содержания (ошибку увидят N человек).
  *
  * @see docs/adr/113-online-social-recalibration.md §D1
  */
@@ -80,43 +80,43 @@ export function getIntrusiveness(action: string, chatType?: string): number {
   return INTRUSIVENESS[action] ?? 0.5;
 }
 
-// -- 配置 Schema（Zod 校验） -------------------------------------------------
+// -- Schema конфигурации (Zod-валидация) -------------------------------------------------
 
 const w01 = z.number().min(0).max(1);
 const pos = z.number().positive();
 
 /**
- * SocialCostConfig Zod schema — 四子组件配置的单一真相源。
+ * Zod schema SocialCostConfig — единый источник истины для конфигурации четырёх подкомпонентов.
  *
- * 启动时 parse 一次，保证所有权重在合法区间内。
+ * Парсится один раз при запуске, гарантируя, что все веса находятся в допустимом диапазоне.
  * @see paper/ Definition 8: Social Cost Function
  */
 export const SocialCostConfigSchema = z.object({
-  // 总权重（四组件加权求和）
+  // Общие веса (взвешенная сумма четырёх компонентов)
   wDist: w01.default(0.3),
   wPower: w01.default(0.1),
   wImp: w01.default(0.3),
   wTemp: w01.default(0.3),
 
-  // C_dist 子权重
+  // Подвеса C_dist
   alpha1: w01.default(0.5),
   alpha2: w01.default(0.3),
   alpha3: w01.default(0.2),
   tauDist: pos.default(3600),
 
-  // C_power 子权重
+  // Подвеса C_power
   beta1: w01.default(0.7),
   beta2: w01.default(0.3),
 
-  // C_imp 子权重
+  // Подвеса C_imp
   gamma1: w01.default(0.5),
   gamma2: w01.default(0.5),
 
-  // C_temp 子权重
+  // Подвеса C_temp
   delta1: w01.default(0.7),
   delta2: w01.default(0.3),
-  // ADR-189: bypass 泄漏修正后重新校准（旧值 3.0 在 bypass 频繁绕过时校准，
-  // 现在 bypass 仅限有义务 target，exp(-n/λ) 全量生效，需加宽允许带宽）
+  // ADR-189: перекалибровка после исправления утечки bypass (старое значение 3.0 калибровалось при частых обходах bypass;
+  // теперь bypass ограничен target с обязательством, exp(-n/λ) работает в полную силу, нужно расширить допустимую полосу)
   lambdaC: pos.default(6.0),
 
   // Net Social Value
@@ -128,15 +128,15 @@ export const SocialCostConfigSchema = z.object({
 
 export type SocialCostConfig = z.infer<typeof SocialCostConfigSchema>;
 
-/** 默认 Social Cost 配置（保守：宁可沉默也不打扰）。 */
+/** Конфигурация Social Cost по умолчанию (консервативная: лучше промолчать, чем беспокоить). */
 export const DEFAULT_SOCIAL_COST_CONFIG: SocialCostConfig = SocialCostConfigSchema.parse({});
 
-// -- tier 相关常量 -----------------------------------------------------------
+// -- Константы, связанные с tier -----------------------------------------------------------
 
-/** tier 最大值（用于归一化）。 */
+/** Максимальное значение tier (для нормализации). */
 const TIER_MAX = 500;
 
-/** 群组角色 → rank 映射。 */
+/** Отображение роли в группе → ранг. */
 const ROLE_RANK: Record<string, number> = {
   owner: 4,
   admin: 3,
@@ -145,15 +145,15 @@ const ROLE_RANK: Record<string, number> = {
 };
 const RANK_MAX = 4;
 
-// -- 子组件计算 -------------------------------------------------------------
+// -- Вычисление подкомпонентов -------------------------------------------------------------
 
 /**
- * C_dist(n): 社交距离。
+ * C_dist(n): социальная дистанция.
  *
- * 三个子项加权求和：
- *   α₁ · |sent - recv| / window    — 互惠失衡
- *   α₂ · (1 - tier / tier_max)     — tier 距离
- *   α₃ · σ(t_gap / τ_d)           — 最近交互时间 sigmoid
+ * Взвешенная сумма трёх подэлементов:
+ *   α₁ · |sent - recv| / window    — дисбаланс взаимности
+ *   α₂ · (1 - tier / tier_max)     — дистанция по tier
+ *   α₃ · σ(t_gap / τ_d)           — sigmoid времени последнего взаимодействия
  *
  * @see paper/ Definition 8, C_dist
  */
@@ -167,27 +167,27 @@ function cDist(
 ): number {
   const w = Math.max(cfg.window, 1);
 
-  // 互惠失衡：Alice 发太多 vs 对方发太少
-  // P1-1 fix: clamp 到 [0, 1]，防止长期累计 sent/recv 导致溢出
-  // ADR-113: 群组中互惠失衡信号弱化（× 0.3）——群组对话不要求一对一平衡
+  // Дисбаланс взаимности: Алиса отправляет слишком много vs собеседник слишком мало
+  // P1-1 fix: зажим в [0, 1], предотвращает переполнение от накопленных sent/recv
+  // ADR-113: сигнал дисбаланса взаимности ослаблен в группе (× 0.3) — групповой диалог не требует баланса один к одному
   const reciprocityRaw = Math.min(1, Math.abs(aliceSentWindow - contactRecvWindow) / w);
   const reciprocity = reciprocityRaw * (isGroup ? 0.3 : 1.0);
 
-  // tier 距离：tier 越远 → 社交距离越大
-  // ADR-116: 群组中弱化——共享空间发言门槛低于私聊主动联系
-  // @see docs/adr/116-group-silence-trap.md §修复 3
+  // Дистанция по tier: чем дальше tier → тем больше социальная дистанция
+  // ADR-116: ослаблено в группе — порог высказывания в общем пространстве ниже, чем при личной инициативе
+  // @see docs/adr/116-group-silence-trap.md §Правка 3
   const tierDist = (1 - tier / TIER_MAX) * (isGroup ? 0.4 : 1.0);
 
-  // 时间间隔 sigmoid：很久没互动 → 距离感变大
-  // P3-2 fix: 偏移 sigmoid，让 tGap=0 时接近 0 而非 0.5
+  // Sigmoid временного интервала: давно не взаимодействовали → чувство дистанции растёт
+  // P3-2 fix: сдвигаем sigmoid, чтобы при tGap=0 значение было близко к 0, а не 0.5
   // σ(tGap; τ) = 1 / (1 + exp(-(tGap - 2τ) / τ))
-  //   tGap=0   → ~0.12（刚互动过，距离感低）
+  //   tGap=0   → ~0.12 (только что взаимодействовали, дистанция низкая)
   //   tGap=2τ  → 0.5
-  //   tGap>>τ  → ~1.0（很久没互动，距离感高）
+  //   tGap>>τ  → ~1.0 (давно не взаимодействовали, дистанция высокая)
   //
-  // ADR-151: tauDist per-tier 化 — τ_d = θ_c/2，使 sigmoid 中性点对齐各 tier 的冷却阈值。
-  // 效果：tier 5 保持 3600s（与原值一致），tier 50 升至 21600s，tier 150 升至 86400s。
-  // fallback 到 cfg.tauDist（3600s）用于无标准 tier 的情况。
+  // ADR-151: tauDist per-tier — τ_d = θ_c/2, выравнивает нейтральную точку sigmoid с порогом кулдауна каждого tier.
+  // Эффект: tier 5 сохраняет 3600s (как раньше), tier 50 вырастает до 21600s, tier 150 до 86400s.
+  // Fallback к cfg.tauDist (3600s) для нестандартных tier.
   // @see docs/adr/151-algorithm-audit/research-online-calibration.md §5.3
   const thetaForTier = DUNBAR_TIER_THETA[tier as DunbarTier];
   const effectiveTauDist = thetaForTier != null ? thetaForTier / 2 : cfg.tauDist;
@@ -198,7 +198,7 @@ function cDist(
 }
 
 /**
- * C_power(n): 权力差异。
+ * C_power(n): разница власти.
  *
  * @see paper/ Definition 8, C_power
  */
@@ -208,7 +208,7 @@ function cPower(
   isTargetTerritory: boolean,
   cfg: SocialCostConfig,
 ): number {
-  // 对方 rank 高于 Alice → 更大压力
+  // Ранг собеседника выше, чем у Алисы → большее давление
   const rankDiff = Math.max(0, targetRank - aliceRank) / RANK_MAX;
   const territory = isTargetTerritory ? 1 : 0;
 
@@ -216,7 +216,7 @@ function cPower(
 }
 
 /**
- * C_imp(a, n): 行动侵入性。
+ * C_imp(a, n): навязчивость действия.
  *
  * @see paper/ Definition 8, C_imp
  */
@@ -231,7 +231,7 @@ function cImp(
 }
 
 /**
- * C_temp(a, n): 时间序列惩罚。
+ * C_temp(a, n): временной штраф.
  *
  * @see paper/ Definition 8, C_temp
  */
@@ -242,13 +242,13 @@ function cTemp(
   opponentLambda?: number,
   windowS: number = 1800,
 ): number {
-  // 密度惩罚：最近行动越密集 → 惩罚越大
+  // Штраф за плотность: чем плотнее недавние действия → тем больше штраф
   const densityPenalty = 1 - Math.exp(-actionDensity / Math.max(cfg.lambdaC, 0.01));
 
-  // ADR-153 Phase 2: 对方消息率调制 — 不对称检测
-  // asymmetry > 0: Alice 发太多 → 抬高 C_temp（抑制过度回复）
-  // asymmetry < 0: Alice 回复不够 → 降低 C_temp（鼓励回复）
-  // @see simulation/experiments/exp_hawkes_phase2_validation.py 验证 2
+  // ADR-153 Phase 2: модуляция скорости сообщений собеседника — обнаружение асимметрии
+  // asymmetry > 0: Алиса отправляет слишком много → повышаем C_temp (сдерживаем избыточные ответы)
+  // asymmetry < 0: Алиса отвечает недостаточно → снижаем C_temp (стимулируем ответ)
+  // @see simulation/experiments/exp_hawkes_phase2_validation.py проверка 2
   let adjustedDensity = densityPenalty;
   if (opponentLambda != null) {
     const aliceRate = actionDensity / windowS;
@@ -260,13 +260,13 @@ function cTemp(
   return cfg.delta1 * adjustedDensity + cfg.delta2 * maxSimilarity;
 }
 
-// -- 辅助函数 ---------------------------------------------------------------
+// -- Вспомогательные функции ---------------------------------------------------------------
 
 /**
- * 从图中提取上下文信号 C_ctx ∈ [0, 1]。
+ * Извлечь контекстный сигнал C_ctx ∈ [0, 1] из графа.
  *
- * 派生自 D2 factual panel：grief / unanswered / endpoint 等场景
- * 让 Alice 意识到"现在可能不适合打扰"。
+ * Выводится из фактической панели D2: сценарии grief / unanswered / endpoint
+ * помогают Алисе понять, что "сейчас, возможно, не лучшее время беспокоить".
  */
 function extractContextSignal(
   G: WorldModel,
@@ -276,34 +276,34 @@ function extractContextSignal(
 ): number {
   if (!G.has(targetId)) return 0.5;
 
-  // 多个信号加权：risk、连续消息、最近清除
-  // ADR-126: 所有信号通过衰减层读取，消除陈旧数据的永久影响
+  // Взвешивание нескольких сигналов: risk, последовательные сообщения, недавняя очистка
+  // ADR-126: все сигналы читаются через слой затухания, устраняя постоянное влияние устаревших данных
   let signal = 0;
   let count = 0;
 
-  // 风险等级（衰减后的连续值）
+  // Уровень риска (непрерывное значение после затухания)
   const riskValue = effectiveRisk(G, targetId, nowMs);
   if (riskValue > 0) {
     signal += riskValue;
     count++;
   }
 
-  // 连续发消息（衰减后——24h 后社交语境重置）
+  // Последовательные исходящие (после затухания — через 24ч социальный контекст сброшен)
   const outgoing = effectiveOutgoing(G, targetId, nowMs);
   if (outgoing > 0) {
     signal += Math.min(1, outgoing / 5);
     count++;
   }
 
-  // 最近 outcome quality（向中性 0.5 衰减——陈旧差评不永久抬高成本）
+  // Недавнее качество взаимодействия (затухает к нейтральному 0.5 — старые плохие оценки не поднимают стоимость навсегда)
   const quality = effectiveOutcomeQuality(G, targetId, nowMs);
   signal += 1 - quality;
   count++;
 
-  // 对话结束信号 — 无活跃对话或对话即将结束时增加社交成本
+  // Сигнал завершения диалога — социальные издержки растут при отсутствии активного разговора или его скором окончании
   const activeConv = findActiveConversation(G, targetId);
   if (!activeConv) {
-    // 检查是否有 closing 状态的对话（即将结束但尚未冷却）
+    // Проверяем, есть ли диалог в состоянии closing (скоро завершится, но ещё не остыл)
     let hasClosing = false;
     for (const convId of G.getEntitiesByType("conversation")) {
       const convAttrs = G.getConversation(convId);
@@ -313,39 +313,39 @@ function extractContextSignal(
       }
     }
     if (hasClosing) {
-      // 对话即将结束 → 不宜打扰
+      // Диалог скоро закончится → не стоит беспокоить
       signal += 0.7;
       count++;
     } else {
-      // 完全没有活跃对话 → 冷启动，主动发起门槛更高
-      // ADR-116: 群组中没有活跃对话是常态（90-9-1 法则），成本远低于私聊冷启动
-      // @see docs/adr/116-group-silence-trap.md §修复 2
+      // Нет активного диалога вообще → холодный старт, порог инициативы выше
+      // ADR-116: в группе отсутствие активного диалога является нормой (правило 90-9-1), издержки значительно ниже, чем при холодном старте в личке
+      // @see docs/adr/116-group-silence-trap.md §Правка 2
       signal += isGroup ? 0.2 : 0.6;
       count++;
     }
   }
 
-  // grief / 敏感状态检测
-  // 1) 从关联 contact 的 mood_valence 检测负面情绪
-  // @see ADR-50: 语义归 LLM，结构归代码——用数值判断而非正则
+  // Обнаружение grief / чувствительных состояний
+  // 1) Обнаружение негативных эмоций по mood_valence связанного contact
+  // @see ADR-50: семантика принадлежит LLM, структура принадлежит коду — используем числовую оценку, а не regex
   const contactId = chatIdToContactId(targetId);
   if (contactId && contactId !== targetId && G.has(contactId)) {
     const contactAttrs = G.getContact(contactId);
     const moodValence = Number(contactAttrs.mood_valence ?? 0);
-    // 负面情绪（valence < -0.3）增加社交成本
+    // Негативные эмоции (valence < -0.3) увеличивают социальные издержки
     if (moodValence < -0.3) {
       signal += Math.min(0.9, 0.5 + Math.abs(moodValence));
       count++;
     }
   }
-  // 2) risk_reason 作为 risk 信号的补充
-  // effectiveRisk 已在上方处理。如果有 risk_reason 但 effectiveRisk 为零（risk_level 未标记或已衰减），
-  // 提升信号值（等价于隐含的 "low" 风险）。
+  // 2) risk_reason как дополнение к сигналу риска
+  // effectiveRisk уже обработан выше. Если есть risk_reason, но effectiveRisk равен нулю (risk_level не помечен или затух),
+  // поднимаем сигнал (эквивалентно неявному "low" риску).
   if (riskValue === 0) {
     const targetAttrs = G.getChannel(targetId);
     if (targetAttrs.risk_reason) {
-      // 补充信号，不增加 count——risk_reason 是辅助信号而非独立维度，
-      // 增加 count 会稀释平均值（0.1 低于其他信号均值，反而拉低总成本）。
+      // Дополнительный сигнал, count не увеличиваем — risk_reason является вспомогательным сигналом, а не отдельным измерением;
+      // увеличение count разбавит среднее (0.1 ниже среднего других сигналов, что снизит общую стоимость).
       signal += 0.1;
     }
   }
@@ -354,8 +354,8 @@ function extractContextSignal(
 }
 
 /**
- * 计算 max_sim：当前行动与最近行动的最大相似度。
- * 简化实现：相同行动类型 = 1，不同 = 0。
+ * Вычислить max_sim: максимальное сходство текущего действия с недавними.
+ * Упрощённая реализация: одинаковый тип действия = 1, разный = 0.
  *
  * @see paper/ Definition 8, C_temp: max_sim(a, a')
  */
@@ -366,21 +366,21 @@ function maxSimilarity(actionType: string, recentActionTypes: string[]): number 
   return 0;
 }
 
-// -- 主函数 -----------------------------------------------------------------
+// -- Главная функция -----------------------------------------------------------------
 
 /**
- * 计算对目标实体执行指定行动的社交成本。
+ * Вычислить социальные издержки выполнения указанного действия над целевой сущностью.
  *
- * 纯函数：只读 G + 传入参数，无副作用。
+ * Чистая функция: только читает G + переданные параметры, побочных эффектов нет.
  *
- * @param G - 伴侣图（只读）
- * @param targetId - 目标实体 ID（channel 或 contact）
- * @param actionType - 行动类型（声部名 or 具体行动）
- * @param tick - 当前 tick
- * @param recentActions - 最近行动记录
- * @param config - Social Cost 配置
- * @param chatType - 目标频道类型（默认 "private"，群组中社交成本更低）
- * @returns 社交成本 ∈ [0, ~1]（理论上无硬上限，但各子项 ∈ [0,1]）
+ * @param G - граф-компаньон (только чтение)
+ * @param targetId - ID целевой сущности (channel или contact)
+ * @param actionType - тип действия (название голоса или конкретное действие)
+ * @param tick - текущий тик
+ * @param recentActions - запись недавних действий
+ * @param config - конфигурация Social Cost
+ * @param chatType - тип целевого канала (по умолчанию "private"; в группе социальные издержки ниже)
+ * @returns социальные издержки ∈ [0, ~1] (теоретически без жёсткого верхнего предела, но каждый подэлемент ∈ [0,1])
  *
  * @see paper/ Definition 8: Social Cost Function
  * @see docs/adr/113-online-social-recalibration.md
@@ -395,33 +395,33 @@ export function computeSocialCost(
   config: SocialCostConfig,
   chatType?: string,
 ): number {
-  // ADR-206: 频道无社交义务（纯信息流），社交成本为 0
+  // ADR-206: у канала нет социальных обязательств (чистый информационный поток), социальные издержки равны 0
   if (chatType === "channel") return 0;
 
-  // --- C_dist: 社交距离 ---
+  // --- C_dist: социальная дистанция ---
 
-  // 获取 sent/recv 窗口计数
+  // Получить счётчики окна sent/recv
   let aliceSentWindow = 0;
   let contactRecvWindow = 0;
-  let tier = 150; // 默认 Dunbar 150
+  let tier = 150; // Данбар 150 по умолчанию
 
-  // 从 channel 或 contact 获取追踪数据
+  // Получить данные отслеживания из channel или contact
   if (G.has(targetId)) {
     const attrs = G.getChannel(targetId);
     aliceSentWindow = Number(attrs.alice_sent_window ?? 0);
     contactRecvWindow = Number(attrs.contact_recv_window ?? 0);
-    // tier 从 channel.tier_contact 获取
+    // tier берётся из channel.tier_contact
     tier = Number(attrs.tier_contact ?? 150);
   }
 
-  // 也尝试从关联 contact 获取 tier
+  // Также пробуем получить tier из связанного contact
   const contactId = chatIdToContactId(targetId);
   if (contactId && contactId !== targetId && G.has(contactId)) {
     const contactAttrs = G.getContact(contactId);
     tier = contactAttrs.tier;
   }
 
-  // 时间间隔：自上次互动的墙钟秒数
+  // Временной интервал: секунды стенного времени с момента последнего взаимодействия
   let lastInteractionMs = 0;
   if (G.has(targetId)) {
     const aliceMs = readNodeMs(G, targetId, "last_alice_action_ms");
@@ -433,8 +433,8 @@ export function computeSocialCost(
   const isGroup = ChatTarget.isGroupChat(chatType);
   const dist = cDist(aliceSentWindow, contactRecvWindow, tier, tGap, config, isGroup);
 
-  // --- C_power: 权力差异 ---
-  // P2-1 fix: 从 channel 的 alice_role 属性读取（perceive 阶段写入）
+  // --- C_power: разница власти ---
+  // P2-1 fix: читаем из атрибута alice_role канала (записывается на этапе perceive)
   const aliceRole = G.has(targetId)
     ? String(G.getChannel(targetId).alice_role ?? "member")
     : "member";
@@ -443,8 +443,8 @@ export function computeSocialCost(
   let isTargetTerritory = false;
 
   if (G.has(targetId)) {
-    // ADR-113: 群组是共享空间，不再一律视为"对方领地"
-    // 仅新成员（加入 < 7 天）视为"闯入者"——刚进群就主动发消息的社交成本更高
+    // ADR-113: группа — общее пространство, больше не считается "территорией собеседника"
+    // Только новые участники (вступили < 7 дней назад) считаются "нарушителями" — социальные издержки выше при активной отправке сразу после вступления
     if (isGroup) {
       const joinMs = Number(G.getChannel(targetId).join_ms ?? 0);
       isTargetTerritory = joinMs > 0 && nowMs - joinMs < 7 * 86_400_000;
@@ -454,11 +454,11 @@ export function computeSocialCost(
 
   const power = cPower(aliceRank, targetRank, isTargetTerritory, config);
 
-  // --- C_imp: 侵入性 ---
+  // --- C_imp: навязчивость ---
   const contextSignal = extractContextSignal(G, targetId, isGroup, nowMs);
   const imp = cImp(actionType, contextSignal, config, chatType);
 
-  // --- C_temp: 时间序列惩罚（window 现为秒） ---
+  // --- C_temp: временной штраф (window теперь в секундах) ---
   const windowStartMs = nowMs - config.window * 1000;
   const actionsInWindow = recentActions.filter(
     (a) => (a.ms ?? a.tick * LEGACY_TICK_INTERVAL_MS) > windowStartMs,
@@ -467,7 +467,7 @@ export function computeSocialCost(
   const typesInWindow = actionsInWindow.map((a) => a.action);
   const maxSim = maxSimilarity(actionType, typesInWindow);
 
-  // ADR-153 Phase 2: 从 contact 读取 Hawkes λ(t) → 传入 C_temp 不对称检测
+  // ADR-153 Phase 2: читаем Hawkes λ(t) из contact → передаём в C_temp для обнаружения асимметрии
   let opponentLambda: number | undefined;
   if (contactId && G.has(contactId)) {
     const contactForHawkes = G.getContact(contactId);
@@ -482,7 +482,7 @@ export function computeSocialCost(
   }
   const temp = cTemp(actionDensity, maxSim, config, opponentLambda, config.window);
 
-  // --- 总和: 加权求和 ---
+  // --- Итог: взвешенная сумма ---
   return config.wDist * dist + config.wPower * power + config.wImp * imp + config.wTemp * temp;
 }
 
@@ -491,77 +491,77 @@ export function computeSocialCost(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Saturation Cost 配置。
+ * Конфигурация Saturation Cost.
  *
- * 4 个子组件的权重和参数。权重需要在 σ=1.0 时产生足够大的 C_sat
- * 使 NSV ≤ 0（等效于"阻断"），但在 σ 较低时对 NSV 影响可忽略。
+ * Веса и параметры 4 подкомпонентов. Веса должны давать достаточно большой C_sat при σ=1.0,
+ * чтобы NSV ≤ 0 (эквивалентно "блокировке"), но при малом σ влияние на NSV незначительно.
  *
  * @see docs/adr/136-constrained-vmax/README.md §2.4
  */
 export const SaturationCostConfigSchema = z.object({
-  /** σ_rate 权重——per-target 频率饱和。 */
+  /** Вес σ_rate — насыщение частоты per-target. */
   wRate: z.number().min(0).default(2.0),
-  /** σ_cool 权重——proactive 冷却。 */
+  /** Вес σ_cool — кулдаун proactive. */
   wCool: z.number().min(0).default(1.5),
-  /** σ_out 权重——consecutive outgoing。 */
+  /** Вес σ_out — насыщение consecutive outgoing. */
   wOut: z.number().min(0).default(2.0),
-  /** σ_fail 权重——ACT 执行失败。 */
+  /** Вес σ_fail — сбой выполнения ACT. */
   wFail: z.number().min(0).default(1.5),
 
-  /** σ_rate 凸性指数 α > 1（越接近上限惩罚越陡）。 */
+  /** Показатель выпуклости σ_rate α > 1 (штраф становится круче по мере приближения к лимиту). */
   alphaRate: z.number().min(1).default(2.0),
-  /** σ_out 凸性指数 β > 1。 */
+  /** Показатель выпуклости σ_out β > 1. */
   betaOut: z.number().min(1).default(2.0),
-  /** σ_fail 指数斜率 γ。 */
+  /** Наклон экспоненты σ_fail γ. */
   gammaFail: z.number().positive().default(0.5),
 
-  /** Per-target 频率上限（标准）。
-   * ADR-189 蟑螂审计 Recal 2: 3→4（50 分钟窗口每 12.5 分钟 1 次，更适合活跃私聊）。 */
+  /** Лимит частоты per-target (стандартный).
+   * ADR-189 Cockroach Audit Recal 2: 3→4 (1 раз за 12.5 минут в окне 50 минут; лучше подходит для активных личных чатов). */
   perTargetCap: z.number().int().positive().default(4),
-  /** Per-target 频率上限（obligation bypass 时）。 */
+  /** Лимит частоты per-target (при obligation bypass). */
   perTargetCapBypass: z.number().int().positive().default(5),
 
-  /** Consecutive outgoing 上限——私聊。
-   * ADR-189 蟑螂审计 Recal 1: 3→4（给主动对话留一条缓冲）。 */
+  /** Лимит consecutive outgoing — приватный чат.
+   * ADR-189 Cockroach Audit Recal 1: 3→4 (оставляем один буфер для проактивного диалога). */
   outgoingCapPrivate: z.number().int().positive().default(4),
-  /** Consecutive outgoing 上限——群组。 */
+  /** Лимит consecutive outgoing — группа. */
   outgoingCapGroup: z.number().int().positive().default(4),
 });
 
 export type SaturationCostConfig = z.infer<typeof SaturationCostConfigSchema>;
 
-/** 默认 Saturation Cost 配置。 */
+/** Конфигурация Saturation Cost по умолчанию. */
 export const DEFAULT_SATURATION_COST_CONFIG: SaturationCostConfig =
   SaturationCostConfigSchema.parse({});
 
 /**
- * ADR-154: 从 target（channel/contact）提取有效 Dunbar tier。
- * 优先使用关联 contact 的 tier，fallback 到 channel 的 tier_contact。
+ * ADR-154: извлечь действующий Dunbar tier из target (channel/contact).
+ * Приоритет — tier связанного contact, fallback — tier_contact канала.
  */
 function extractTierFromTarget(G: WorldModel, targetId: string, isGroup: boolean): DunbarTier {
-  // 私聊：channel → contact 推导
+  // Приватный чат: выводим channel → contact
   const contactId = chatIdToContactId(targetId);
   if (contactId && contactId !== targetId && G.has(contactId)) {
     return G.getContact(contactId).tier;
   }
-  // 群组或无关联 contact：使用 channel 的 tier_contact
+  // Группа или нет связанного contact: используем tier_contact канала
   if (G.has(targetId)) {
     return G.getChannel(targetId).tier_contact;
   }
-  // fallback: 群组默认 150，私聊默认 50
+  // Fallback: группа по умолчанию 150, приватный чат 50
   return isGroup ? 150 : 50;
 }
 
 /**
- * ADR-136: 饱和成本 C_sat — 将执行约束编码为连续惩罚。
+ * ADR-136: Saturation Cost C_sat — кодирует ограничения выполнения как непрерывный штраф.
  *
- * 4 个子组件对应 4 类被折叠的二值门控：
- *   σ_rate — per-target 频率饱和
- *   σ_cool — proactive 冷却衰减
- *   σ_out  — consecutive outgoing 饱和
- *   σ_fail — 执行失败惩罚（时间衰减）
+ * 4 подкомпонента соответствуют 4 типам свёрнутых бинарных гейтов:
+ *   σ_rate — насыщение частоты per-target
+ *   σ_cool — кулдаун proactive
+ *   σ_out  — насыщение consecutive outgoing
+ *   σ_fail — штраф за сбой выполнения (временное затухание)
  *
- * 纯函数：只读 G + 传入参数，无副作用。
+ * Чистая функция: только читает G + переданные параметры, побочных эффектов нет.
  *
  * @see paper/ Eq.(csat): C_sat = Σ w_k · σ_k
  * @see docs/adr/136-constrained-vmax/README.md §2.3
@@ -575,32 +575,32 @@ export function computeSaturationCost(
   chatType: string,
   bypassGates: boolean,
 ): number {
-  // ADR-206: 频道无饱和成本（信息流实体，不是社交对等体）
+  // ADR-206: у канала нет saturation cost (информационная сущность, а не социальный партнёр)
   if (ChatTarget.isChannelChat(chatType)) return 0;
 
   const isGroup = ChatTarget.isGroupChat(chatType);
 
-  // ── σ_rate: per-target 频率饱和 ──
+  // ── σ_rate: насыщение частоты per-target ──
   const cap = bypassGates ? config.perTargetCapBypass : config.perTargetCap;
   const ratioRate = Math.min(1, recentTargetActionCount / Math.max(cap, 1));
   const sigmaRate = ratioRate ** config.alphaRate;
 
-  // ── σ_cool: proactive 冷却（ADR-154: per-tier τ_cool）──
+  // ── σ_cool: кулдаун proactive (ADR-154: per-tier τ_cool) ──
   let sigmaCool = 0;
   if (G.has(targetId)) {
     const lastProactiveMs = readNodeMs(G, targetId, "last_proactive_outreach_ms");
     if (lastProactiveMs > 0) {
       const elapsedCoolS = Math.max(0, (nowMs - lastProactiveMs) / 1000);
-      // ADR-154: τ_cool per-tier 化——亲密朋友冷却短，疏远联系人冷却长
+      // ADR-154: τ_cool per-tier — у близких друзей кулдаун короче, у дальних знакомых длиннее
       const tier = extractTierFromTarget(G, targetId, isGroup);
       const tauCool = isGroup
-        ? proactiveCooldownForTier(tier) * 0.25 // 群组冷却 = 私聊 × 0.25
+        ? proactiveCooldownForTier(tier) * 0.25 // кулдаун в группе = личный × 0.25
         : proactiveCooldownForTier(tier);
       sigmaCool = Math.exp(-elapsedCoolS / Math.max(tauCool, 1));
     }
   }
 
-  // ── σ_out: consecutive outgoing 饱和 ──
+  // ── σ_out: насыщение consecutive outgoing ──
   let sigmaOut = 0;
   if (G.has(targetId)) {
     const outgoing = effectiveOutgoing(G, targetId, nowMs);
@@ -609,7 +609,7 @@ export function computeSaturationCost(
     sigmaOut = ratioOut ** config.betaOut;
   }
 
-  // ── σ_fail: ACT 执行失败（时间衰减） ──
+  // ── σ_fail: сбой выполнения ACT (временное затухание) ──
   let sigmaFail = 0;
   if (G.has(targetId)) {
     const effectiveSil = effectiveActSilences(G, targetId, nowMs);

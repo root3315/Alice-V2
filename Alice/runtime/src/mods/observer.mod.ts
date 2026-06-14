@@ -1,12 +1,12 @@
 /**
- * Observer Mod — ADR-23 LLM 结构建造者的核心观察层。
+ * Observer Mod — ADR-23 ключевой слой наблюдений LLM — строителя структур.
  *
- * 5 个 LLM 可调用的内部指令，全部写入图属性（不产生 Telegram 动作）。
- * 这些属性后续被压力公式和声部竞争消费（Wave 5+），
- * 当前仅写入，确保优雅退化（LLM 不标注时行为等价 v4）。
+ * 5 внутренних инструкций, доступных LLM, — все записывают атрибуты графа (не генерируют действия Telegram).
+ * Эти атрибуты впоследствии потребляются формулами давления и конкуренцией голосов (Wave 5+);
+ * пока только записываются, обеспечивая корректную деградацию (поведение без разметки LLM эквивалентно v4).
  *
- * 指令：DECLARE_ACTION, rate_outcome, self_feel, flag_risk, observe_activity, attention_pull, switch_chat, intend, self_sense
- * 查询：chatMood
+ * Инструкции: DECLARE_ACTION, rate_outcome, self_feel, flag_risk, observe_activity, attention_pull, switch_chat, intend, self_sense
+ * Запросы: chatMood
  */
 import { z } from "zod";
 import { createMod } from "../core/mod-builder.js";
@@ -35,7 +35,7 @@ import { QUALITY_MAP } from "../voices/beat-feedback.js";
 import { computeExternalFeedback } from "./observer/external-feedback.js";
 import { updateGroupReception } from "./observer/group-reception.js";
 
-// -- 类型 --------------------------------------------------------------------
+// -- Типы --------------------------------------------------------------------
 
 interface RateOutcomeRecord {
   target: string;
@@ -46,14 +46,14 @@ interface RateOutcomeRecord {
   ms: number;
 }
 
-// -- 印象形成 — ADR-89 --------------------------------------------------------
+// -- Формирование впечатлений — ADR-89 ----------------------------------------
 // @see docs/adr/89-impression-formation-system.md
 
 /**
- * 20 个语义标签 → 10 个 bipolar 维度。
- * LLM 选标签（语义判断），代码做映射（结构簿记）。
- * 同一维度的对立观察在 EMA 中自然抵消。
- * @see ADR-50: 语义归 LLM，结构归代码
+ * 20 семантических меток → 10 биполярных измерений.
+ * LLM выбирает метку (семантическое суждение), код выполняет отображение (структурный учёт).
+ * Противоположные наблюдения по одному измерению естественно компенсируются в EMA.
+ * @see ADR-50: семантика принадлежит LLM, структура — коду
  */
 export const TRAIT_POLARITY: Record<string, { dimension: string; valence: number }> = {
   kind: { dimension: "warmth", valence: +1 },
@@ -78,38 +78,38 @@ export const TRAIT_POLARITY: Record<string, { dimension: string; valence: number
   moody: { dimension: "loyalty", valence: -1 },
 };
 
-/** 语义强度 → 数值映射（代码侧完成，LLM 不接触数值）。 */
+/** Семантическая интенсивность → числовое отображение (выполняется на стороне кода, LLM не видит числа). */
 export const INTENSITY_MAP: Record<string, number> = {
   slight: 0.3,
   moderate: 0.6,
   strong: 0.9,
 };
 
-// -- Mod 状态 -----------------------------------------------------------------
+// -- Состояние Mod ------------------------------------------------------------
 
-/** ADR-199: 上一轮行动摘要 — 让 LLM 知道自己做过什么。 */
+/** ADR-199: сводка действий предыдущего раунда — сообщает LLM, что было сделано. */
 interface ActionRecap {
   tick: number;
   target: string | null;
   messageSent: boolean;
   stateChanges: string[]; // ["felt positive about Carol", "progressed thread #meeting"]
   autoWriteback: string[]; // ["auto-feel:positive"]
-  timestamp: number; // 墙钟 ms，TTL 控制用
+  timestamp: number; // настенные часы (мс), для управления TTL
 }
 
 interface ObserverState {
-  /** 最近的 rate_outcome 记录（环形缓冲，最多 20 条）。 */
+  /** Последние записи rate_outcome (кольцевой буфер, максимум 20). */
   outcomeHistory: RateOutcomeRecord[];
-  /** ADR-89: 印象观察计数（key = "entityId::trait:dimension"）。 */
+  /** ADR-89: счётчики наблюдений впечатлений (key = "entityId::trait:dimension"). */
   impressionCounts: Record<string, number>;
-  /** ADR-199: 上一轮行动结果摘要。 */
+  /** ADR-199: сводка результатов действий предыдущего раунда. */
   lastActionRecap?: ActionRecap | null;
 }
 
-// -- 情绪枚举 — feel 指令的唯一事实源 ──────────────────────────
-// @see docs/adr/50-semantic-ownership-llm-not-regex.md — 语义标签 → 数值映射在代码侧完成
+// -- Перечисления эмоций — единственный источник истины для инструкции feel ──
+// @see docs/adr/50-semantic-ownership-llm-not-regex.md — отображение семантических меток → числа выполняется на стороне кода
 
-/** 情绪效价等级。 */
+/** Уровни валентности эмоций. */
 export const VALENCE_LEVELS = [
   "very_positive",
   "positive",
@@ -119,11 +119,11 @@ export const VALENCE_LEVELS = [
 ] as const;
 export type ValenceLevel = (typeof VALENCE_LEVELS)[number];
 
-/** 情绪唤醒度等级。 */
+/** Уровни возбуждения эмоций. */
 export const AROUSAL_LEVELS = ["calm", "mild", "intense"] as const;
 export type ArousalLevel = (typeof AROUSAL_LEVELS)[number];
 
-/** 效价 → 数值映射（代码侧唯一定义点）。 */
+/** Валентность → числовое отображение (единственная точка определения на стороне кода). */
 export const VALENCE_MAP: Record<ValenceLevel, number> = {
   very_positive: 0.8,
   positive: 0.4,
@@ -132,7 +132,7 @@ export const VALENCE_MAP: Record<ValenceLevel, number> = {
   very_negative: -0.8,
 };
 
-/** 唤醒度 → 数值映射（代码侧唯一定义点）。 */
+/** Возбуждение → числовое отображение (единственная точка определения на стороне кода). */
 export const AROUSAL_MAP: Record<ArousalLevel, number> = {
   calm: 0.2,
   mild: 0.5,
@@ -149,22 +149,22 @@ function inferEmotionKind(valence: number, arousal: number): EmotionKind {
   return "flat";
 }
 
-// -- observe_activity 语义枚举 ------------------------------------------------
-// @see AGENTS.md: LLM 语义无障碍——不暴露 [0,1] 数值范围，使用语义标签
-// 结构同 VALENCE_LEVELS / ValenceLevel / VALENCE_MAP（文件内统一模式）
+// -- Семантические перечисления observe_activity ------------------------------
+// @see AGENTS.md: семантическая доступность для LLM — не раскрываем диапазон [0,1], используем семантические метки
+// Структура аналогична VALENCE_LEVELS / ValenceLevel / VALENCE_MAP (единый паттерн в файле)
 
-/** 活动强度等级。 */
+/** Уровни интенсивности активности. */
 export const ACTIVITY_INTENSITY_LEVELS = ["low", "moderate", "high"] as const;
 export type ActivityIntensityLevel = (typeof ACTIVITY_INTENSITY_LEVELS)[number];
 
-/** 活动强度 → 数值映射（代码侧唯一定义点）。 */
+/** Интенсивность активности → числовое отображение (единственная точка определения на стороне кода). */
 export const ACTIVITY_INTENSITY_MAP: Record<ActivityIntensityLevel, number> = {
   low: 0.3,
   moderate: 0.5,
   high: 0.8,
 };
 
-/** 活动与 Alice 的相关度等级。 */
+/** Уровни релевантности активности для Алисы. */
 export const ACTIVITY_RELEVANCE_LEVELS = [
   "not_relevant",
   "somewhat_relevant",
@@ -173,7 +173,7 @@ export const ACTIVITY_RELEVANCE_LEVELS = [
 ] as const;
 export type ActivityRelevanceLevel = (typeof ACTIVITY_RELEVANCE_LEVELS)[number];
 
-/** 活动相关度 → 数值映射（代码侧唯一定义点）。 */
+/** Релевантность активности → числовое отображение (единственная точка определения на стороне кода). */
 export const ACTIVITY_RELEVANCE_MAP: Record<ActivityRelevanceLevel, number> = {
   not_relevant: 0.1,
   somewhat_relevant: 0.4,
@@ -181,11 +181,11 @@ export const ACTIVITY_RELEVANCE_MAP: Record<ActivityRelevanceLevel, number> = {
   very_relevant: 0.95,
 };
 
-// -- 辅助：显示名称解析 -------------------------------------------------------
-// nodeId → display_name: 使用 safeDisplayName (from graph/display.ts)
-// display_name → nodeId: 使用 resolveDisplayName (from graph/display.ts)
+// -- Вспомогательные: разрешение отображаемых имён ----------------------------
+// nodeId → display_name: используем safeDisplayName (из graph/display.ts)
+// display_name → nodeId: используем resolveDisplayName (из graph/display.ts)
 
-/** 数值效价 → 语义标签（用于 format() 渲染）。 */
+/** Числовая валентность → семантическая метка (для рендеринга в format()). */
 function valenceLabel(v: number): string {
   if (v > 0.6) return "very positive";
   if (v > 0.2) return "positive";
@@ -194,14 +194,14 @@ function valenceLabel(v: number): string {
   return "very negative";
 }
 
-/** 数值唤醒度 → 语义标签（用于 format() 渲染）。 */
+/** Числовое возбуждение → семантическая метка (для рендеринга в format()). */
 function arousalLabel(a: number): string {
   if (a > 0.7) return "intense";
   if (a > 0.35) return "mild";
   return "calm";
 }
 
-/** 数值 quality → 语义标签（用于 format() 渲染）。 */
+/** Числовое quality → семантическая метка (для рендеринга в format()). */
 function qualityLabel(q: number): string {
   if (q > 0.3) return "good";
   if (q < -0.3) return "poor";
@@ -209,9 +209,9 @@ function qualityLabel(q: number): string {
 }
 
 /**
- * Bot 是 Telegram 工具体，不是社交关系对象。
- * 只过滤 bot 本身的私聊/contact target；群聊里出现 bot 输出仍属于群聊上下文。
- * @see docs/GOAL.md §场景 7：工具生态
+ * Бот является инструментальной сущностью Telegram, а не объектом социальных отношений.
+ * Фильтруется только приватный чат / contact-target самого бота; вывод бота в групповом чате относится к контексту группы.
+ * @see docs/GOAL.md §сценарий 7: экосистема инструментов
  */
 function isBotOutcomeTarget(ctx: ModContext<ObserverState>, target: string): boolean {
   if (!ctx.graph.has(target)) return false;
@@ -238,7 +238,7 @@ function legacyContactIdFromChannel(target: string): string | null {
   return `contact:${rest}`;
 }
 
-/** ms 时间戳 → 人类可读相对时间（用于 format() 渲染）。 */
+/** Временна́я метка мс → человекочитаемое относительное время (для рендеринга в format()). */
 function relativeTime(ms: number, nowMs: number): string {
   const elapsed = (nowMs - ms) / 1000;
   if (elapsed < 60) return "just now";
@@ -247,7 +247,7 @@ function relativeTime(ms: number, nowMs: number): string {
   return `${Math.round(elapsed / 86400)}d ago`;
 }
 
-// -- Mod 定义 -----------------------------------------------------------------
+// -- Определение Mod ----------------------------------------------------------
 
 export const observerMod = createMod<ObserverState>("observer", {
   category: "mechanic",
@@ -256,8 +256,8 @@ export const observerMod = createMod<ObserverState>("observer", {
   initialState: { outcomeHistory: [], impressionCounts: {} },
 })
   /**
-   * 声明 Alice 执行了一次对外行动。
-   * 更新目标联系人/频道的 last_alice_action_ms 和 social_debt_direction。
+   * Объявляет внешнее действие Алисы.
+   * Обновляет last_alice_action_ms и social_debt_direction целевого контакта/канала.
    */
   .instruction("DECLARE_ACTION", {
     params: z.object({
@@ -267,7 +267,7 @@ export const observerMod = createMod<ObserverState>("observer", {
         .optional()
         .describe("Направление социального долга: alice_initiated | other_initiated | balanced"),
       intent: z.string().optional().describe("Краткое описание намерения"),
-      /** 审计修复: 是否为消息类 action。非消息 action（react, pin 等）不应递增 consecutive_outgoing。 */
+      /** Аудиторская правка: является ли action сообщением. Не-сообщения (react, pin и т. д.) не должны увеличивать consecutive_outgoing. */
       isMessage: z.boolean().optional(),
     }),
     description: "Объявить внешнее действие Алисы (обновляет атрибуты графа)",
@@ -277,18 +277,18 @@ export const observerMod = createMod<ObserverState>("observer", {
         return { success: false, error: `target not found: ${target}` };
       }
 
-      // ADR-154: target 类型不定（channel 或 contact），用 setDynamic
+      // ADR-154: тип target непостоянен (channel или contact), используем setDynamic
       ctx.graph.setDynamic(target, "last_alice_action_ms", ctx.nowMs);
-      // m4 修复: 双向双写 last_alice_action_ms。
+      // m4 правка: двусторонняя двойная запись last_alice_action_ms.
       const derivedChannel = ensureChannelId(target);
       if (derivedChannel && derivedChannel !== target && ctx.graph.has(derivedChannel)) {
         ctx.graph.updateChannel(derivedChannel, { last_alice_action_ms: ctx.nowMs });
       }
-      // ADR-158 Fix 3: channel last_activity_ms — 出站消息同样是频道活动。
-      // 无此更新时，Goldilocks 窗口（evolve.ts:672）和对话模式超时（evolve.ts:1169）
-      // 仅看到入站 last_activity_ms（mapper.ts:199），误判沉默时长。
-      // 独立于 m4 双写——target 本身是 channel 时 derivedChannel === target，
-      // m4 分支不执行；此块统一处理两种情况。
+      // ADR-158 Fix 3: channel last_activity_ms — исходящие сообщения тоже являются активностью канала.
+      // Без этого обновления окно Goldilocks (evolve.ts:672) и таймаут режима разговора (evolve.ts:1169)
+      // видят только входящий last_activity_ms (mapper.ts:199), неверно оценивая длительность тишины.
+      // Независимо от двойной записи m4 — когда target является channel, derivedChannel === target,
+      // ветка m4 не выполняется; данный блок обрабатывает оба случая единообразно.
       // @see docs/adr/158-outbound-feedback-gap.md §Fix 3
       const activityChannel = derivedChannel ?? target;
       if (ctx.graph.has(activityChannel) && ctx.graph.getNodeType(activityChannel) === "channel") {
@@ -299,7 +299,7 @@ export const observerMod = createMod<ObserverState>("observer", {
         ctx.graph.updateContact(derivedContact, { last_alice_action_ms: ctx.nowMs });
       }
 
-      // D5: alice_sent_window 递增（D4 writeback — 用于 C_dist 互惠计算）
+      // D5: увеличение alice_sent_window (D4 writeback — для расчёта взаимности C_dist)
       const sentChannel =
         derivedChannel && derivedChannel !== target && ctx.graph.has(derivedChannel)
           ? derivedChannel
@@ -308,13 +308,13 @@ export const observerMod = createMod<ObserverState>("observer", {
         const curSent = ctx.graph.getChannel(sentChannel).alice_sent_window ?? 0;
         ctx.graph.updateChannel(sentChannel, { alice_sent_window: curSent + 1 });
       }
-      // ADR-198 D5 审计: social_debt_direction 唯一消费者是 chatMood format 渲染。
-      // 闭环完整但弱——如未来压力系统需消费此信号，应提升为结构性路径。
+      // ADR-198 D5 аудит: единственный потребитель social_debt_direction — рендер chatMood format.
+      // Замкнутый цикл полный, но слабый — если будущая система давления потребует этот сигнал, следует перевести его в структурный путь.
       if (args.social_debt) {
         ctx.graph.setDynamic(target, "social_debt_direction", String(args.social_debt));
       }
 
-      // B1 修复: Alice 行动后更新对话 turnState
+      // B1 правка: обновляем turnState разговора после действия Алисы
       let conversationState: string | undefined;
       const channelForConv = ensureChannelId(target) ?? target;
       const convId = findActiveConversation(ctx.graph, channelForConv);
@@ -340,13 +340,13 @@ export const observerMod = createMod<ObserverState>("observer", {
         }
       }
 
-      // M2 修复: consecutive_outgoing 必须写入 channel 节点（channel:xxx）。
-      // 审计修复: 只有消息类 action 递增 consecutive_outgoing。
-      // react/pin/delete 等非消息 action 也 dispatch DECLARE_ACTION（更新 last_alice_action_ms），
-      // 但不应计入 anti-bombing 连发计数——否则 Alice 发消息+react → consecutive=2 → 误触发。
+      // M2 правка: consecutive_outgoing должен записываться в узел channel (channel:xxx).
+      // Аудиторская правка: только action типа «сообщение» увеличивает consecutive_outgoing.
+      // Не-сообщения (react/pin/delete и т. д.) тоже диспатчат DECLARE_ACTION (обновляя last_alice_action_ms),
+      // но не должны входить в счётчик последовательных отправок anti-bombing — иначе сообщение+react → consecutive=2 → ложное срабатывание.
       {
         const bombingChannel = ensureChannelId(target);
-        const isMessage = args.isMessage !== false; // 向后兼容：无参数时默认 true
+        const isMessage = args.isMessage !== false; // обратная совместимость: при отсутствии параметра по умолчанию true
         if (bombingChannel && ctx.graph.has(bombingChannel)) {
           const chAttrs = ctx.graph.getChannel(bombingChannel);
           ctx.graph.updateChannel(bombingChannel, {
@@ -356,14 +356,14 @@ export const observerMod = createMod<ObserverState>("observer", {
             last_outgoing_ms: ctx.nowMs,
           });
 
-          // ADR-78 F2: 记录 proactive outreach 时间戳（无有效义务时 = 主动出击）。
-          // ADR-158 Fix 5: 使用 hasObligation 替代 raw pending_directed === 0。
-          // 陈旧的 directed 消息（义务已衰减到 signal 阈值以下）不应阻止
-          // 记录 proactive outreach——否则 σ_cool 冷却时间被虚假延长。
+          // ADR-78 F2: фиксируем временну́ю метку proactive outreach (без активных обязательств = инициатива).
+          // ADR-158 Fix 5: используем hasObligation вместо raw pending_directed === 0.
+          // Устаревшие directed-сообщения (обязательство упало ниже порога signal) не должны препятствовать
+          // фиксации proactive outreach — иначе время охлаждения σ_cool ложно удлиняется.
           // @see docs/adr/158-outbound-feedback-gap.md
           if (!hasObligation(ctx.graph, bombingChannel, ctx.nowMs, OBLIGATION_THRESHOLDS.signal)) {
             ctx.graph.updateChannel(bombingChannel, { last_proactive_outreach_ms: ctx.nowMs });
-            // P1-1: Alice 主动发起互动 → 递增 contact 的 alice_initiated_count
+            // P1-1: Алиса инициировала взаимодействие → увеличиваем alice_initiated_count контакта
             const contactForReciprocity = ensureContactId(target);
             if (contactForReciprocity && ctx.graph.has(contactForReciprocity)) {
               const prev = ctx.graph.getContact(contactForReciprocity).alice_initiated_count ?? 0;
@@ -377,8 +377,8 @@ export const observerMod = createMod<ObserverState>("observer", {
     },
   })
   /**
-   * 对最近一次行动进行质量评估。
-   * 写入图属性 + 缓存到 mod state 供 Wave 5.3 消费。
+   * Оценивает качество последнего действия.
+   * Записывает атрибуты графа + кэширует в состоянии mod для потребления Wave 5.3.
    */
   .instruction("rate_outcome", {
     params: z.object({
@@ -396,23 +396,23 @@ export const observerMod = createMod<ObserverState>("observer", {
       category: "mood",
     },
     impl(ctx, args) {
-      // ADR-41: 自评收缩 + 冷却。LLM 自评是写入-读取回路的自强化源。
-      // ADR-64 V-1: 外部反馈锚——用行为信号校准 LLM 自评。
+      // ADR-41: сжатие самооценки + охлаждение. Самооценка LLM — источник самоусиления в цикле запись-чтение.
+      // ADR-64 V-1: якорь внешней обратной связи — калибрует самооценку LLM поведенческими сигналами.
       const RATE_OUTCOME_COOLDOWN_S = 600; // seconds
       const SELF_RATING_SHRINKAGE = 0.8;
 
       const target = String(args.target);
 
-      // 北极星场景 7：bot 是工具输出源，不是社交对等体。
-      // bot 成败不应污染 Recent action quality / trust / relationship pressure。
+      // Северная звезда, сценарий 7: бот — источник инструментального вывода, а не социальный партнёр.
+      // Успех/неудача бота не должны загрязнять Recent action quality / trust / relationship pressure.
       if (isBotOutcomeTarget(ctx, target)) {
         return { success: true, skipped: "bot_tool_target", target };
       }
 
-      // ADR-131: QUALITY_MAP 统一从 beat-feedback.ts 导入（单一真相源）
+      // ADR-131: QUALITY_MAP единообразно импортируется из beat-feedback.ts (единственный источник истины)
       const rawQuality = QUALITY_MAP[String(args.quality)] ?? 0;
 
-      // 冷却：同一 target 在 COOLDOWN 内最多一次
+      // Охлаждение: для одного target не более одного раза за период COOLDOWN
       const recentSameTarget = ctx.state.outcomeHistory.find(
         (r) => r.target === target && (ctx.nowMs - r.ms) / 1000 < RATE_OUTCOME_COOLDOWN_S,
       );
@@ -420,21 +420,21 @@ export const observerMod = createMod<ObserverState>("observer", {
         return { success: false, reason: "cooldown" };
       }
 
-      // 自评收缩：quality 向 0 收缩，削弱 LLM 自评影响力
+      // Сжатие самооценки: quality сжимается к 0, ослабляя влияние самооценки LLM
       const shrunkQuality = rawQuality * SELF_RATING_SHRINKAGE;
 
-      // V-1: 外部反馈融合——外部信号够多时降低 LLM 自评权重
+      // V-1: слияние внешней обратной связи — при достаточном количестве внешних сигналов снижаем вес самооценки LLM
       const actionMs = Number(args.action_ms);
       const external = computeExternalFeedback(ctx.graph, target, actionMs, ctx.nowMs);
-      // α = LLM 自评权重。外部信号 confidence > 0.3 时 α 降到 0.4（外部 0.6）
+      // α = вес самооценки LLM. При confidence внешних сигналов > 0.3 α снижается до 0.4 (внешний 0.6)
       const alpha = external.confidence > 0.3 ? 0.4 : 0.8;
       const quality = alpha * shrunkQuality + (1 - alpha) * external.score;
 
       if (ctx.graph.has(target)) {
-        // ADR-154: target 类型不定，用 setDynamic
+        // ADR-154: тип target непостоянен, используем setDynamic
         ctx.graph.setDynamic(target, "last_outcome_quality", quality);
         ctx.graph.setDynamic(target, "last_outcome_ms", ctx.nowMs);
-        // 双向双写: signal-decay.ts 从 channel 读，observer.mod contribute 从 contact 读。
+        // Двусторонняя двойная запись: signal-decay.ts читает из channel, observer.mod contribute читает из contact.
         const derivedCh = ensureChannelId(target);
         if (derivedCh && derivedCh !== target && ctx.graph.has(derivedCh)) {
           ctx.graph.updateChannel(derivedCh, {
@@ -451,7 +451,7 @@ export const observerMod = createMod<ObserverState>("observer", {
         }
       }
 
-      // 缓存到 mod state
+      // Кэшируем в состояние mod
       const record: RateOutcomeRecord = {
         target,
         actionMs,
@@ -465,14 +465,14 @@ export const observerMod = createMod<ObserverState>("observer", {
         ctx.state.outcomeHistory.shift();
       }
 
-      // ADR-178: rate_outcome → rv_trust 更新
-      // positive quality → trust 增长，negative → trust 收缩（更陡峭）
+      // ADR-178: rate_outcome → обновление rv_trust
+      // положительное quality → рост trust, отрицательное → снижение trust (более крутое)
       const cId = ensureContactId(target);
       if (cId && ctx.graph.has(cId)) {
         const attrs = ctx.graph.getContact(cId);
         const prevTrust = attrs.rv_trust ?? 0.3;
         const prevVel = attrs.rv_vel_trust ?? 0;
-        // quality ∈ [-1, 1]，negative 更敏感（信任易损）
+        // quality ∈ [-1, 1], к отрицательным чувствительнее (доверие хрупко)
         const trustStimulus = quality >= 0 ? quality * 0.5 : quality * 0.8;
         const newTrust = growDimension(prevTrust, 0.08, trustStimulus);
         const delta = newTrust - prevTrust;
@@ -484,14 +484,14 @@ export const observerMod = createMod<ObserverState>("observer", {
         });
       }
 
-      // ADR-204 C6: rate_outcome → 意识流 reinforce
-      // 评估行动质量后增强关联实体的意识流事件 salience
+      // ADR-204 C6: rate_outcome → усиление потока сознания
+      // После оценки качества действия усиливаем salience событий потока сознания для связанных сущностей
       const entityIds = cId ? [cId] : target ? [target] : [];
       if (entityIds.length > 0) {
         try {
           reinforceConsciousness(getDb(), entityIds, 0.2);
         } catch {
-          /* DB 未初始化时（测试环境）优雅降级 */
+          /* Корректная деградация при неинициализированной БД (тестовая среда) */
         }
       }
 
@@ -508,7 +508,7 @@ export const observerMod = createMod<ObserverState>("observer", {
     },
   })
   /**
-   * 观察聊天/联系人的情绪状态。
+   * Фиксирует эмоциональное состояние чата/контакта.
    */
   .instruction("feel", {
     params: z.object({
@@ -531,7 +531,7 @@ export const observerMod = createMod<ObserverState>("observer", {
     impl(ctx, args) {
       let target = String(args.target);
 
-      // 多态实体解析：直接匹配 → contact → channel
+      // Полиморфное разрешение сущности: прямое совпадение → contact → channel
       if (target !== "self" && !ctx.graph.has(target)) {
         const resolved = resolveContactAndChannel(target, (id) => ctx.graph.has(id));
         target = resolved.contactId ?? resolved.channelId ?? target;
@@ -541,7 +541,7 @@ export const observerMod = createMod<ObserverState>("observer", {
         return { success: false, error: `entity not found: ${target}` };
       }
 
-      // ADR-50: 语义标签 → 数值映射（引用模块级唯一事实源）
+      // ADR-50: семантическая метка → числовое отображение (ссылается на единственный источник истины уровня модуля)
       const valence = VALENCE_MAP[String(args.valence) as ValenceLevel] ?? 0;
       const arousal = AROUSAL_MAP[String(args.arousal) as ArousalLevel] ?? 0.5;
 
@@ -556,7 +556,7 @@ export const observerMod = createMod<ObserverState>("observer", {
           cause: { type: "message", summary: String(args.reason ?? "self observed mood shift") },
         });
       } else {
-        // ADR-154: 非 self target 类型不定（channel 或 contact），用 setDynamic
+        // ADR-154: тип non-self target непостоянен (channel или contact), используем setDynamic
         ctx.graph.setDynamic(target, "mood_valence", valence);
         ctx.graph.setDynamic(target, "mood_arousal", arousal);
         ctx.graph.setDynamic(target, "mood_shift_ms", ctx.nowMs);
@@ -565,21 +565,21 @@ export const observerMod = createMod<ObserverState>("observer", {
         }
       }
 
-      // ADR-123: 语义通道更新 mood 信念（自动记录 changelog）
-      // @see paper-pomdp/ Def 3.2: semantic 观测 → EMA ≈ Kalman 融合
+      // ADR-123: семантический канал обновляет убеждение mood (с автоматической записью changelog)
+      // @see paper-pomdp/ Def 3.2: семантическое наблюдение → EMA ≈ фильтр Калмана
       if (target !== "self") {
         ctx.graph.beliefs.update(target, "mood", valence, "semantic", ctx.nowMs);
       }
 
-      // ADR-178: feel → rv_affection 更新
-      // positive valence → affection 增长，negative → affection 收缩
+      // ADR-178: feel → обновление rv_affection
+      // положительная валентность → рост affection, отрицательная → снижение affection
       if (target !== "self") {
         const cId = ensureContactId(target);
         if (cId && ctx.graph.has(cId)) {
           const attrs = ctx.graph.getContact(cId);
           const prevAffection = attrs.rv_affection ?? 0;
           const prevVel = attrs.rv_vel_affection ?? 0;
-          // valence ∈ [-0.8, 0.8]，作为 stimulus 直传
+          // valence ∈ [-0.8, 0.8], передаётся напрямую как stimulus
           const newAffection = growDimension(prevAffection, 0.1, valence);
           const delta = newAffection - prevAffection;
           const newVel = updateVelocity(prevVel, delta, RV_VELOCITY_ALPHA);
@@ -591,7 +591,7 @@ export const observerMod = createMod<ObserverState>("observer", {
         }
       }
 
-      // ADR-204: 意识流 reinforce — feel 强化关联事件
+      // ADR-204: усиление потока сознания — feel укрепляет связанные события
       try {
         reinforceConsciousness(getDb(), [target], 0.1);
       } catch {
@@ -602,7 +602,7 @@ export const observerMod = createMod<ObserverState>("observer", {
     },
   })
   /**
-   * 标记风险等级。
+   * Помечает уровень риска.
    */
   .instruction("flag_risk", {
     params: z.object({
@@ -644,7 +644,7 @@ export const observerMod = createMod<ObserverState>("observer", {
     },
   })
   /**
-   * 观察活动类型和相关度。
+   * Фиксирует тип активности и её релевантность.
    */
   .instruction("observe_activity", {
     params: z.object({
@@ -672,11 +672,11 @@ export const observerMod = createMod<ObserverState>("observer", {
         return { success: false, error: `entity not found: ${chatId}` };
       }
 
-      // Zod z.string().min(1) 已保证非空
+      // Zod z.string().min(1) гарантирует непустую строку
       const activityType = String(args.type);
       ctx.graph.setDynamic(chatId, "activity_type", activityType);
-      // ADR-50: 语义标签 → 数值映射（代码侧完成，LLM 不接触数值）
-      // 使用 `in` guard 保证类型安全（同 CONFIDENCE_MAP 模式）
+      // ADR-50: семантическая метка → числовое отображение (на стороне кода, LLM не видит числа)
+      // Используем проверку `in` для типобезопасности (аналогично паттерну CONFIDENCE_MAP)
       let intensityValue: number | null = null;
       if (args.intensity != null) {
         const label = String(args.intensity);
@@ -789,8 +789,8 @@ export const observerMod = createMod<ObserverState>("observer", {
     },
   })
   /**
-   * ADR-23 Wave 6: 便捷意图声明。
-   * 内部调用 self_topic_begin + horizon。门控：最多 15 个活跃 Thread。
+   * ADR-23 Wave 6: удобное объявление намерения.
+   * Внутренне вызывает self_topic_begin + horizon. Ограничение: не более 15 активных Thread.
    */
   .instruction("intend", {
     params: z.object({
@@ -814,7 +814,7 @@ export const observerMod = createMod<ObserverState>("observer", {
       whenNotToUse: "No plans being discussed",
     },
     impl(ctx, args) {
-      // 门控：最多 15 个活跃 Thread
+      // Ограничение: не более 15 активных Thread
       const activeThreads = ctx.graph.getEntitiesByType("thread");
       const openCount = activeThreads.filter(
         (tid) => ctx.graph.getThread(tid).status === "open",
@@ -823,7 +823,7 @@ export const observerMod = createMod<ObserverState>("observer", {
         return { created: false, reason: "too_many_active_threads", openCount };
       }
 
-      // 内部调用 self_topic_begin
+      // Внутренний вызов self_topic_begin
       const horizon = deadlineToHorizon(args.deadline ? String(args.deadline) : undefined);
       const result = ctx.dispatch("begin_topic", {
         title: String(args.description),
@@ -835,8 +835,8 @@ export const observerMod = createMod<ObserverState>("observer", {
     },
   })
   /**
-   * ADR-89: 印象形成——记录对他人性格特质的观察。
-   * 多次观察通过 Belief EMA 融合逐渐积累，σ² 下降到阈值后结晶为 ContactProfile 持久特质。
+   * ADR-89: формирование впечатлений — записывает наблюдения о чертах характера других людей.
+   * Множественные наблюдения постепенно накапливаются через EMA убеждений; при снижении σ² до порога кристаллизуются в постоянные черты ContactProfile.
    * @see docs/adr/89-impression-formation-system.md
    */
   .instruction("sense", {
@@ -881,13 +881,13 @@ export const observerMod = createMod<ObserverState>("observer", {
       whenNotToUse: "Casual greetings without noteworthy behavior",
     },
     impl(ctx, args) {
-      // ADR-204 C10: LLM 提供 display_name，代码侧解析为 nodeId
+      // ADR-204 C10: LLM предоставляет display_name, код разрешает его в nodeId
       const raw = String(args.who);
       const who = resolveDisplayName(ctx.graph, raw) ?? raw;
       if (!ctx.graph.has(who)) {
         return { success: false, error: `entity not found: ${raw}` };
       }
-      // ADR-91 Layer 1: Bot 没有性格特质，静默跳过（不报错）
+      // ADR-91 Layer 1: у бота нет черт характера, молча пропускаем (без ошибки)
       if (ctx.graph.getDynamic(who, "is_bot") === true) {
         return { success: true, skipped: "bot" };
       }
@@ -902,8 +902,8 @@ export const observerMod = createMod<ObserverState>("observer", {
       const intensityValue = INTENSITY_MAP[intensityLabel] ?? INTENSITY_MAP.moderate;
       const observation = polarity.valence * intensityValue;
 
-      // ADR-123: Belief EMA 融合（semantic 通道——概率性观察）
-      // 使用 beliefs.update() 自动记录 changelog
+      // ADR-123: EMA-слияние убеждений (семантический канал — вероятностное наблюдение)
+      // beliefs.update() автоматически записывает changelog
       const beliefKey = `trait:${polarity.dimension}`;
       const updatedBelief = ctx.graph.beliefs.update(
         who,
@@ -913,13 +913,13 @@ export const observerMod = createMod<ObserverState>("observer", {
         ctx.nowMs,
       );
 
-      // 观察计数（用于结晶条件）
+      // Счётчик наблюдений (для условий кристаллизации)
       const countKey = `${who}::${beliefKey}`;
       ctx.state.impressionCounts[countKey] = (ctx.state.impressionCounts[countKey] ?? 0) + 1;
 
-      // ADR-178: self_sense → rv_respect / rv_trust 更新
-      // trust-related dimensions: reliability, loyalty, stability
-      // respect-related dimensions: warmth, openness, curiosity, patience, humor
+      // ADR-178: self_sense → обновление rv_respect / rv_trust
+      // измерения, связанные с trust: reliability, loyalty, stability
+      // измерения, связанные с respect: warmth, openness, curiosity, patience, humor
       const cId = ensureContactId(who);
       if (cId && ctx.graph.has(cId)) {
         const attrs = ctx.graph.getContact(cId);
@@ -959,10 +959,10 @@ export const observerMod = createMod<ObserverState>("observer", {
     },
   })
   /**
-   * sense_chemistry — ADR-178: 化学反应感知器。
+   * sense_chemistry — ADR-178: сенсор химии.
    *
-   * 感知 Alice 与某人之间的化学反应（吸引力信号）。
-   * 这是 rv_attraction 的唯一 LLM 写入入口——去掉后 attraction 停止生长。
+   * Улавливает химию между Алисой и кем-то (сигнал притяжения).
+   * Это единственная точка записи rv_attraction для LLM — без неё attraction перестаёт расти.
    */
   .instruction("sense_chemistry", {
     params: z.object({
@@ -986,13 +986,13 @@ export const observerMod = createMod<ObserverState>("observer", {
       whenNotToUse: "Routine interactions without notable chemistry",
     },
     impl(ctx, args) {
-      // ADR-204 C10: LLM 提供 display_name，代码侧解析为 nodeId
+      // ADR-204 C10: LLM предоставляет display_name, код разрешает его в nodeId
       const raw = String(args.who);
       const who = resolveDisplayName(ctx.graph, raw) ?? raw;
       if (!ctx.graph.has(who)) {
         return { success: false, error: `entity not found: ${raw}` };
       }
-      // Bot 没有化学反应
+      // У бота нет химии
       if (ctx.graph.getDynamic(who, "is_bot") === true) {
         return { success: true, skipped: "bot" };
       }
@@ -1022,7 +1022,7 @@ export const observerMod = createMod<ObserverState>("observer", {
         rv_attraction_ms: ctx.nowMs,
       });
 
-      // 更新 attraction 信念
+      // Обновляем убеждение attraction
       ctx.graph.beliefs.update(cId, "attraction", newAttraction, "semantic", ctx.nowMs);
 
       return {
@@ -1035,7 +1035,7 @@ export const observerMod = createMod<ObserverState>("observer", {
     },
   })
   /**
-   * 返回指定节点的所有 LLM 标注属性。
+   * Возвращает все атрибуты наблюдений LLM для указанного узла.
    */
   .query("chat_mood", {
     params: z.object({
@@ -1080,14 +1080,14 @@ export const observerMod = createMod<ObserverState>("observer", {
     },
     format(result) {
       const r = result as Record<string, unknown>;
-      // ADR-50: format() 输出使用语义标签，不暴露 raw 数值
+      // ADR-50: вывод format() использует семантические метки, не раскрывает сырые числа
       const parts: string[] = [`${String(r.display_name ?? "(unnamed chat)")}:`];
       if (r.mood_valence != null) parts.push(`mood: ${valenceLabel(Number(r.mood_valence))}`);
       if (r.mood_arousal != null) parts.push(`energy: ${arousalLabel(Number(r.mood_arousal))}`);
       if (r.risk_level) parts.push(`risk: ${r.risk_level}`);
       if (r.activity_type) {
         const activity = String(r.activity_type);
-        // 数值 → 语义标签渲染
+        // рендерим число → семантическая метка
         const intensityNum = Number(r.activity_intensity ?? 0);
         const intensityTag =
           intensityNum > 0.65 ? "high" : intensityNum > 0.35 ? "moderate" : "low";
@@ -1099,7 +1099,7 @@ export const observerMod = createMod<ObserverState>("observer", {
     },
   })
   /**
-   * 返回最近的 rate_outcome 历史记录。
+   * Возвращает последние записи истории rate_outcome.
    */
   .query("past_results", {
     params: z.object({
@@ -1115,7 +1115,7 @@ export const observerMod = createMod<ObserverState>("observer", {
     returnHint: "[{name, quality, reason, when}]",
     impl(ctx, args) {
       const limit = Number(args.count);
-      // 预解析 display name + 语义标签，format() 无需图访问
+      // Предварительно разрешаем display name + семантические метки, format() не нужен доступ к графу
       return ctx.state.outcomeHistory
         .filter((r) => !isBotOutcomeTarget(ctx, r.target))
         .slice(-limit)
@@ -1142,7 +1142,7 @@ export const observerMod = createMod<ObserverState>("observer", {
       });
     },
   })
-  // ADR-199 W2: 内部指令 — processResult 回写上一轮行动摘要到 observer state
+  // ADR-199 W2: внутренняя инструкция — processResult записывает сводку действий предыдущего раунда в состояние observer
   .instruction("SET_LAST_ACTION_RECAP", {
     params: z.object({
       tick: z.number(),
@@ -1164,20 +1164,20 @@ export const observerMod = createMod<ObserverState>("observer", {
       };
     },
   })
-  // ADR-156: 社交接收度反馈 — 群组参与的负反馈闭环。
-  // 每个 tick 结束时，检查 Alice 最近在群组中的发言是否得到回应。
-  // 更新 graph 上 channel node 的 social_reception 动态属性。
-  // 该信号被 P5 conversation inertia 消费（双向 boost）。
+  // ADR-156: обратная связь социального восприятия — замкнутый цикл отрицательной обратной связи для группового участия.
+  // При завершении каждого tick проверяем, была ли реакция на недавние высказывания Алисы в группе.
+  // Обновляем динамический атрибут social_reception узла channel в графе.
+  // Этот сигнал потребляется P5 conversation inertia (двусторонний boost).
   .onTickEnd((ctx) => {
     updateGroupReception(ctx);
   })
   .contribute((ctx): ContributionItem[] => {
     const items: ContributionItem[] = [];
 
-    // ── ADR-199 W2: 上一轮行动结果摘要注入 ──────────────────────────
+    // ── ADR-199 W2: инъекция сводки результатов предыдущего раунда ───
     {
       const recap = ctx.state.lastActionRecap;
-      const RECAP_TTL_MS = 10 * 60 * 1000; // 10 分钟 TTL
+      const RECAP_TTL_MS = 10 * 60 * 1000; // TTL 10 минут
       if (recap && ctx.nowMs - recap.timestamp < RECAP_TTL_MS) {
         const recapBuilder = new PromptBuilder();
         if (recap.messageSent) {
@@ -1198,15 +1198,15 @@ export const observerMod = createMod<ObserverState>("observer", {
       }
     }
 
-    // ── ADR-43 P0: 反馈闭环 contribute 提醒 ──────────────────────────
-    // ADR-81: 压力门控——低压力时注入反馈闭环提醒
-    // @see docs/adr/81-reflection-separation.md §Mod 贡献从声部门控改为压力门控
+    // ── ADR-43 P0: напоминание contribute о замкнутом цикле обратной связи ──
+    // ADR-81: блокировка по давлению — напоминание о цикле обратной связи инжектируется при низком давлении
+    // @see docs/adr/81-reflection-separation.md §Mod вклад переведён с блокировки по голосу на блокировку по давлению
     if (readPressureApi(ctx) < 0.6) {
       const relState = readModState(ctx, "relationships");
       items.push(...feedbackLoopReminders(ctx, relState?.targetNodeId ?? null));
     }
 
-    // channel 活动上下文——帮助 LLM "读懂房间"
+    // Контекст активности канала — помогает LLM «считывать атмосферу»
     {
       const relState2 = readModState(ctx, "relationships");
       const targetChatId = relState2?.targetNodeId ?? null;
@@ -1218,7 +1218,7 @@ export const observerMod = createMod<ObserverState>("observer", {
         const actType = ctx.graph.getChannel(targetChatId).activity_type;
         if (actType) {
           const intensityNum = ctx.graph.getChannel(targetChatId).activity_intensity;
-          // ADR-50: 数值 → 语义标签渲染
+          // ADR-50: рендерим число → семантическая метка
           const intensityTag =
             intensityNum != null
               ? intensityNum > 0.65
@@ -1240,7 +1240,7 @@ export const observerMod = createMod<ObserverState>("observer", {
       }
     }
 
-    // 风险标记（仅 channel 节点有 risk_level 声明）
+    // Флаги риска (только узлы channel имеют объявленный risk_level)
     const riskNodes: PromptLine[] = [];
     for (const nodeId of ctx.graph.getEntitiesByType("channel")) {
       const attrs = ctx.graph.getChannel(nodeId);
@@ -1257,8 +1257,8 @@ export const observerMod = createMod<ObserverState>("observer", {
       items.push(section("risk-flags", riskNodes, "Risk flags", 15, 85));
     }
 
-    // D7: 安全标注渲染（ADR-123 §D7）
-    // safety_flag 新鲜度检查：5 分钟内有效
+    // D7: рендеринг метки безопасности (ADR-123 §D7)
+    // Проверка свежести safety_flag: действителен в течение 5 минут
     {
       const relStateSafety = readModState(ctx, "relationships");
       const safetyChatId = relStateSafety?.targetNodeId ?? null;
@@ -1285,7 +1285,7 @@ export const observerMod = createMod<ObserverState>("observer", {
       }
     }
 
-    // Outcome 历史摘要（让 LLM 知道最近行动的效果 → 学习反馈）
+    // Сводка истории outcome (позволяет LLM знать о результатах последних действий → обратная связь для обучения)
     const visibleOutcomeHistory = ctx.state.outcomeHistory.filter(
       (r) => !isBotOutcomeTarget(ctx, r.target),
     );
@@ -1301,7 +1301,7 @@ export const observerMod = createMod<ObserverState>("observer", {
           `${targetName}: ${qualityLabel(r.quality)}${r.reason ? ` — ${r.reason}` : ""}`,
         );
       }
-      // ADR-199 W3.5: 延迟评估结果注入 — 让 LLM 知道"对方后来回复了/没回复"
+      // ADR-199 W3.5: инъекция отложенной обратной связи — сообщает LLM «ответил ли собеседник позже / не ответил»
       const DEFERRED_FEEDBACK_TTL_MS = 10 * 60 * 1000;
       for (const channelId of ctx.graph.getEntitiesByType("channel")) {
         if (isBotOutcomeTarget(ctx, channelId)) continue;
@@ -1313,7 +1313,7 @@ export const observerMod = createMod<ObserverState>("observer", {
           outcomeMs > 0 &&
           ctx.nowMs - outcomeMs < DEFERRED_FEEDBACK_TTL_MS
         ) {
-          // 排除已在 outcomeHistory 中的（避免重复）
+          // Исключаем записи, уже присутствующие в outcomeHistory (избегаем дублирования)
           const alreadyInHistory = ctx.state.outcomeHistory.some(
             (r) => Math.abs(r.ms - outcomeMs) < 5000 && r.target === channelId,
           );
@@ -1327,7 +1327,7 @@ export const observerMod = createMod<ObserverState>("observer", {
       items.push(section("outcome-history", outcomeBuilder.build(), "Action feedback", 30, 60));
     }
 
-    // 目标联系人情绪状态（如果目标联系人有 mood 标注）
+    // Эмоциональное состояние целевого контакта (если у целевого контакта есть разметка mood)
     for (const nodeId of ctx.graph.getEntitiesByType("contact")) {
       const attrs = ctx.graph.getContact(nodeId);
       const valence = attrs.mood_valence ?? 0;
@@ -1336,7 +1336,7 @@ export const observerMod = createMod<ObserverState>("observer", {
         const label = valence > 0.3 ? "positive" : valence < -0.3 ? "negative" : "neutral";
         const shift = attrs.mood_shift;
         const contactName = safeDisplayName(ctx.graph, nodeId);
-        // 对方 mood 负面时追加行为锚点（126 号提案"缺陷即暗示"）
+        // При отрицательном mood собеседника добавляем поведенческий якорь (предложение 126 «изъян как подсказка»)
         let line = `${contactName}: mood ${label}${shift ? ` — ${shift}` : ""}`;
         if (valence < -0.3) {
           line += " — listen first, tease later";
@@ -1345,9 +1345,9 @@ export const observerMod = createMod<ObserverState>("observer", {
       }
     }
 
-    // ADR-89: 未结晶印象分阶段渲染
-    // 三阶段：初次注意(1-2 obs) → 印象形成中(3+ obs) → 结晶后由 relationships.mod 渲染
-    // 消除 σ² 可见性断层：即使只有 1 次观察也能看到自己的认知痕迹
+    // ADR-89: пошаговый рендеринг некристаллизованных впечатлений
+    // Три этапа: первое замечание (1-2 obs) → впечатление формируется (3+ obs) → после кристаллизации рендерит relationships.mod
+    // Устраняет разрыв видимости σ²: когнитивный след отображается даже при единственном наблюдении
     const relState = readModState(ctx, "relationships");
     const impressionTarget = relState?.targetNodeId;
     if (impressionTarget && ctx.graph.has(impressionTarget)) {
@@ -1357,14 +1357,14 @@ export const observerMod = createMod<ObserverState>("observer", {
         const dimension = attr.slice("trait:".length);
         const countKey = `${impressionTarget}::trait:${dimension}`;
         const count = ctx.state.impressionCounts[countKey] ?? 0;
-        if (count === 0) continue; // 无观察记录（可能是衰减残留）
+        if (count === 0) continue; // нет записей наблюдений (возможно, остаток затухания)
         const direction = belief.mu > 0.1 ? "positive" : belief.mu < -0.1 ? "negative" : "neutral";
-        if (direction === "neutral" && count < 3) continue; // 中性 + 观察少 → 不渲染
+        if (direction === "neutral" && count < 3) continue; // нейтральное + мало наблюдений → не рендерим
         if (count <= 2) {
-          // 初次注意：刚观察到，印象很浅
+          // Первое замечание: только что обнаружено, впечатление очень поверхностное
           impressionLines.push(PromptBuilder.of(`${dimension}: first noticed (${direction})`));
         } else {
-          // 印象形成中：多次观察，方向渐明
+          // Впечатление формируется: несколько наблюдений, направление проясняется
           const confidence = belief.sigma2 < 0.1 ? "converging" : "still forming";
           impressionLines.push(
             PromptBuilder.of(`${dimension}: leaning ${direction} (${count} obs, ${confidence})`),
@@ -1388,9 +1388,9 @@ export const observerMod = createMod<ObserverState>("observer", {
   })
   .build();
 
-// ── ADR-43 P0: 反馈闭环提醒（精简版）──────────────────────────────────
-// Axiom 2: Prefill as Fact, Not Instruction — 描述过期事实，不重复函数签名。
-// 函数签名已在 .d.ts 手册中，LLM 可自行查阅。
+// ── ADR-43 P0: напоминания о замкнутом цикле обратной связи (упрощённая версия) ──
+// Аксиома 2: Prefill как факт, а не инструкция — описываем устаревшие факты, не повторяем сигнатуры функций.
+// Сигнатуры функций уже есть в руководстве .d.ts, LLM может обратиться к нему самостоятельно.
 // @see paper-five-dim/ Remark 7: Rendering Level 2 (Guided Signal)
 // @see docs/adr/43-m1.5-feedback-loop-relation-type.md §P0
 
@@ -1406,10 +1406,10 @@ function feedbackLoopReminders(
 
   const reminderLines: PromptLine[] = [];
 
-  // 解析 contact ID
+  // Разрешаем contact ID
   const { contactId } = resolveContactAndChannel(targetNodeId, (id) => ctx.graph.has(id));
 
-  // 1. 目标联系人情绪数据过期
+  // 1. Данные mood целевого контакта устарели
   if (contactId && ctx.graph.has(contactId)) {
     const attrs = ctx.graph.getContact(contactId);
     const moodShiftMs = attrs.mood_shift_ms ?? 0;
@@ -1420,7 +1420,7 @@ function feedbackLoopReminders(
     }
   }
 
-  // 2. 有近期行动但缺少质量评估
+  // 2. Есть недавнее действие, но отсутствует оценка качества
   if (contactId && ctx.graph.has(contactId)) {
     const attrs = ctx.graph.getContact(contactId);
     const lastActionMs = attrs.last_alice_action_ms ?? 0;
@@ -1430,7 +1430,7 @@ function feedbackLoopReminders(
       lastActionMs > lastOutcomeMs &&
       (ctx.nowMs - lastActionMs) / 1000 < OUTCOME_STALE_THRESHOLD_S
     ) {
-      // m1 修复: 去除 raw tick 数字（LLM 不知道 tick 的绝对含义）。
+      // m1 правка: убираем сырые числа tick (LLM не знает абсолютного смысла tick).
       reminderLines.push(
         PromptBuilder.of(
           `Recent action toward ${safeDisplayName(ctx.graph, contactId)} has no outcome rating yet.`,
@@ -1439,7 +1439,7 @@ function feedbackLoopReminders(
     }
   }
 
-  // 3. Alice 自身情绪未更新
+  // 3. Собственное эмоциональное состояние Алисы не обновлялось
   if (ctx.graph.has("self")) {
     const selfEmotionState = readEmotionState(ctx.graph, ctx.nowMs);
     const ageMs = selfEmotionState.dominant?.ageMs ?? Number.POSITIVE_INFINITY;
@@ -1455,8 +1455,8 @@ function feedbackLoopReminders(
       "feedback-reminders",
       reminderLines,
       "Notes",
-      12, // order: 高于普通 section
-      90, // priority: 高优先级
+      12, // order: выше обычных секций
+      90, // priority: высокий приоритет
     ),
   ];
 }

@@ -1,10 +1,10 @@
 /**
- * LLM API 弹性层：重试 + 指数退避 + 熔断器。
+ * LLM API уровень устойчивости: повторные попытки + экспоненциальная задержка + автоматический выключатель.
  *
- * 三重保护：
- * 1. 指数退避重试（带 jitter）—— 应对瞬时 429/5xx
- * 2. 熔断器（closed → open → half-open）—— 连续失败时快速失败，避免雪崩
- * 3. AbortSignal 超时 —— 由调用方传入（act.ts 的 60s 超时不变）
+ * Тройная защита:
+ * 1. Экспоненциальная задержка с повторами (с jitter) — против кратковременных 429/5xx
+ * 2. Автоматический выключатель (closed → open → half-open) — быстрый отказ при серии сбоев, предотвращает каскадное обрушение
+ * 3. Таймаут AbortSignal — передаётся вызывающей стороной (60s таймаут в act.ts не изменяется)
  *
  * @see docs/adr/02-architecture-overview.md
  */
@@ -12,18 +12,18 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("resilience");
 
-// -- 配置 -------------------------------------------------------------------
+// -- Конфигурация -------------------------------------------------------------------
 
 export interface ResilienceConfig {
-  /** 最大重试次数（不含首次调用）。默认 2。 */
+  /** Максимальное число повторных попыток (без первого вызова). По умолчанию 2. */
   maxRetries: number;
-  /** 退避基础延迟 (ms)。默认 1000。 */
+  /** Базовая задержка отступления (мс). По умолчанию 1000. */
   baseDelay: number;
-  /** 退避最大延迟 (ms)。默认 15000。 */
+  /** Максимальная задержка отступления (мс). По умолчанию 15000. */
   maxDelay: number;
-  /** 连续失败 N 次后熔断。默认 5。 */
+  /** Срабатывание автоматического выключателя после N последовательных сбоев. По умолчанию 5. */
   circuitThreshold: number;
-  /** 熔断恢复时间 (ms)。默认 60000。 */
+  /** Время восстановления автоматического выключателя (мс). По умолчанию 60000. */
   circuitResetMs: number;
 }
 
@@ -35,11 +35,11 @@ const DEFAULT_CONFIG: ResilienceConfig = {
   circuitResetMs: 60_000,
 };
 
-// -- 熔断器 -----------------------------------------------------------------
+// -- Автоматический выключатель -----------------------------------------------------------------
 
 export type CircuitState = "closed" | "open" | "half-open";
 
-/** 熔断器状态变化事件类型。 */
+/** Тип события изменения состояния автоматического выключателя. */
 export type BreakerEventType = "open" | "half-open" | "closed";
 
 class CircuitBreaker {
@@ -55,9 +55,9 @@ class CircuitBreaker {
   ) {}
 
   /**
-   * 评估时间驱动的状态转换。
-   * open 且已过 resetMs → 提升为 half-open。
-   * 由 getState() 和 allowRequest() 调用，确保状态始终与墙钟同步。
+   * Оценка перехода состояний, управляемого временем.
+   * open и resetMs истёк → переход в half-open.
+   * Вызывается из getState() и allowRequest(), чтобы состояние всегда было синхронно с реальным временем.
    */
   private tick(): void {
     if (this.state === "open" && Date.now() - this.lastFailureTime >= this.resetMs) {
@@ -67,7 +67,7 @@ class CircuitBreaker {
     }
   }
 
-  /** 检查是否允许请求通过。 */
+  /** Проверка, разрешён ли пропуск запроса. */
   allowRequest(): boolean {
     this.tick();
     if (this.state === "closed") return true;
@@ -79,7 +79,7 @@ class CircuitBreaker {
     return false; // open
   }
 
-  /** 记录成功。 */
+  /** Регистрация успеха. */
   recordSuccess(): void {
     if (this.state === "open") return; // H9: устаревший in-flight успех не воскрешает open breaker
     if (this.state === "half-open") {
@@ -91,14 +91,14 @@ class CircuitBreaker {
     this.probing = false; // H10
   }
 
-  /** 记录失败。 */
+  /** Регистрация сбоя. */
   recordFailure(): void {
     this.consecutiveFailures++;
     this.lastFailureTime = Date.now();
     this.probing = false; // H10: probe завершился → следующий half-open выдаст новый
 
     if (this.state === "half-open") {
-      // 探测失败，重新打开
+      // Проба не удалась, снова открываем
       this.state = "open";
       log.warn("Circuit breaker → open (probe failed)");
       this.onStateChange?.("open");
@@ -121,12 +121,12 @@ class CircuitBreaker {
   }
 }
 
-// -- 可重试错误判断 -----------------------------------------------------------
+// -- Определение повторяемых ошибок -----------------------------------------------------------
 
-/** 判断错误是否可重试（429, 502, 503, 504, 超时、网络错误）。 */
+/** Определяет, можно ли повторить попытку при данной ошибке (429, 502, 503, 504, таймаут, сетевая ошибка). */
 function isRetryable(error: unknown): boolean {
   if (error instanceof Error) {
-    // 超时
+    // Таймаут
     if (error.name === "AbortError" || error.name === "TimeoutError") return true;
   }
 
@@ -135,10 +135,10 @@ function isRetryable(error: unknown): boolean {
     return true;
   }
 
-  // HTTP 状态码（Vercel AI SDK 和 openai SDK 都在 error 上暴露 status）
+  // HTTP-статус код (Vercel AI SDK и openai SDK оба выставляют status на объекте ошибки)
   const status = extractStatus(error);
   if (status !== null) {
-    // 429 Too Many Requests, 502/503/504 服务端错误
+    // 429 Too Many Requests, 502/503/504 серверные ошибки
     return status === 429 || status === 502 || status === 503 || status === 504;
   }
 
@@ -153,7 +153,7 @@ function extractErrorCode(error: unknown): string | null {
   return cause ? extractErrorCode(cause) : null;
 }
 
-/** 从各种错误格式中提取 HTTP status。 */
+/** Извлекает HTTP-статус из различных форматов ошибок. */
 function extractStatus(error: unknown): number | null {
   if (error == null || typeof error !== "object") return null;
   const obj = error as Record<string, unknown>;
@@ -162,16 +162,16 @@ function extractStatus(error: unknown): number | null {
     const val = obj[key];
     if (typeof val === "number" && val >= 100 && val < 600) return val;
   }
-  // 嵌套在 cause 中
+  // Вложено в cause
   if (obj.cause && typeof obj.cause === "object") {
     return extractStatus(obj.cause);
   }
   return null;
 }
 
-// -- 退避计算 ---------------------------------------------------------------
+// -- Вычисление задержки отступления ---------------------------------------------------------------
 
-/** 带 jitter 的指数退避。 */
+/** Экспоненциальная задержка с jitter. */
 function backoffDelay(attempt: number, baseDelay: number, maxDelay: number): number {
   const exponential = baseDelay * 2 ** attempt;
   // full jitter: [0, min(exponential, maxDelay)]
@@ -179,11 +179,11 @@ function backoffDelay(attempt: number, baseDelay: number, maxDelay: number): num
   return Math.random() * capped;
 }
 
-// -- per-provider 熔断器实例（ADR-123 §D5）-----------------------------------
+// -- Экземпляры автоматических выключателей per-provider (ADR-123 §D5) -----------------------------------
 
 const _breakers = new Map<string, CircuitBreaker>();
 
-/** 熔断器状态变化监听器。 */
+/** Слушатель изменения состояния автоматического выключателя. */
 type BreakerListener = (providerName: string, event: BreakerEventType) => void;
 const _breakerListeners: BreakerListener[] = [];
 
@@ -198,7 +198,7 @@ function emitBreakerEvent(name: string, event: BreakerEventType): void {
 }
 
 /**
- * 注册熔断器状态变化监听器。启动时调用一次。
+ * Регистрация слушателя изменения состояния автоматического выключателя. Вызывается один раз при запуске.
  * @see docs/adr/129-llm-voice-loss-awareness.md
  */
 export function onBreakerStateChange(listener: BreakerListener): void {
@@ -216,18 +216,18 @@ function getBreaker(name: string, config: ResilienceConfig): CircuitBreaker {
   return breaker;
 }
 
-/** 查询指定 provider 的熔断器状态（不创建新实例）。 */
+/** Запрос состояния автоматического выключателя для указанного провайдера (без создания нового экземпляра). */
 export function getBreakerState(name: string): CircuitState {
   return _breakers.get(name)?.getState() ?? "closed";
 }
 
-/** 重置所有熔断器和监听器（用于测试）。 */
+/** Сброс всех автоматических выключателей и слушателей (для тестирования). */
 export function resetCircuitBreaker(): void {
   _breakers.clear();
   _breakerListeners.length = 0;
 }
 
-// -- 公共 API ---------------------------------------------------------------
+// -- Публичный API ---------------------------------------------------------------
 
 export class CircuitOpenError extends Error {
   constructor() {
@@ -244,7 +244,7 @@ export class ProviderUnavailableError extends Error {
 }
 
 /**
- * 用弹性层包装异步 LLM 调用。
+ * Оборачивает асинхронный LLM-вызов в уровень устойчивости.
  *
  * @example
  * ```ts
@@ -261,7 +261,7 @@ export async function withResilience<T>(
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const breaker = getBreaker(providerName, cfg);
 
-  // 熔断检查
+  // Проверка автоматического выключателя
   if (!breaker.allowRequest()) {
     throw new CircuitOpenError();
   }
@@ -276,19 +276,19 @@ export async function withResilience<T>(
     } catch (error) {
       lastError = error;
 
-      // 不可重试的错误直接抛出（400, 401, 403 等）
+      // Не повторяемые ошибки бросаются сразу (400, 401, 403 и т.д.)
       if (!isRetryable(error)) {
         breaker.recordFailure();
         throw error;
       }
 
-      // 最后一次尝试，不再重试
+      // Последняя попытка, повторов больше не будет
       if (attempt === cfg.maxRetries) {
         breaker.recordFailure();
         break;
       }
 
-      // 退避等待
+      // Ожидание с отступлением
       const delay = backoffDelay(attempt, cfg.baseDelay, cfg.maxDelay);
       log.warn("LLM call failed, retrying", {
         attempt: attempt + 1,
@@ -299,7 +299,7 @@ export async function withResilience<T>(
 
       await new Promise((resolve) => setTimeout(resolve, delay));
 
-      // 重试前再次检查熔断器（可能在等待期间被其他调用触发）。
+      // Повторная проверка выключателя перед retry (мог сработать другим вызовом во время ожидания).
       // getState(), а НЕ allowRequest(): этот вызов уже держит probe-слот в half-open;
       // allowRequest() отклонил бы его собственный retry (probing=true) и запер бы breaker (fix H10-регрессии).
       if (breaker.getState() === "open") {

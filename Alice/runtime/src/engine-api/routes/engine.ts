@@ -1,5 +1,5 @@
 /**
- * Engine API — 引擎查询路由。
+ * Engine API — маршруты запросов к движку.
  *
  * GET  /engine/tick       → { "tick": number }
  * POST /engine/selfcheck  → SelfcheckResult JSON
@@ -10,7 +10,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { getSelfcheckData } from "../../telegram/apps/selfcheck.js";
 import type { EngineApiDeps } from "../server.js";
 
-/** 从 request body 收集 JSON。 */
+/** Читает JSON из тела запроса. */
 function readBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -37,7 +37,7 @@ function readBody(req: IncomingMessage): Promise<unknown> {
 }
 
 /**
- * 处理 GET /engine/tick。
+ * Обрабатывает GET /engine/tick.
  */
 export function handleEngineTick(
   _req: IncomingMessage,
@@ -50,7 +50,7 @@ export function handleEngineTick(
 }
 
 /**
- * 处理 POST /engine/selfcheck。
+ * Обрабатывает POST /engine/selfcheck.
  *
  * body: { focus?: "mood" | "social" | "personality" | "pressure" | "actions" }
  * response: SelfcheckResult JSON

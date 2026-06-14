@@ -1,12 +1,12 @@
 /**
- * Strategy Mod — 人格漂移审计。
+ * Strategy Mod — аудит дрейфа личности.
  *
- * M4 人格漂移检测：
- * - drift = l2Distance(π_current, π_home): 累积偏离度
- * - velocity = l2Distance(π_current, π_previous) / interval: 瞬时变化率
- * - 分类: healthy (< 0.1) / warning (0.1~0.2) / alert (>= 0.2)
+ * M4 детекция дрейфа личности:
+ * - drift = l2Distance(π_current, π_home): накопленное отклонение
+ * - velocity = l2Distance(π_current, π_previous) / interval: мгновенная скорость изменения
+ * - Классификация: healthy (< 0.1) / warning (0.1~0.2) / alert (>= 0.2)
  *
- * 参考: Ashton & Lee (2007) HEXACO — 人格长期稳定但环境可引发漂移。
+ * Ссылка: Ashton & Lee (2007) HEXACO — личность долгосрочно стабильна, но среда может вызвать дрейф.
  */
 import { PromptBuilder } from "../../core/prompt-style.js";
 import type { ContributionItem, ModContext } from "../../core/types.js";
@@ -24,18 +24,18 @@ import {
 } from "./types.js";
 
 /**
- * 解析并自动修正人格权重维度。
+ * Парсинг и автоматическое исправление размерности весов личности.
  *
- * 图属性中可能残留旧维度的数据（如 ADR-81 前的 5 维向量）。
- * 此函数：
- * 1. 解析 JSON 权重
- * 2. 维度不匹配时自动修正（截断多余 / 补均匀值）并归一化到 sum=1
- * 3. 修正后写回图属性（自愈——脏数据只被修正一次，后续 tick 不再触发）
+ * В graph-атрибутах могут оставаться данные старых размерностей (например, 5-мерный вектор до ADR-81).
+ * Функция:
+ * 1. Разбирает JSON-веса
+ * 2. При несовпадении размерности автоматически исправляет (обрезает лишние / добавляет равномерные значения) и нормирует до sum=1
+ * 3. Записывает исправленные данные обратно в graph-атрибут (самоисцеление — грязные данные исправляются один раз, последующие tick не триггерятся)
  *
- * @param raw       图属性原始值
- * @param attrName  属性名（用于写回）
- * @param graph     图引用（用于写回）
- * @returns 保证 VOICE_COUNT 维的权重数组
+ * @param raw       Сырое значение graph-атрибута
+ * @param attrName  Имя атрибута (для записи обратно)
+ * @param graph     Ссылка на граф (для записи обратно)
+ * @returns Гарантированный массив весов размерности VOICE_COUNT
  */
 function resolveWeights(
   raw: unknown,
@@ -44,28 +44,28 @@ function resolveWeights(
 ): number[] {
   const parsed = parseJsonWeights(raw);
   if (!parsed) {
-    // 无数据 → 均匀分布
+    // Нет данных → равномерное распределение
     return Array.from({ length: VOICE_COUNT }, () => 1 / VOICE_COUNT);
   }
   if (parsed.length === VOICE_COUNT) return parsed;
 
-  // 维度不匹配 → 自动修正
+  // Размерность не совпадает → автоматическое исправление
   let fixed: number[];
   if (parsed.length > VOICE_COUNT) {
-    // 截断多余维度
+    // Обрезка лишних измерений
     fixed = parsed.slice(0, VOICE_COUNT);
   } else {
-    // 补均匀值
+    // Дополнение равномерными значениями
     fixed = [...parsed];
     const pad = 1 / VOICE_COUNT;
     while (fixed.length < VOICE_COUNT) fixed.push(pad);
   }
-  // 归一化到 sum=1
+  // Нормировка до sum=1
   const sum = fixed.reduce((a, b) => a + b, 0);
   if (sum > 0) {
     for (let i = 0; i < fixed.length; i++) fixed[i] /= sum;
   }
-  // 写回图属性——自愈，下次不再触发修正
+  // Запись обратно в graph-атрибут — самоисцеление, следующий раз исправление не триггерится
   if (graph.has("self")) {
     graph.setDynamic("self", attrName, JSON.stringify(fixed));
   }
@@ -73,11 +73,11 @@ function resolveWeights(
 }
 
 /**
- * 人格漂移审计 — 每 DRIFT_AUDIT_INTERVAL ticks 评估偏离度。
+ * Аудит дрейфа личности — оценка отклонения каждые DRIFT_AUDIT_INTERVAL тиков.
  *
- * 在 onTickEnd 中调用。修改 ctx.state.personalityDrift 并写入图属性。
+ * Вызывается в onTickEnd. Изменяет ctx.state.personalityDrift и записывает в graph-атрибуты.
  *
- * @returns 漂移 hint（warning/alert 时）或 null
+ * @returns hint дрейфа (при warning/alert) или null
  */
 export function auditPersonalityDrift(ctx: ModContext<StrategyState>): StrategyHint | null {
   if (ctx.tick <= 0 || ctx.tick % DRIFT_AUDIT_INTERVAL !== 0 || !ctx.graph.has("self")) {
@@ -94,10 +94,10 @@ export function auditPersonalityDrift(ctx: ModContext<StrategyState>): StrategyH
 
   const pd = ctx.state.personalityDrift;
   const drift = l2Distance(currentWeights, piHome);
-  // previousWeights 维度不匹配时视为首次审计（velocity=0）
+  // При несовпадении размерности previousWeights считаем первым аудитом (velocity=0)
   const prevWeights = pd.previousWeights;
   const prevValid = prevWeights !== null && prevWeights.length === VOICE_COUNT;
-  // ADR-110/166: velocity 使用 estimateAgeS 统一墙钟/tick 回退
+  // ADR-110/166: velocity вычисляется через estimateAgeS с единым fallback wall-clock/tick
   const elapsedS = Math.max(
     1,
     estimateAgeS({ ms: pd.lastAuditMs ?? 0, tick: pd.lastAuditTick }, ctx.nowMs, ctx.tick),
@@ -116,9 +116,9 @@ export function auditPersonalityDrift(ctx: ModContext<StrategyState>): StrategyH
   pd.lastAuditTick = ctx.tick;
   pd.lastAuditMs = ctx.nowMs;
 
-  // 写入图属性（供 evolve.ts 自适应 γ 和外部诊断）
-  // 注意：drift/velocity 是引擎内部数值，不应暴露给 LLM。
-  // 前缀 _ 标记为内部属性；health 是语义标签，安全暴露。
+  // Запись в graph-атрибуты (для адаптивного γ в evolve.ts и внешней диагностики)
+  // Примечание: drift/velocity — внутренние значения движка, не должны попадать в LLM.
+  // Префикс _ маркирует внутренние атрибуты; health — семантическая метка, безопасна для показа.
   ctx.graph.setDynamic("self", "_personality_drift", drift);
   ctx.graph.setDynamic("self", "_personality_velocity", velocity);
   ctx.graph.setDynamic("self", "personality_health", health);
@@ -135,11 +135,11 @@ export function auditPersonalityDrift(ctx: ModContext<StrategyState>): StrategyH
 }
 
 /**
- * 构建人格漂移 contribute section。
+ * Формирует contribute-секцию дрейфа личности.
  *
- * 始终注入（有审计数据时），内容因 health 不同而不同。
+ * Инжектируется всегда (при наличии данных аудита), содержимое зависит от health.
  *
- * @returns ContributionItem 或 null（无审计数据时）
+ * @returns ContributionItem или null (если данных аудита нет)
  */
 export function buildDriftSection(state: StrategyState): ContributionItem | null {
   if (state.personalityDrift.lastAuditTick <= 0) return null;

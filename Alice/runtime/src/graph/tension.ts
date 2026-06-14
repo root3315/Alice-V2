@@ -1,12 +1,13 @@
 /**
- * 实体张力向量 (ADR-26 §1) + 贡献路由。
+ * Вектор натяжения сущности (ADR-26 §1) + маршрутизация вкладов.
  *
- * 将 AllPressures.contributions (pk → eid → value) 转置为
- * eid → TensionVector，保留逐实体的六力分量 + P_prospect。
+ * Транспонирует AllPressures.contributions (pk → eid → value) в
+ * eid → TensionVector, сохраняя шесть силовых компонент на сущность + P_prospect.
  *
- * ADR-101: 贡献路由——压力计算是实体维度的（P3→contact, P4→thread,
- * P2→fact），但行动只能针对频道（channel:*）。routeContributions()
- * 是投影算子 ρ: V → V_A，将完整实体空间投影到可行动子空间。
+ * ADR-101: маршрутизация вкладов — расчёт давлений ведётся в измерении сущностей
+ * (P3→contact, P4→thread, P2→fact), но действия возможны только на каналах (channel:*).
+ * routeContributions() — оператор проекции ρ: V → V_A, проецирующий полное
+ * пространство сущностей на исполнимое подпространство.
  *
  * @see paper/ §3.3: τ(e) = transpose of contributions matrix
  */
@@ -14,23 +15,23 @@
 import { ensureChannelId } from "./constants.js";
 import type { WorldModel } from "./world-model.js";
 
-// -- 类型 -------------------------------------------------------------------
+// -- Типы -------------------------------------------------------------------
 
-/** 实体张力向量——每个图实体携带的多维压力分解。 */
+/** Вектор натяжения сущности — многомерная декомпозиция давлений, переносимая каждым узлом графа. */
 export interface TensionVector {
-  readonly tau1: number; // P1 注意力债务
-  readonly tau2: number; // P2 信息压力
-  readonly tau3: number; // P3 关系冷却
-  readonly tau4: number; // P4 线程分歧
-  readonly tau5: number; // P5 回应义务
-  readonly tau6: number; // P6 好奇心
-  readonly tauP: number; // P_prospect 前瞻
-  readonly tauRisk: number; // 风险信号（flag_risk 产物）
-  readonly tauAttraction: number; // ADR-178: 吸引力信号
-  readonly tauSpike: number; // ADR-191: 速率尖峰信号（z-score > 1）
+  readonly tau1: number; // P1 долг внимания
+  readonly tau2: number; // P2 информационное давление
+  readonly tau3: number; // P3 охлаждение отношений
+  readonly tau4: number; // P4 расхождение треда
+  readonly tau5: number; // P5 обязательство ответить
+  readonly tau6: number; // P6 любопытство
+  readonly tauP: number; // P_prospect перспектива
+  readonly tauRisk: number; // сигнал риска (результат flag_risk)
+  readonly tauAttraction: number; // ADR-178: сигнал притяжения
+  readonly tauSpike: number; // ADR-191: сигнал скачка скорости (z-score > 1)
 }
 
-/** 零张力向量。 */
+/** Нулевой вектор натяжения. */
 export const ZERO_TENSION: TensionVector = Object.freeze({
   tau1: 0,
   tau2: 0,
@@ -45,9 +46,9 @@ export const ZERO_TENSION: TensionVector = Object.freeze({
 });
 
 /**
- * AllPressures.contributions 的键名到 TensionVector 字段的映射。
- * P_prospect (tauP) 不在此映射中——它通过 prospectContributions 参数单独处理，
- * 见 buildTensionMap() 的第二个参数。
+ * Отображение имён ключей AllPressures.contributions в поля TensionVector.
+ * P_prospect (tauP) не входит в это отображение — обрабатывается отдельно
+ * через параметр prospectContributions, см. второй аргумент buildTensionMap().
  */
 const PK_TO_TAU: Record<string, keyof TensionVector> = {
   P1: "tau1",
@@ -58,16 +59,16 @@ const PK_TO_TAU: Record<string, keyof TensionVector> = {
   P6: "tau6",
 };
 
-// -- 核心函数 ---------------------------------------------------------------
+// -- Основные функции ---------------------------------------------------------------
 
 /**
- * 将 AllPressures.contributions 转置为逐实体张力向量 Map。
+ * Транспонирует AllPressures.contributions в Map векторов натяжения по сущностям.
  *
  * @param contributions - AllPressures.contributions: `{ P1: {eid: val}, ..., P6: {eid: val} }`
- * @param prospectContributions - pProspect().contributions: `{eid: val}`（可选）
- * @param riskContributions - 逐实体风险信号（flag_risk 产物），注入 tauRisk（可选）
- * @param attractionContributions - ADR-178: 逐实体吸引力信号（rv_attraction），注入 tauAttraction（可选）
- * @param spikeContributions - ADR-191: 逐实体速率尖峰信号（z-score > 1），注入 tauSpike（可选）
+ * @param prospectContributions - pProspect().contributions: `{eid: val}` (опционально)
+ * @param riskContributions - сигнал риска по сущностям (результат flag_risk), записывается в tauRisk (опционально)
+ * @param attractionContributions - ADR-178: сигнал притяжения по сущностям (rv_attraction), записывается в tauAttraction (опционально)
+ * @param spikeContributions - ADR-191: сигнал скачка скорости по сущностям (z-score > 1), записывается в tauSpike (опционально)
  * @returns Map<entityId, TensionVector>
  *
  * @see paper/ §3.3: τ(e) = transpose of contributions matrix
@@ -79,7 +80,7 @@ export function buildTensionMap(
   attractionContributions?: Record<string, number>,
   spikeContributions?: Record<string, number>,
 ): Map<string, TensionVector> {
-  // 收集所有出现过的 entity id
+  // Собираем все встречавшиеся entity id
   const entityIds = new Set<string>();
   for (const pk of Object.keys(PK_TO_TAU)) {
     const ck = contributions[pk];
@@ -121,9 +122,9 @@ export function buildTensionMap(
 }
 
 /**
- * 从张力 Map 反向聚合为全局标量（round-trip 验证用）。
+ * Обратная агрегация из Map натяжений в глобальные скаляры (для проверки round-trip).
  *
- * 验证等式: aggregateFromTensionMap(buildTensionMap(c, pc)).Pk ≈ Σ c[Pk][eid]
+ * Проверяемое равенство: aggregateFromTensionMap(buildTensionMap(c, pc)).Pk ≈ Σ c[Pk][eid]
  */
 export function aggregateFromTensionMap(tensionMap: Map<string, TensionVector>): {
   P1: number;
@@ -164,7 +165,7 @@ export function aggregateFromTensionMap(tensionMap: Map<string, TensionVector>):
   return { P1, P2, P3, P4, P5, P6, P_prospect, P_risk, P_attraction, P_spike };
 }
 
-/** L2 范数——张力向量的标量大小（不含 tauRisk，风险信号走独立路径）。 */
+/** Норма L2 — скалярная величина вектора натяжения (без tauRisk: сигнал риска идёт отдельным путём). */
 export function tensionNorm(t: TensionVector): number {
   return Math.sqrt(
     t.tau1 * t.tau1 +
@@ -177,46 +178,46 @@ export function tensionNorm(t: TensionVector): number {
   );
 }
 
-// -- 贡献路由 ---------------------------------------------------------------
+// -- Маршрутизация вкладов ---------------------------------------------------------------
 
 /**
- * 将实体 ID 解析为可行动目标（频道 ID 列表）。
+ * Разрешает entity ID в исполнимые цели (список ID каналов).
  *
- * 使用图节点的 entity_type 判断（非 ID 前缀匹配），
- * 保证测试和生产使用不同 ID 约定时行为一致。
+ * Использует entity_type узла графа (не сопоставление префиксов ID),
+ * чтобы поведение было одинаковым при разных соглашениях об ID в тестах и продакшене.
  *
- * 路由规则：
- *   channel    → 保持不变（已可行动）
- *   contact    → ensureChannelId → channel:X（私聊频道）
- *   thread     → involves 边指向的实体 → 递归解析
- *   fact  → source_channel 或 source_contact → 频道
- *   其他       → 丢弃（agent, conversation 等不可行动）
+ * Правила маршрутизации:
+ *   channel    → без изменений (уже исполнимо)
+ *   contact    → ensureChannelId → channel:X (приватный чат)
+ *   thread     → сущности по рёбрам involves → рекурсивное разрешение
+ *   fact       → source_channel или source_contact → канал
+ *   прочие     → отброс (agent, conversation и т.п. — не исполнимы)
  *
- * @returns 可行动频道 ID 数组；空数组 = 不可行动，贡献被丢弃
+ * @returns массив исполнимых ID каналов; пустой массив = не исполнимо, вклад отброшен
  */
 function resolveActionableTargets(entityId: string, G: WorldModel): string[] {
   if (!G.has(entityId)) return [];
 
   const nodeType = G.getNodeType(entityId);
 
-  // 频道 → 直接可行动
+  // Канал → напрямую исполнимо
   if (nodeType === "channel") return [entityId];
 
-  // 联系人 → 私聊频道
+  // Контакт → приватный чат
   if (nodeType === "contact") {
     const channelId = ensureChannelId(entityId);
     return channelId && G.has(channelId) ? [channelId] : [];
   }
 
-  // 线程 → 优先 source_channel（精确路由），回退 involves 边
+  // Тред → приоритет source_channel (точная маршрутизация), откат на рёбра involves
   // @see docs/adr/102-reflective-action-trace.md (ADR-104)
   if (nodeType === "thread") {
     const threadAttrs = G.getThread(entityId);
-    // ADR-104: 优先 source_channel（精确路由）
+    // ADR-104: приоритет source_channel (точная маршрутизация)
     if (threadAttrs.source_channel && G.has(threadAttrs.source_channel)) {
       return [threadAttrs.source_channel];
     }
-    // 回退 involves 边
+    // Откат на рёбра involves
     const involvedNodes = G.getNeighbors(entityId, "involves");
     const channels: string[] = [];
     for (const nodeId of involvedNodes) {
@@ -225,7 +226,7 @@ function resolveActionableTargets(entityId: string, G: WorldModel): string[] {
     return [...new Set(channels)];
   }
 
-  // 信息项 → source_channel 或 source_contact → 频道
+  // Факт → source_channel или source_contact → канал
   if (nodeType === "fact") {
     const attrs = G.getFact(entityId);
     if (attrs.source_channel && G.has(attrs.source_channel)) {
@@ -237,27 +238,27 @@ function resolveActionableTargets(entityId: string, G: WorldModel): string[] {
     return [];
   }
 
-  // 其他（agent, conversation）→ 不可行动
+  // Прочие (agent, conversation) → не исполнимо
   return [];
 }
 
 /**
- * 贡献路由：将非可行动实体的压力贡献投影到可行动频道。
+ * Маршрутизация вкладов: проецирует давления неисполнимых сущностей на исполнимые каналы.
  *
- * 压力函数按语义维度计算（P3→contact, P4→thread, P2→fact），
- * 但行动执行只能针对频道（channel:*）。此函数是投影算子 ρ: V → V_A，
- * 在压力计算和张力 Map 之间插入，保证下游（焦点集、V-maximizer）
- * 的所有候选都是可行动的。
+ * Функции давления рассчитываются по семантическим измерениям (P3→contact, P4→thread, P2→fact),
+ * но выполнение действий возможно только на каналах (channel:*). Данная функция — оператор
+ * проекции ρ: V → V_A, вставленный между расчётом давлений и Map натяжений, чтобы все
+ * кандидаты на нижних уровнях (фокус-сет, V-maximizer) были исполнимы.
  *
- * 路由策略：
- *   contact  →  ensureChannelId → channel:X  （"想和 X 聊天" → "在 X 的私聊频道行动"）
- *   thread   →  involves 边 → 关联频道  （"话题 X 需要推进" → "在相关频道行动"）
- *   fact → source_channel/contact  （"事实 X 需要验证" → "在来源频道行动"）
+ * Стратегия маршрутизации:
+ *   contact  →  ensureChannelId → channel:X  («хочу поговорить с X» → «действую в личном чате X»)
+ *   thread   →  рёбра involves → связанные каналы  («тема X требует продвижения» → «действую в нужном канале»)
+ *   fact     →  source_channel/contact  («факт X надо проверить» → «действую в канале-источнике»)
  *
- * 多源汇聚时累加（同一频道可能从 P3 contact + P6 contact 双重接收）。
- * 无可行动目标的贡献被丢弃（e.g. 没有私聊频道的联系人）。
+ * При слиянии нескольких источников вклады суммируются (один канал может получить вклад от P3 contact и P6 contact).
+ * Вклады без исполнимых целей отбрасываются (напр. контакт без личного чата).
  *
- * @see paper/ §3.3: 张力空间的可行动投影
+ * @see paper/ §3.3: исполнимая проекция пространства натяжений
  */
 export function routeContributions(
   contributions: Record<string, Record<string, number>>,

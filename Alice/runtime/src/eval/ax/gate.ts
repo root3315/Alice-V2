@@ -1,8 +1,8 @@
 /**
  * ADR-263 Wave 2: Ax artifact promotion gate.
  *
- * 读取离线 optimizer artifact，比较 zero-shot baseline 与 artifact demos candidate。
- * 这个门禁仍然只评估候选，不把候选动态接入生产 prompt。
+ * Читает офлайн-артефакт оптимизатора, сравнивает zero-shot baseline с кандидатом из demos артефакта.
+ * Этот шлюз только оценивает кандидата — не подключает его динамически к продакшн-промпту.
  *
  * @see docs/adr/263-ax-llm-program-optimization/README.md
  */

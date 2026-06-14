@@ -1,15 +1,15 @@
 /**
- * Bio 缓存：按需获取 Telegram 实体的 bio/description。
+ * Bio-кэш: получение bio/description Telegram-сущностей по требованию.
  *
- * 设计：
- * - DB 持久化（bio_cache 表），TTL 3 天
- * - 同步读取（getCachedBio）—— snapshot 构建时调用，不阻塞
- * - 异步获取（fetchAndCacheBio）—— cache miss 时 fire-and-forget
- * - 使用 globalLimiter 共享 Telegram API 速率限制
+ * Дизайн:
+ * - Персистентность в БД (таблица bio_cache), TTL 3 дня
+ * - Синхронное чтение (getCachedBio) — вызывается при построении snapshot, не блокирует
+ * - Асинхронное получение (fetchAndCacheBio) — fire-and-forget при cache miss
+ * - Использует globalLimiter для ограничения скорости запросов к Telegram API
  *
- * 获取时机：
- * - events.ts 中新联系人/新频道首次出现时 fire-and-forget
- * - snapshot 构建时 cache miss 也触发异步获取（下次 tick 生效）
+ * Когда происходит получение:
+ * - Fire-and-forget при первом появлении нового контакта/канала в events.ts
+ * - Cache miss при построении snapshot тоже запускает асинхронное получение (вступает в силу на следующем тике)
  */
 
 import type { TelegramClient } from "@mtcute/node";
@@ -22,7 +22,7 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("bio-cache");
 
-/** TTL: 3 天。 */
+/** TTL: 3 дня. */
 const BIO_CACHE_TTL_MS = 3 * 24 * 3600_000;
 
 export interface BioCacheEntry {
@@ -31,8 +31,8 @@ export interface BioCacheEntry {
 }
 
 /**
- * 从 cache 同步读取 bio。命中且未过期 → 返回；miss 或过期 → 返回 null。
- * 调用者在 null 时应触发异步 fetchAndCacheBio。
+ * Синхронно читает bio из кэша. Попадание и не истёк TTL → возвращает; промах или истёк → возвращает null.
+ * Вызывающая сторона при null должна запустить асинхронный fetchAndCacheBio.
  */
 export function getCachedBio(entityId: string): BioCacheEntry | null {
   try {
@@ -47,7 +47,7 @@ export function getCachedBio(entityId: string): BioCacheEntry | null {
 }
 
 /**
- * 写入 cache（UPSERT）。
+ * Записывает в кэш (UPSERT).
  */
 export function setCachedBio(
   entityId: string,
@@ -69,22 +69,22 @@ export function setCachedBio(
       })
       .run();
   } catch {
-    // 静默失败——cache miss 不阻塞
+    // Тихая ошибка — cache miss не блокирует
   }
 }
 
-// ── 进行中的获取去重 ──
-// 防止同一实体被并发 fetch 多次（events + snapshot 同时触发）
+// ── Дедупликация активных запросов ──
+// Предотвращает одновременный fetch одной и той же сущности несколько раз (events + snapshot запускаются одновременно)
 const pendingFetches = new Set<string>();
 
 /**
- * 异步获取并缓存实体 bio（fire-and-forget）。
+ * Асинхронно получает и кэширует bio сущности (fire-and-forget).
  *
- * - contact:XXX → users.getFullUser（获取 about + personalChannelId）
- * - channel:XXX → channels.getFullChannel（获取 about）
+ * - contact:XXX → users.getFullUser (получаем about + personalChannelId)
+ * - channel:XXX → channels.getFullChannel (получаем about)
  *
- * 共享 Telegram API globalLimiter，不会超速。
- * 获取失败静默跳过——下次 cache miss 重试。
+ * Использует общий globalLimiter для Telegram API, не превышает лимиты.
+ * При ошибке получения — тихо пропускает, повторит при следующем cache miss.
  */
 export async function fetchAndCacheBio(client: TelegramClient, entityId: string): Promise<void> {
   if (pendingFetches.has(entityId)) return;
@@ -128,7 +128,7 @@ export async function fetchAndCacheBio(client: TelegramClient, entityId: string)
       log.debug("Fetched channel bio", { entityId, hasBio: !!bio });
     }
   } catch (e) {
-    // API 失败 → 不缓存，下次重试
+    // Ошибка API → не кэшируем, повторим при следующем запросе
     log.debug("Failed to fetch bio", { entityId, error: e instanceof Error ? e.message : e });
   } finally {
     pendingFetches.delete(entityId);

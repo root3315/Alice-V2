@@ -1,49 +1,49 @@
 /**
- * 纯数学工具函数——与 Python simulation/pressure.py 中的辅助函数一一对应。
+ * Чистые математические вспомогательные функции — взаимно однозначно соответствуют вспомогательным функциям в Python simulation/pressure.py.
  */
 
-// -- 维度类型 ---------------------------------------------------------------
+// -- Типы измерений ---------------------------------------------------------
 
-/** 4 维人格权重向量 [diligence, curiosity, sociability, caution]。ADR-81: Reflection 移除。 */
+/** 4-мерный вектор весов личности [diligence, curiosity, sociability, caution]. ADR-81: Reflection удалён. */
 export type PersonalityWeights = [number, number, number, number];
 
-/** 7 维张力向量 [tau1, tau2, tau3, tau4, tau5, tau6, tauP]。 */
+/** 7-мерный вектор напряжений [tau1, tau2, tau3, tau4, tau5, tau6, tauP]. */
 export type TensionDims = [number, number, number, number, number, number, number];
 
-/** 6 维压力向量 [P1, P2, P3, P4, P5, P6]。 */
+/** 6-мерный вектор давлений [P1, P2, P3, P4, P5, P6]. */
 export type PressureDims = [number, number, number, number, number, number];
 
 /**
- * Sigmoid 冷却函数（线性时间域）。
- * 对应 Python: 1 / (1 + exp(-beta * (x - theta)))
+ * Функция охлаждения Sigmoid (линейная временная область).
+ * Соответствует Python: 1 / (1 + exp(-beta * (x - theta)))
  *
- * @deprecated P3 已迁移到 logSigmoid（对数时间域）。保留供其他维度或回归测试使用。
+ * @deprecated P3 перенесён на logSigmoid (логарифмическая временная область). Оставлен для других измерений или регрессионных тестов.
  */
 export function sigmoid(x: number, beta: number, theta: number): number {
   const exponent = -beta * (x - theta);
-  // clip 防止 overflow
+  // clip для предотвращения переполнения
   const clipped = Math.max(-50, Math.min(50, exponent));
   return 1.0 / (1.0 + Math.exp(clipped));
 }
 
 /**
- * 对数域 sigmoid——P3 关系冷却专用。
+ * Sigmoid в логарифмической области — специально для охлаждения отношений P3.
  *
- * Weber-Fechner 定律：人类感知时间变化的能力与时间的对数成正比。
- * 将 sigmoid 输入从线性时间映射到对数时间，使长期沉默仍有增量区分度。
+ * Закон Вебера-Фехнера: способность человека воспринимать изменения времени пропорциональна логарифму времени.
+ * Отображает вход sigmoid из линейного времени в логарифмическое, сохраняя инкрементальную различимость при длительном молчании.
  *
  * cooling(t) = σ(β_r · (ln(1 + t/τ₀) - ln(1 + θ/τ₀)))
  *
- * 性质：
- * - t = θ 时 σ = 0.5（拐点不变）
- * - t << θ 时 σ ≈ 0（短沉默无压力）
- * - t >> θ 时 σ → 1（有界，Homeostasis 定理安全）
- * - 对数压缩使 1h vs 1d 仍有区分（旧公式中两者都映射到 ~1.0）
+ * Свойства:
+ * - при t = θ: σ = 0.5 (точка перегиба не меняется)
+ * - при t << θ: σ ≈ 0 (короткое молчание — без давления)
+ * - при t >> θ: σ → 1 (ограничено, теорема Homeostasis в безопасности)
+ * - логарифмическое сжатие сохраняет различие между 1ч и 1д (старая формула отображала оба в ~1.0)
  *
- * @param silenceS 沉默时长（秒）
- * @param betaR 对数域 sigmoid 陡度（推荐 2.5）
- * @param thetaS 期望交互间隔（秒）
- * @param tau0 时间感知粒度（秒，推荐 600）
+ * @param silenceS длительность молчания (секунды)
+ * @param betaR крутизна sigmoid в логарифмической области (рекомендуется 2.5)
+ * @param thetaS ожидаемый интервал между взаимодействиями (секунды)
+ * @param tau0 гранулярность восприятия времени (секунды, рекомендуется 600)
  *
  * @see docs/adr/111-log-time-sigmoid/README.md
  */
@@ -56,8 +56,8 @@ export function logSigmoid(silenceS: number, betaR: number, thetaS: number, tau0
 }
 
 /**
- * tanh 归一化，clip 到 [0, 1)。
- * 对应 Python: np.tanh(np.clip(x / kappa, 0, None))
+ * Нормализация tanh, clip до [0, 1).
+ * Соответствует Python: np.tanh(np.clip(x / kappa, 0, None))
  */
 export function tanhNormalize(value: number, kappa: number): number {
   if (kappa <= 0) return 0;
@@ -66,12 +66,12 @@ export function tanhNormalize(value: number, kappa: number): number {
 }
 
 /**
- * 数值稳定的 softmax。
- * 对应 Python: shifted = L - L.max(); exp(shifted/tau) / sum(exp(shifted/tau))
+ * Численно стабильный softmax.
+ * Соответствует Python: shifted = L - L.max(); exp(shifted/tau) / sum(exp(shifted/tau))
  */
 export function softmax(values: number[], tau: number): number[] {
   if (values.length === 0) return [];
-  // M6 修复: 循环求 max，避免 Math.max(...values) 对大数组栈溢出
+  // исправление M6: ищем max циклом, чтобы избежать переполнения стека Math.max(...values) на больших массивах
   let maxVal = -Infinity;
   for (const v of values) if (v > maxVal) maxVal = v;
   const shifted = values.map((v) => (v - maxVal) / tau);
@@ -81,8 +81,8 @@ export function softmax(values: number[], tau: number): number[] {
 }
 
 /**
- * P2 可检索性（遗忘曲线）。
- * 对应 Python: (1 + (n - last_access) / (9 * stability))^d
+ * Извлекаемость P2 (кривая забывания).
+ * Соответствует Python: (1 + (n - last_access) / (9 * stability))^d
  */
 export function retrievability(
   tick: number,
@@ -96,9 +96,9 @@ export function retrievability(
 }
 
 /**
- * 时间衰减因子: 1/(1 + age/halfLife)。age=0 → 1.0，age=halfLife → 0.5。
- * M3 DRY: 统一 focus.ts / system1.ts / propagation.ts 中的手写衰减公式。
- * halfLife=Infinity → 不衰减（1/(1+0) = 1.0）。
+ * Фактор временного затухания: 1/(1 + age/halfLife). age=0 → 1.0, age=halfLife → 0.5.
+ * M3 DRY: унифицирует написанные вручную формулы затухания в focus.ts / system1.ts / propagation.ts.
+ * halfLife=Infinity → без затухания (1/(1+0) = 1.0).
  */
 export function decayFactor(age: number, halfLife: number): number {
   if (halfLife < 0) throw new Error(`decayFactor: halfLife must be >= 0, got ${halfLife}`);
@@ -107,8 +107,8 @@ export function decayFactor(age: number, halfLife: number): number {
 }
 
 /**
- * 标准 sigmoid: σ(x) = 1 / (1 + exp(-x))，带溢出保护。
- * m1 DRY: 统一 p-prospect.ts 中的本地 sigmoid。
+ * Стандартный sigmoid: σ(x) = 1 / (1 + exp(-x)), с защитой от переполнения.
+ * m1 DRY: унифицирует локальный sigmoid в p-prospect.ts.
  */
 export function standardSigmoid(x: number): number {
   const clamped = Math.max(-50, Math.min(50, x));
@@ -116,10 +116,10 @@ export function standardSigmoid(x: number): number {
 }
 
 /**
- * L2 距离。
+ * Расстояние L2.
  */
 export function l2Distance(a: number[], b: number[]): number {
-  // M7 修复: 维度不等时抛错，不再静默截断
+  // исправление M7: при несовпадении размерностей выбрасываем ошибку, а не молча усекаем
   if (a.length !== b.length) {
     throw new Error(`l2Distance: mismatched dimensions ${a.length} vs ${b.length}`);
   }
@@ -132,7 +132,7 @@ export function l2Distance(a: number[], b: number[]): number {
 }
 
 /**
- * 标准差。
+ * Стандартное отклонение.
  */
 export function std(values: number[]): number {
   if (values.length === 0) return 0;
@@ -142,7 +142,7 @@ export function std(values: number[]): number {
 }
 
 /**
- * 归一化数组使其和为 1。
+ * Нормализует массив так, чтобы его сумма равнялась 1.
  */
 export function normalize(values: number[]): number[] {
   if (values.length === 0) return [];
@@ -152,8 +152,8 @@ export function normalize(values: number[]): number[] {
 }
 
 /**
- * ADR-117 D4: Box-Muller 高斯 jitter。
- * σ = 0.15 → 95% 的时间在 ±30% 以内，极端值由 Math.max(100) 兜底。
+ * ADR-117 D4: Гауссовый jitter по Бокс-Мюллеру.
+ * σ = 0.15 → 95% времени укладывается в ±30%, крайние значения ограничиваются Math.max(100).
  */
 export function applyJitter(delayMs: number): number {
   const u1 = Math.random();

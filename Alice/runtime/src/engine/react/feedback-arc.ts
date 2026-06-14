@@ -1,13 +1,13 @@
 /**
- * 反馈闭环 — 从 act/result.ts 迁移。
+ * Обратная петля — перенесено из act/result.ts.
  *
- * 包含：processResult（后处理）、updateReachability（可达性更新）、
- * classifyFailure（失败分类）、adaptiveGamma（自适应均值回归）、
- * logPersonalityEvolution（人格演化日志）、computeEAProxy（EA 代理指标）、
- * computeAdaptiveCooldown（自适应冷却）。
+ * Содержит: processResult (постобработка), updateReachability (обновление достижимости),
+ * classifyFailure (классификация сбоев), adaptiveGamma (адаптивный возврат к среднему),
+ * logPersonalityEvolution (журнал эволюции личности), computeEAProxy (прокси-метрика EA),
+ * computeAdaptiveCooldown (адаптивное охлаждение).
  *
- * ADR-214 Wave B: 全面切换到 ScriptExecutionResult。
- * ExecutableResult / RecordedAction 已删除。messageSent 等信号从 completedActions 推导。
+ * ADR-214 Wave B: полный переход на ScriptExecutionResult.
+ * ExecutableResult / RecordedAction удалены. Сигналы messageSent и т.п. выводятся из completedActions.
  *
  * @see docs/adr/79-reachability-gc-mod-migration.md
  * @see docs/adr/90-reachability-recovery.md
@@ -69,13 +69,13 @@ import type { ActContext } from "./orchestrator.js";
 const log = createLogger("react:feedback");
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ADR-156: 情感排放弧
+// ADR-156: Дуга эмоционального разряда
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 消息发送后，对目标联系人的情感性 fact 触发排放（E *= DISCHARGE_FACTOR）。
- * 一次回应消解 70% 情感压力。连续回应进一步衰减：两次 → 91%。
- * @see docs/adr/156-emotional-reactivity-damping.md §排放因子
+ * После отправки сообщения запускает разряд эмоциональных фактов целевого контакта (E *= DISCHARGE_FACTOR).
+ * Один ответ снимает 70% эмоционального давления. Последовательные ответы затухают дальше: два ответа → 91%.
+ * @see docs/adr/156-emotional-reactivity-damping.md §коэффициент-разряда
  */
 function dischargeEmotionalFacts(G: WorldModel, channelId: string): void {
   const contactId = chatIdToContactId(channelId);
@@ -99,17 +99,17 @@ function dischargeEmotionalFacts(G: WorldModel, channelId: string): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// completedActions 解析工具
+// Утилиты разбора completedActions
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 从 completedActions 提取第一条发送动作的消息文本。
- * completedActions 格式: "sent:chatId=X:msgId=Y"。
- * 注意：completedActions 不含消息文本——文本存在于 Engine API 调用参数中，
- * 但不回传到 shell-executor。返回 null。
+ * Извлекает текст сообщения первого действия отправки из completedActions.
+ * Формат completedActions: "sent:chatId=X:msgId=Y".
+ * Важно: completedActions не содержит текст сообщения — он присутствует в параметрах вызова Engine API,
+ * но не возвращается обратно в shell-executor. Возвращает null.
  */
 function extractFirstSentMessageText(_result: ScriptExecutionResult): string | null {
-  // shell-native 架构下消息文本不回传到 completedActions
+  // В shell-native архитектуре текст сообщения не возвращается в completedActions
   return null;
 }
 
@@ -243,23 +243,23 @@ function classifyExecutionOutcome(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ADR-185 §3: 行动结果 → Mood 反馈环
+// ADR-185 §3: Петля обратной связи результат действия → Mood
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** ADR-185 §3: 无 rate_outcome 但消息已发送时的正向系数。 */
+/** ADR-185 §3: положительный коэффициент при отсутствии rate_outcome, но отправленном сообщении. */
 const NUDGE_SENT_FALLBACK = 0.3;
-/** ADR-185 §3: LLM 失败时的负向系数。 */
+/** ADR-185 §3: отрицательный коэффициент при сбое LLM. */
 const NUDGE_LLM_FAILED = -0.5;
-/** ADR-185 §3: 深度对话（subcycles > 2）额外正向系数。 */
+/** ADR-185 §3: дополнительный положительный коэффициент для глубокого диалога (subcycles > 2). */
 const NUDGE_DEEP_CONVERSATION = 0.3;
 
 /**
- * ADR-185 §3: 行动结果微调 mood — 填补 "行动→情绪" 反馈弧断裂。
+ * ADR-185 §3: тонкая настройка mood по результату действия — закрывает разрыв в петле "действие→эмоция".
  *
- * ADR-214 Wave B: 参数改为 ScriptExecutionResult。
- * rate_outcome 在 shell-native 下通过 Engine API dispatch 执行，
- * 不在 completedActions 中追踪。当前实现中 rate_outcome 始终为空，
- * 退化到 NUDGE_SENT_FALLBACK（消息已发送但无显式评价）。
+ * ADR-214 Wave B: параметр изменён на ScriptExecutionResult.
+ * В shell-native rate_outcome выполняется через Engine API dispatch
+ * и не отслеживается в completedActions. В текущей реализации rate_outcome всегда пуст,
+ * деградирует до NUDGE_SENT_FALLBACK (сообщение отправлено, но явная оценка отсутствует).
  *
  * @see docs/adr/185-cross-pollination-from-llm-agent-landscape.md §3
  */
@@ -280,16 +280,16 @@ export function applyOutcomeMoodNudge(
   if (llmFailed) {
     delta = nudgeScale * NUDGE_LLM_FAILED;
   } else if (messageSent) {
-    // shell-native: rate_outcome 通过 dispatch 执行，不在 completedActions 中。
-    // 退化到 fallback: 消息已发送但无显式评价 → 轻微正向。
+    // shell-native: rate_outcome выполняется через dispatch, не отслеживается в completedActions.
+    // Деградирует до fallback: сообщение отправлено, явная оценка отсутствует → лёгкий позитив.
     delta = nudgeScale * NUDGE_SENT_FALLBACK;
 
-    // 深度对话奖励
+    // Бонус за глубокий диалог
     if (subcycles != null && subcycles > 2) {
       delta += nudgeScale * NUDGE_DEEP_CONVERSATION;
     }
   }
-  // silence → delta = 0, 直接返回
+  // silence → delta = 0, возврат без изменений
 
   if (llmFailed || executionResult.errorCodes.length > 0) {
     appraiseActionFailureEmotion(G, {
@@ -325,33 +325,33 @@ export function applyOutcomeMoodNudge(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 可达性反馈弧
+// Дуга обратной связи достижимости
 // ═══════════════════════════════════════════════════════════════════════════
 
-// ADR-79 M1: Reachability 反馈弧常量
+// ADR-79 M1: константы дуги обратной связи Reachability
 // @see docs/adr/79-reachability-gc-mod-migration.md
 
-/** 指数衰减 λ — 3 次失败 → score ≈ 0.22，与 ExplorationGuard threshold=3 对齐。 */
+/** λ экспоненциального затухания — 3 сбоя → score ≈ 0.22, выровнен с ExplorationGuard threshold=3. */
 const REACHABILITY_LAMBDA = 2;
 
-/** ADR-90 W2: 恢复 EMA 平滑因子 — 首次成功 0.22→0.61，第二次 0.61→0.81。 */
+/** ADR-90 W2: коэффициент сглаживания EMA при восстановлении — первый успех 0.22→0.61, второй 0.61→0.81. */
 const REACHABILITY_RECOVERY_ALPHA = 0.5;
-/** ADR-90 W2: failure_type 清除阈值 — score 恢复到此值以上才清除 failure_type。 */
+/** ADR-90 W2: порог очистки failure_type — failure_type сбрасывается только при восстановлении score выше этого значения. */
 const REACHABILITY_CLEAR_THRESHOLD = 0.8;
 
-/** 分类 ACT 失败类型：permanent（被踢/封禁/无效 peer）或 transient（超时/限流）。 */
+/** Тип сбоя ACT: permanent (выкинут/заблокирован/недействительный peer) или transient (таймаут/лимит). */
 export type FailureType = "permanent" | "transient";
 /**
- * ADR-90 W4: permanent failure 子分类。
- * hard — 用户维度不可逆（账号注销/封禁）→ 清零社交义务
- * soft — 频道级不可达（被踢/未加入）→ 保留义务但阻断强制行动
+ * ADR-90 W4: подтип permanent failure.
+ * hard — необратимо на уровне пользователя (удалён аккаунт/заблокирован) → обнуление социальных обязательств
+ * soft — недостижимость на уровне канала (выкинут/не вступил) → обязательства сохраняются, принудительные действия блокируются
  */
 export type FailureSubtype = "hard" | "soft";
 
 /**
- * ADR-79 M1 + ADR-90 W4: 从结构化错误码推导失败类型和子类型。
- * permanent → 目标不可达（被踢/封禁/账号注销）
- * transient → 临时故障（超时/限流/网络抖动）
+ * ADR-79 M1 + ADR-90 W4: выводит тип и подтип сбоя из структурированных кодов ошибок.
+ * permanent → цель недостижима (выкинут/заблокирован/удалён аккаунт)
+ * transient → временный сбой (таймаут/лимит/сетевые колебания)
  */
 export function classifyFailure(executionResult: {
   errorCodes: readonly ScriptExecutionErrorCode[];
@@ -372,12 +372,12 @@ export function classifyFailure(executionResult: {
 }
 
 /**
- * ADR-79 M1 + ADR-90 W2/W4: 更新图节点的可达性分数。
+ * ADR-79 M1 + ADR-90 W2/W4: обновляет оценку достижимости узла графа.
  *
- * 失败时递增 failures 并衰减 score。
- * 成功时 EMA 渐进恢复（不再阶跃到 1.0），score ≥ 0.8 时清除 failure_type。
- * permanent hard failure → 清零社交义务（账号不可逆）。
- * permanent soft failure → 保留义务但 shouldBypassGates 被阻断。
+ * При сбое инкрементирует failures и затухает score.
+ * При успехе восстановление EMA постепенное (без прыжка до 1.0); при score ≥ 0.8 сбрасывается failure_type.
+ * permanent hard failure → обнуление социальных обязательств (аккаунт необратимо недостижим).
+ * permanent soft failure → обязательства сохраняются, shouldBypassGates блокируется.
  */
 export function updateReachability(
   G: WorldModel,
@@ -387,7 +387,7 @@ export function updateReachability(
 ): void {
   if (!target || !G.has(target)) return;
 
-  // Reachability 追踪仅限 channel 节点
+  // Отслеживание Reachability только для узлов channel
   if (G.getNodeType(target) !== "channel") return;
 
   if (!success) {
@@ -404,8 +404,8 @@ export function updateReachability(
     };
     if (subtype) failPatch.failure_subtype = subtype;
 
-    // 目标 channel 已被证明不可达时，清掉这个 channel 上的本地待回复义务。
-    // 如果同一个人在其他 channel 继续对话，应由那个 channel 的事实重新产生义务。
+    // Если целевой канал признан недостижимым, снимаем локальные обязательства ответа с этого канала.
+    // Если тот же контакт продолжает общение в другом канале, обязательства должны возникнуть из фактов того канала.
     if (failureType === "permanent") {
       failPatch.pending_directed = 0;
       failPatch.mentions_alice = false;
@@ -427,7 +427,7 @@ export function updateReachability(
     const attrs = G.getChannel(target);
     const oldFailures = attrs.consecutive_act_failures ?? 0;
     if (oldFailures > 0) {
-      // ADR-90 W2: EMA 渐进恢复 — 不再阶跃到 1.0
+      // ADR-90 W2: постепенное восстановление EMA — без прыжка до 1.0
       const oldScore = attrs.reachability_score ?? 0;
       const newScore =
         oldScore * (1 - REACHABILITY_RECOVERY_ALPHA) + 1.0 * REACHABILITY_RECOVERY_ALPHA;
@@ -436,7 +436,7 @@ export function updateReachability(
         reachability_score: newScore,
       };
 
-      // failure_type 只在 score 恢复到阈值以上时清除
+      // failure_type сбрасывается только при восстановлении score выше порога
       if (newScore >= REACHABILITY_CLEAR_THRESHOLD) {
         recoverPatch.failure_type = null;
         recoverPatch.failure_subtype = null;
@@ -454,26 +454,26 @@ export function updateReachability(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// EA Proxy + 人格演化
+// EA Proxy + эволюция личности
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * ADR-69: 有效推进代理指标 — EA_proxy(t) = observationValue / max(1, actionCount)
+ * ADR-69: прокси-метрика эффективного прогресса — EA_proxy(t) = observationValue / max(1, actionCount)
  *
- * ADR-214 Wave B: 基于 completedActions 计算。
- * shell-native 下 dispatch 动作（self_note, self_feel 等）不在 completedActions 中追踪，
- * observationValue 退化到 0。actionCount 从 "sent:" 前缀统计。
- * EA_proxy 在当前架构下始终返回 0——作为纯诊断指标保留，后续可扩展。
+ * ADR-214 Wave B: вычисляется на основе completedActions.
+ * В shell-native dispatch-действия (self_note, self_feel и т.п.) не отслеживаются в completedActions,
+ * observationValue деградирует до 0. actionCount считается по префиксу "sent:".
+ * EA_proxy в текущей архитектуре всегда возвращает 0 — сохраняется как чисто диагностическая метрика, может быть расширена позже.
  */
 export function computeEAProxy(result: ScriptExecutionResult): number {
-  // shell-native: dispatch 动作不在 completedActions 中，observationValue = 0
+  // shell-native: dispatch-действия не в completedActions, observationValue = 0
   const observationValue = 0;
   const actionCount = countCompletedSentActions(result);
   return observationValue / Math.max(1, actionCount);
 }
 
 /**
- * ADR-53 #2: 记录人格向量变化归因。
+ * ADR-53 #2: запись атрибуции изменений вектора личности.
  * @see docs/adr/53-audit-gap-closure.md
  */
 export function logPersonalityEvolution(
@@ -503,12 +503,12 @@ export function logPersonalityEvolution(
 }
 
 /**
- * 自适应均值回归 γ — 漂移越大，回归力越强。
+ * Адаптивный возврат к среднему γ — чем сильнее дрейф, тем сильнее возвращающая сила.
  *
- * 当 personality_health === "alert" 时 γ × 3（加速回归），
- * 避免人格因持续单侧反馈而退化（winner-takes-all 问题）。
+ * При personality_health === "alert" γ × 3 (ускоренный возврат),
+ * чтобы личность не деградировала из-за устойчивой односторонней обратной связи (проблема winner-takes-all).
  *
- * ADR-46 F7c: alert 时 γ ×2 → ×3（加速回归，配合 F7a 上限和 F7b 更低阈值）。
+ * ADR-46 F7c: при alert γ ×2 → ×3 (ускоренный возврат, согласован с ограничением F7a и более низким порогом F7b).
  * @see docs/adr/45-real-data-validation.md §3.6
  */
 export function adaptiveGamma(G: WorldModel, baseGamma: number): number {
@@ -522,7 +522,7 @@ export function adaptiveGamma(G: WorldModel, baseGamma: number): number {
 // Engagement Metrics
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** ADR-108: Engagement session 遥测数据。 */
+/** ADR-108: телеметрия сессии вовлечения. */
 export interface EngagementMetrics {
   subcycles: number;
   durationMs: number;
@@ -531,12 +531,12 @@ export interface EngagementMetrics {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// processResult — 后处理：反馈闭环 + 行动日志 + 人格演化
+// processResult — постобработка: обратная петля + журнал действий + эволюция личности
 // ═══════════════════════════════════════════════════════════════════════════
 
 type TcMeta = TickTcMeta;
 
-/** 后处理：反馈闭环 + 行动日志 + 人格演化。 */
+/** Постобработка: обратная петля + журнал действий + эволюция личности. */
 export function processResult(
   ctx: ActContext,
   item: ActionQueueItem,
@@ -547,7 +547,7 @@ export function processResult(
   engagementMetrics?: EngagementMetrics,
   tcMeta?: TcMeta,
 ): void {
-  // ADR-129: LLM 调用失败时正确标记 success=false
+  // ADR-129: правильно помечать success=false при сбое LLM-вызова
   const llmFailed = engagementMetrics?.outcome === "llm_failed";
   const messageSent = hasCompletedSend(executionResult);
   const outcome = classifyExecutionOutcome(
@@ -565,15 +565,15 @@ export function processResult(
     }
   }
 
-  // ADR-95 W1+W2+W4: 沉默冷却 + 沉默即感知 + directed 信号衰减
+  // ADR-95 W1+W2+W4: охлаждение тишины + тишина как восприятие + затухание сигнала directed
   // @see docs/adr/95-prompt-log-behavioral-audit.md §5
-  // ADR-101: 防御性守卫——这些属性是 channel 专属，非 channel 节点不应写入
-  // D-I: 沉默由最终 outcome 判定；历史错误只保留审计，不污染 action_type。
-  // 带错误的恢复沉默不消耗 pending_directed，避免把未完成义务悄悄吃掉。
+  // ADR-101: защитный шлюз — эти атрибуты принадлежат только channel, в не-channel узлы писать нельзя
+  // D-I: тишина определяется финальным outcome; исторические ошибки сохраняются только в аудите, не загрязняют action_type.
+  // Восстановительная тишина с ошибками не расходует pending_directed, чтобы незакрытые обязательства не пропадали незаметно.
   const isSilence = outcome.kind === "silence";
   if (item.target && ctx.G.has(item.target) && ctx.G.getNodeType(item.target) === "channel") {
     if (messageSent) {
-      // ADR-158: 出站反馈弧补全。
+      // ADR-158: завершение исходящей дуги обратной связи.
       const pd = Number(ctx.G.getChannel(item.target).pending_directed ?? 0);
       ctx.G.updateChannel(item.target, {
         consecutive_act_silences: 0,
@@ -581,10 +581,10 @@ export function processResult(
         unread: 0,
         unread_ewms: 0,
       });
-      // ADR-156 D2: 排放
+      // ADR-156 D2: разряд
       dischargeEmotionalFacts(ctx.G, item.target);
 
-      // ADR-158 安全网: 对话 turn_state → other_turn。
+      // ADR-158 страховка: turn_state диалога → other_turn.
       const channelForConv = ensureChannelId(item.target) ?? item.target;
       const convId = findActiveConversation(ctx.G, channelForConv);
       if (convId && ctx.G.has(convId)) {
@@ -598,7 +598,7 @@ export function processResult(
         target: item.target,
       });
     } else if (llmFailed) {
-      // ADR-156 环路 2 修复：LLM 失败 ≈ 强制沉默。
+      // ADR-156 исправление цикла 2: сбой LLM ≈ принудительная тишина.
       const prevSil = Number(ctx.G.getChannel(item.target).consecutive_act_silences ?? 0);
       const failPatch: Partial<import("../../graph/entities.js").ChannelAttrs> = {
         consecutive_act_silences: Math.max(prevSil, ACT_SILENCE_SAFETY_THRESHOLD + 1),
@@ -641,9 +641,9 @@ export function processResult(
         ctx.G.updateChannel(item.target, { pending_directed: pd - 1 });
       }
     } else if (!success) {
-      // 脚本错误（目标不可达、500 等）≈ 失败的行动尝试。
-      // 压力释放等同于沉默——Alice 尝试了但没送达，不应无限重试。
-      // 递增 act_silences 使频道在超过 ACT_SILENCE_SAFETY_THRESHOLD 后被门控跳过。
+      // Ошибки скрипта (цель недостижима, 500 и т.п.) ≈ неудавшаяся попытка действия.
+      // Сброс давления эквивалентен тишине — Alice попыталась, но не доставила; бесконечные повторы недопустимы.
+      // Инкремент act_silences заставляет канал пропускаться через шлюз после превышения ACT_SILENCE_SAFETY_THRESHOLD.
       const prevSil = Number(ctx.G.getChannel(item.target).consecutive_act_silences ?? 0);
       const errPatch: Partial<import("../../graph/entities.js").ChannelAttrs> = {
         consecutive_act_silences: prevSil + 1,
@@ -663,10 +663,10 @@ export function processResult(
         newSilences: prevSil + 1,
       });
     } else {
-      // ADR-218 F2: 成功的 observe（非消息、非沉默、非错误）— 信号守恒。
-      // Alice 已"看到"目标但未回复。消耗 1 单位义务信号，防止
-      // pending_directed 永远不被消清导致无限 bypass 循环。
-      // 后续由 P3 关系冷却自然接管"已读不回"的社交压力。
+      // ADR-218 F2: успешный observe (не сообщение, не тишина, не ошибка) — сохранение сигнала.
+      // Alice «увидела» цель, но не ответила. Расходуем 1 единицу сигнала обязательства, чтобы
+      // pending_directed не оставался бесконечно накопленным, порождая бесконечный цикл bypass.
+      // Далее социальное давление «прочитал но не ответил» естественно перехватывается охлаждением отношений P3.
       const pd = Number(ctx.G.getChannel(item.target).pending_directed ?? 0);
       if (pd > 0) {
         ctx.G.updateChannel(item.target, { pending_directed: pd - 1 });
@@ -674,13 +674,13 @@ export function processResult(
     }
   }
 
-  // ADR-43 §P0: 反馈闭环缺口检查
+  // ADR-43 §P0: проверка разрыва в петле обратной связи
   const feedbackGap = checkFeedbackGap(executionResult);
 
-  // ADR-199 W1: 自动状态回写 — 强制闭环
+  // ADR-199 W1: автоматическая обратная запись состояния — принудительное замыкание петли
   const autoWriteback: Record<string, string> = {};
 
-  // ADR-199 W1.1: self_feel 质量升级 — 不再注入 "neutral"，而是推断 valence
+  // ADR-199 W1.1: улучшение качества self_feel — больше не инжектировать "neutral", а выводить valence
   if (feedbackGap.isMissing && item.target) {
     try {
       const ext = computeExternalFeedback(ctx.G, item.target, Date.now() - 60_000, Date.now());
@@ -702,7 +702,7 @@ export function processResult(
     }
   }
 
-  // ADR-185 §3: 行动结果微调 mood
+  // ADR-185 §3: тонкая настройка mood по результату действия
   applyOutcomeMoodNudge(
     ctx.G,
     executionResult,
@@ -716,7 +716,7 @@ export function processResult(
 
   const unresolvedFeedbackGap = feedbackGap.isMissing && autoWriteback.feel == null;
 
-  // 记录行动日志
+  // Запись журнала действий
   try {
     const actionType = outcome.actionType;
     const messageText = extractFirstSentMessageText(executionResult);
@@ -725,7 +725,7 @@ export function processResult(
         ? executionResult.thinks.slice(0, 3).join("; ")
         : (executionResult.silenceReason ?? null);
 
-    // ADR-70: query 自动打印结果追加到 reasoning
+    // ADR-70: автоматически распечатанные результаты query добавляются к reasoning
     if (executionResult.queryLogs.length > 0) {
       const querySummary = executionResult.queryLogs
         .map((l) => `[${l.fn}] ${l.result.slice(0, 100)}`)
@@ -735,7 +735,7 @@ export function processResult(
         : `queries: ${querySummary}`;
     }
 
-    // ADR-69: EA_proxy 诊断指标
+    // ADR-69: диагностическая метрика EA_proxy
     const eaProxy = computeEAProxy(executionResult);
 
     const actionRow = getDb()
@@ -747,7 +747,7 @@ export function processResult(
         actionType,
         chatId: item.target ?? null,
         messageText,
-        confidence: null, // ADR-131 D4: 不填假数据，null = 尚无置信度评估能力
+        confidence: null, // ADR-131 D4: не заполнять фиктивными данными, null = возможность оценки уверенности ещё отсутствует
         reasoning,
         success: outcome.success,
         observationGap: unresolvedFeedbackGap ? 1 : 0,
@@ -866,8 +866,8 @@ export function processResult(
     log.warn("Failed to write action log", e);
   }
 
-  // ADR-199 W2: 回写行动摘要到 observer mod state → 下一轮 prompt 注入
-  // shell-native 下 dispatch 动作不在 completedActions 中，stateChanges 从 completedActions 推导
+  // ADR-199 W2: обратная запись резюме действия в состояние observer mod → инжекция в следующий prompt
+  // В shell-native dispatch-действия не в completedActions; stateChanges выводятся из completedActions
   try {
     const stateChanges: string[] = [];
     for (const action of completedActionFacts(executionResult)) {
@@ -892,8 +892,8 @@ export function processResult(
     log.warn("Failed to write action recap", e);
   }
 
-  // ADR-23/31 人格演化
-  // 论文 Def 3.6 eq 14: 累加所有 delta → 一次回归 → 一次投影。
+  // ADR-23/31 эволюция личности
+  // Статья Def 3.6 eq 14: суммируем все delta → один возврат к среднему → одна проекция.
   const beatFeedback = extractBeatFeedback(executionResult);
   const outcomeFeedback = extractOutcomeFeedback(executionResult);
   const actionIdx = VOICE_INDEX[item.action] ?? -1;
@@ -937,7 +937,7 @@ export function processResult(
     ctx.onPersonalityUpdate(newPersonality);
   }
 
-  // ADR-215: Episode 关闭——双源融合（LLM residue + 结构信号）。
+  // ADR-215: закрытие Episode — слияние двух источников (LLM residue + структурные сигналы).
   if (item.episodeId) {
     try {
       closeEpisodeFromAct(
@@ -985,11 +985,11 @@ export function processResult(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 自适应节奏冷却 — cooldown 补偿 engagement 时长以维持目标总周期。
+// Адаптивное охлаждение ритма — cooldown компенсирует длительность engagement для поддержания целевого общего периода.
 // @see docs/adr/127-adaptive-rhythm-cooldown.md
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 自适应冷却参数（纯函数输入，便于测试）。 */
+/** Параметры адаптивного охлаждения (вход чистой функции, удобен для тестирования). */
 export interface AdaptiveCooldownOpts {
   engagementMs: number;
   consecutiveOutgoing: number;
@@ -997,26 +997,26 @@ export interface AdaptiveCooldownOpts {
   isConversationActive: boolean;
 }
 
-// -- 常量 --
+// -- Константы --
 
-/** 活跃对话基础周期（ms）。 */
+/** Базовый период активного диалога (мс). */
 const TAU_BASE_CONVERSATION = 4000;
-/** 非活跃 / 主动出击基础周期（ms）。 */
+/** Базовый период при неактивном / проактивном режиме (мс). */
 const TAU_BASE_PROACTIVE = 7000;
-/** 每条连续发出消息追加的延迟（ms）。 */
+/** Дополнительная задержка на каждое последовательно отправленное сообщение (мс). */
 const ALPHA_CONSECUTIVE = 1500;
-/** 群组 / 超级群组的周期乘数。 */
+/** Множитель периода для групп / супергрупп. */
 const M_CHAT_GROUP = 1.5;
-/** 绝对冷却下限（ms）。 */
+/** Абсолютный нижний предел охлаждения (мс). */
 const TAU_FLOOR = 800;
 
 /**
- * 计算自适应冷却时长。
+ * Вычисляет длительность адаптивного охлаждения.
  *
  * τ_target = (τ_base + α · consecutive_outgoing) × m_chat
  * cooldown = max(τ_floor, τ_target − engagement_ms) × jitter
  *
- * 纯函数——不依赖外部状态，可直接单元测试。
+ * Чистая функция — не зависит от внешнего состояния, напрямую тестируется.
  * @see docs/adr/127-adaptive-rhythm-cooldown.md
  */
 export function computeAdaptiveCooldown(opts: AdaptiveCooldownOpts): number {

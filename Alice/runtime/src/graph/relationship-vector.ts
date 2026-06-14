@@ -1,8 +1,8 @@
 /**
- * 关系向量工具库 (ADR-178) — 纯函数，无副作用。
+ * Библиотека утилит для вектора отношений (ADR-178) — чистые функции без побочных эффектов.
  *
- * 5 维连续向量 (familiarity/trust/affection/attraction/respect)
- * 替代离散 tier+relationType 作为关系的一等表示。
+ * 5-мерный непрерывный вектор (familiarity/trust/affection/attraction/respect)
+ * заменяет дискретную пару tier+relationType в качестве первичного представления отношений.
  *
  * @see docs/adr/178-relationship-vector-field.md
  */
@@ -10,7 +10,7 @@
 import type { ContactAttrs, DunbarTier, RelationType } from "./entities.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 类型
+// Типы
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface RelationshipVector {
@@ -43,31 +43,31 @@ export type RomanticPhase =
 export type ChemistryLevel = "magnetic" | "electric" | "warm" | "comfortable" | "awkward" | "cold";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 常量
+// Константы
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 新联系人初始向量。 */
+/** Начальный вектор для нового контакта. */
 export const INITIAL_RV: Readonly<RelationshipVector> = Object.freeze({
   familiarity: 0,
-  trust: 0.3, // 陌生人有基础信任
+  trust: 0.3, // базовое доверие к незнакомцу
   affection: 0,
   attraction: 0,
-  respect: 0.3, // 基础礼貌尊重
+  respect: 0.3, // базовая вежливая уважительность
 });
 
 /**
- * 各维度衰减参数 λ（指数衰减 half-life 秒数）。
+ * Параметры затухания λ по измерениям (период полужизни в секундах для экспоненциального затухания).
  * value(t+Δ) = value(t) × exp(-ln2 × Δ / halfLife)
  */
 export const DIMENSION_DECAY: Readonly<Record<RVDimension, number>> = Object.freeze({
-  familiarity: 30 * 86400, // 30 天半衰期——熟悉度消退最慢
-  trust: 60 * 86400, // 60 天——信任建立慢、消退也慢
-  affection: 14 * 86400, // 14 天——情感需要持续维护
-  attraction: 7 * 86400, // 7 天——吸引力消退最快
-  respect: 45 * 86400, // 45 天——尊重较稳定
+  familiarity: 30 * 86400, // период полужизни 30 дней — знакомость затухает медленнее всего
+  trust: 60 * 86400, // 60 дней — доверие строится медленно и медленно угасает
+  affection: 14 * 86400, // 14 дней — привязанность требует постоянной поддержки
+  attraction: 7 * 86400, // 7 дней — влечение затухает быстрее всего
+  respect: 45 * 86400, // 45 дней — уважение достаточно устойчиво
 });
 
-/** 关系原型——各类关系在向量空间中的典型位置。 */
+/** Прототипы отношений — типичные позиции каждого типа отношений в векторном пространстве. */
 export const RELATIONSHIP_PROTOTYPES: Readonly<Record<RelationType, RelationshipVector>> =
   Object.freeze({
     romantic: { familiarity: 0.9, trust: 0.8, affection: 0.9, attraction: 0.8, respect: 0.7 },
@@ -79,7 +79,7 @@ export const RELATIONSHIP_PROTOTYPES: Readonly<Record<RelationType, Relationship
     unknown: { familiarity: 0, trust: 0.3, affection: 0, attraction: 0, respect: 0.3 },
   });
 
-/** sense_chemistry 指令的 chemistry 枚举到刺激强度的映射。 */
+/** Отображение перечисления chemistry инструкции sense_chemistry в интенсивность стимула. */
 export const CHEMISTRY_STIMULUS: Readonly<Record<ChemistryLevel, number>> = Object.freeze({
   magnetic: 0.8,
   electric: 0.6,
@@ -89,18 +89,18 @@ export const CHEMISTRY_STIMULUS: Readonly<Record<ChemistryLevel, number>> = Obje
   cold: -0.6,
 });
 
-/** Velocity EMA 平滑系数（α 越小越平滑）。待 simulation 校准。 */
+/** Коэффициент сглаживания EMA скорости (чем меньше α, тем глаже). Требует калибровки в симуляции. */
 export const RV_VELOCITY_ALPHA = 0.05;
 
-/** familiarity 每次互动的增量（天花板阻尼前）。 */
+/** Прирост familiarity за одно взаимодействие (до применения потолочного демпфирования). */
 export const FAMILIARITY_INTERACTION_DELTA = 0.02;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 核心函数
+// Основные функции
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 指数衰减：value × exp(-ln2 × elapsedMs / (halfLifeS × 1000))。
+ * Экспоненциальное затухание: value × exp(-ln2 × elapsedMs / (halfLifeS × 1000)).
  */
 export function decayDimension(value: number, halfLifeS: number, elapsedMs: number): number {
   if (elapsedMs <= 0 || halfLifeS <= 0) return value;
@@ -109,27 +109,27 @@ export function decayDimension(value: number, halfLifeS: number, elapsedMs: numb
 }
 
 /**
- * 带天花板阻尼的增长：value += α × stimulus × (1 - value)。
- * stimulus > 0 增长，stimulus < 0 收缩（用 value 而非 1-value 作为阻尼）。
+ * Рост с потолочным демпфированием: value += α × stimulus × (1 - value).
+ * stimulus > 0 — рост; stimulus < 0 — сжатие (демпфирование через value, а не 1-value).
  */
 export function growDimension(value: number, alpha: number, stimulus: number): number {
   if (stimulus >= 0) {
-    // 增长：越靠近 1 越慢
+    // Рост: тем медленнее, чем ближе к 1
     return Math.min(1, value + alpha * stimulus * (1 - value));
   }
-  // 收缩：越靠近 0 越慢（用 value 作为阻尼）
+  // Сжатие: тем медленнее, чем ближе к 0 (демпфирование через value)
   return Math.max(0, value + alpha * stimulus * value);
 }
 
 /**
- * EMA 更新 velocity：vel = α × delta + (1-α) × prevVel。
+ * EMA-обновление скорости: vel = α × delta + (1-α) × prevVel.
  */
 export function updateVelocity(prevVel: number, delta: number, alpha: number): number {
   return alpha * delta + (1 - alpha) * prevVel;
 }
 
 /**
- * 从 familiarity 导出 Dunbar tier（Phase 3 用，Phase 1-2 不替换现有 tier）。
+ * Выводит уровень Данбара из familiarity (используется в Phase 3; в Phase 1-2 существующий tier не заменяется).
  */
 export function deriveTier(familiarity: number): DunbarTier {
   if (familiarity >= 0.8) return 5;
@@ -140,7 +140,7 @@ export function deriveTier(familiarity: number): DunbarTier {
 }
 
 /**
- * 从向量导出关系类型——取与原型最接近的类型（欧氏距离）。
+ * Выводит тип отношений из вектора — берёт тип, ближайший к прототипу (евклидово расстояние).
  */
 export function deriveRelationType(v: RelationshipVector): RelationType {
   let bestType: RelationType = "unknown";
@@ -160,16 +160,16 @@ export function deriveRelationType(v: RelationshipVector): RelationType {
 }
 
 /**
- * 从向量+velocity 导出浪漫阶段。
+ * Выводит романтическую фазу из вектора + скорости.
  *
- * 阶段判定基于 attraction + affection 的组合：
+ * Определение фазы основано на комбинации attraction + affection:
  * - none:      attraction < 0.1
  * - tension:   attraction >= 0.1, affection < 0.3
  * - courtship: attraction >= 0.3, affection in [0.3, 0.6)
  * - passion:   attraction >= 0.5, affection >= 0.6
- * - bonding:   attraction >= 0.3, affection >= 0.7, vel_attraction ≤ 0 (稳定)
- * - cooling:   attraction 下降中 (vel_attraction < -0.01), affection >= 0.3
- * - estranged: attraction 曾高现低, affection 也在下降
+ * - bonding:   attraction >= 0.3, affection >= 0.7, vel_attraction ≤ 0 (стабильно)
+ * - cooling:   attraction снижается (vel_attraction < -0.01), affection >= 0.3
+ * - estranged: attraction был высоким, теперь низкий; affection тоже снижается
  */
 export function deriveRomanticPhase(
   v: RelationshipVector,
@@ -179,15 +179,15 @@ export function deriveRomanticPhase(
 
   if (attraction < 0.1) return "none";
 
-  // 冷却/疏远检测优先
+  // Приоритетное обнаружение охлаждения/отчуждения
   if (vel.attraction < -0.01 && affection >= 0.3) {
     if (vel.affection < -0.005) return "estranged";
     return "cooling";
   }
 
-  // 正常阶段递进
+  // Нормальная прогрессия фаз
   if (attraction >= 0.5 && affection >= 0.6) {
-    // 高吸引 + 高情感：passion 或 bonding
+    // Высокое влечение + высокая привязанность: passion или bonding
     if (vel.attraction <= 0 && affection >= 0.7) return "bonding";
     return "passion";
   }
@@ -199,10 +199,10 @@ export function deriveRomanticPhase(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ContactAttrs 读取
+// Чтение ContactAttrs
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 从 ContactAttrs 读取关系向量，缺失值用 INITIAL_RV 填充。 */
+/** Читает вектор отношений из ContactAttrs; пропущенные значения заполняются из INITIAL_RV. */
 export function readRV(attrs: Partial<ContactAttrs>): RelationshipVector {
   return {
     familiarity: attrs.rv_familiarity ?? INITIAL_RV.familiarity,
@@ -213,7 +213,7 @@ export function readRV(attrs: Partial<ContactAttrs>): RelationshipVector {
   };
 }
 
-/** 从 ContactAttrs 读取 velocity 向量，缺失值为 0。 */
+/** Читает вектор скорости из ContactAttrs; пропущенные значения равны 0. */
 export function readVelocity(attrs: Partial<ContactAttrs>): Record<RVDimension, number> {
   return {
     familiarity: attrs.rv_vel_familiarity ?? 0,
@@ -225,10 +225,10 @@ export function readVelocity(attrs: Partial<ContactAttrs>): Record<RVDimension, 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Prompt 渲染
+// Рендеринг промпта
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 维度值 → 语义标签。 */
+/** Значение измерения → семантическая метка. */
 function dimensionLabel(value: number): string {
   if (value >= 0.8) return "very high";
   if (value >= 0.6) return "high";
@@ -237,18 +237,18 @@ function dimensionLabel(value: number): string {
   return "very low";
 }
 
-/** velocity → 趋势标签。 */
+/** velocity → метка тренда. */
 function trendLabel(vel: number): string | null {
   if (vel > 0.02) return "rising";
   if (vel > 0.005) return "slightly rising";
   if (vel < -0.02) return "falling";
   if (vel < -0.005) return "slightly falling";
-  return null; // stable — 不渲染
+  return null; // стабильно — не рендерить
 }
 
 /**
- * 渲染关系向量为语义事实（LLM 可读）。
- * 只渲染非默认值的维度，避免信息噪音。
+ * Рендерит вектор отношений как семантические факты (читаемые LLM).
+ * Рендерит только измерения, отличные от начальных значений — исключает информационный шум.
  */
 export function renderRelationshipFacts(
   v: RelationshipVector,
@@ -260,7 +260,7 @@ export function renderRelationshipFacts(
   for (const dim of RV_DIMENSIONS) {
     const value = v[dim];
     const initial = INITIAL_RV[dim];
-    // 只渲染偏离初始值的维度
+    // Рендерить только измерения, отклонившиеся от начального значения
     if (Math.abs(value - initial) < 0.05) continue;
 
     const label = dimensionLabel(value);
@@ -274,6 +274,6 @@ export function renderRelationshipFacts(
   const phase = deriveRomanticPhase(v, vel);
   const phaseStr = phase !== "none" ? `, romantic phase: ${phase}` : "";
 
-  // 单行输出——调用方通过 PromptBuilder.of() 注入，不支持多行
+  // Однострочный вывод — вставляется вызывающей стороной через PromptBuilder.of(); многострочный не поддерживается
   return `relationship with ${displayName}: ${facts.join(", ")}${phaseStr}`;
 }

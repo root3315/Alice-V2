@@ -1,12 +1,12 @@
 /**
- * 谱分析工具——计算图 Laplacian 的 Fiedler value（第二小特征值）。
+ * Инструмент спектрального анализа — вычисляет значение Фидлера (второе наименьшее собственное значение) Лапласиана графа.
  *
- * Fiedler value 衡量图的代数连通性：
- * - λ₂ = 0 → 图不连通（至少两个连通分量）
- * - λ₂ > 0 → 图连通，值越大连通性越强
- * - λ₂ ≈ 0 → 图即将断裂（存在瓶颈边）
+ * Значение Фидлера измеряет алгебраическую связность графа:
+ * - λ₂ = 0 → граф несвязен (как минимум две компоненты связности)
+ * - λ₂ > 0 → граф связен; чем больше значение, тем сильнее связность
+ * - λ₂ ≈ 0 → граф на грани распада (существует бутылочное горло)
  *
- * 使用 Inverse Power Iteration with shift 逼近 λ₂。
+ * Для приближения λ₂ используется метод обратной степенной итерации со сдвигом.
  *
  * @see paper/ §4 "Spectral Analysis of the Companion Graph"
  */
@@ -14,9 +14,9 @@ import type { WorldModel } from "../graph/world-model.js";
 import { type SparseMatrix, sparseMV } from "./propagation.js";
 
 /**
- * 构建图的无权 Laplacian 矩阵 L = D - A（CSR 稀疏格式）。
- * 忽略边方向，将有向图视为无向图处理。
- * 复用 propagation.ts 的 SparseMatrix 接口。
+ * Строит невзвешенную матрицу Лапласиана графа L = D - A (разреженный формат CSR).
+ * Направление рёбер игнорируется — ориентированный граф рассматривается как неориентированный.
+ * Использует интерфейс SparseMatrix из propagation.ts.
  */
 function buildLaplacian(G: WorldModel): { L: SparseMatrix; nodeIds: string[] } {
   const nodeIds = G.allNodeIds();
@@ -26,8 +26,8 @@ function buildLaplacian(G: WorldModel): { L: SparseMatrix; nodeIds: string[] } {
     indexMap.set(nodeIds[i], i);
   }
 
-  // 无向化去重 + 度数统计
-  const seen = new Set<number>(); // 编码: lo * n + hi
+  // Дедупликация для неориентированного графа + подсчёт степеней
+  const seen = new Set<number>(); // кодировка: lo * n + hi
   const degree = new Array<number>(n).fill(0);
   const offDiag: Array<[number, number]> = []; // [row, col]
 
@@ -48,7 +48,7 @@ function buildLaplacian(G: WorldModel): { L: SparseMatrix; nodeIds: string[] } {
     offDiag.push([j, i]);
   }
 
-  // 收集 triplets：对角线 D[i]=degree(i) + 非对角线 -1
+  // Собираем триплеты: диагональ D[i]=degree(i) + внедиагональные -1
   const triplets: Array<{ row: number; col: number; value: number }> = [];
   for (let i = 0; i < n; i++) {
     if (degree[i] > 0) {
@@ -61,7 +61,7 @@ function buildLaplacian(G: WorldModel): { L: SparseMatrix; nodeIds: string[] } {
 
   triplets.sort((a, b) => a.row - b.row || a.col - b.col);
 
-  // 构建 CSR
+  // Строим CSR
   const rowPtr = new Array<number>(n + 1).fill(0);
   const colIdx: number[] = [];
   const values: number[] = [];
@@ -79,15 +79,15 @@ function buildLaplacian(G: WorldModel): { L: SparseMatrix; nodeIds: string[] } {
 }
 
 /**
- * 构建 M = λ_max·I - L 的 CSR 矩阵。
- * L 的对角线 = degree，非对角线 = -1。
- * M 的对角线 = λ_max - degree，非对角线 = 1（邻接矩阵）。
- * 孤立节点在 L 中无条目，M 中需要补上 λ_max 对角线。
+ * Строит CSR-матрицу M = λ_max·I - L.
+ * Диагональ L = degree, внедиагональ = -1.
+ * Диагональ M = λ_max - degree, внедиагональ = 1 (матрица смежности).
+ * Изолированные узлы не имеют записей в L — для них нужно добавить диагональный элемент λ_max в M.
  */
 function buildShiftedMatrix(L: SparseMatrix, lambdaMax: number): SparseMatrix {
   const n = L.n;
 
-  // 统计孤立节点（L 中无条目的行），它们需要补一个对角线条目
+  // Считаем изолированные узлы (строки без записей в L) — им нужен дополнительный диагональный элемент
   let emptyRows = 0;
   for (let i = 0; i < n; i++) {
     if (L.rowPtr[i] === L.rowPtr[i + 1]) emptyRows++;
@@ -106,12 +106,12 @@ function buildShiftedMatrix(L: SparseMatrix, lambdaMax: number): SparseMatrix {
     const end = L.rowPtr[i + 1];
 
     if (start === end) {
-      // 孤立节点：L 全零行 → M[i][i] = λ_max
+      // Изолированный узел: нулевая строка L → M[i][i] = λ_max
       colIdx[pos] = i;
       values[pos] = lambdaMax;
       pos++;
     } else {
-      // 非孤立节点：对角线 λ_max - L[i][i]，非对角线 -L[i][j]
+      // Неизолированный узел: диагональ λ_max - L[i][i], внедиагональ -L[i][j]
       for (let j = start; j < end; j++) {
         colIdx[pos] = L.colIdx[j];
         values[pos] = L.colIdx[j] === i ? lambdaMax - L.values[j] : -L.values[j];
@@ -126,7 +126,7 @@ function buildShiftedMatrix(L: SparseMatrix, lambdaMax: number): SparseMatrix {
 }
 
 /**
- * 向量 L2 范数。
+ * L2-норма вектора.
  */
 function vecNorm(x: number[]): number {
   let sum = 0;
@@ -135,7 +135,7 @@ function vecNorm(x: number[]): number {
 }
 
 /**
- * 向量点积。
+ * Скалярное произведение векторов.
  */
 function vecDot(a: number[], b: number[]): number {
   let sum = 0;
@@ -144,7 +144,7 @@ function vecDot(a: number[], b: number[]): number {
 }
 
 /**
- * 从向量中移除沿 direction 的分量（Gram-Schmidt 正交化）。
+ * Удаляет из вектора проекцию на direction (ортогонализация Грама–Шмидта).
  */
 function removeProjection(x: number[], direction: number[]): void {
   const dot = vecDot(x, direction);
@@ -154,21 +154,21 @@ function removeProjection(x: number[], direction: number[]): void {
 }
 
 /**
- * 计算图 Laplacian 的 Fiedler value（第二小特征值）的近似值。
+ * Вычисляет приближённое значение Фидлера (второе наименьшее собственное значение) Лапласиана графа.
  *
- * 使用 Power Iteration on L 的方法：
- * 1. L 的最小特征值 λ₁ = 0（对应全 1 向量）
- * 2. 在正交于全 1 向量的子空间中做 power iteration
- *    得到最大特征值对应的 Rayleigh quotient
- * 3. 但我们要 λ₂（第二小），所以用 shifted inverse power iteration
+ * Подход — степенная итерация на L:
+ * 1. Наименьшее собственное значение L: λ₁ = 0 (соответствует вектору из единиц)
+ * 2. В подпространстве, ортогональном вектору из единиц, степенная итерация
+ *    даёт частное Рэлея для наибольшего собственного значения
+ * 3. Но нам нужно λ₂ (второе наименьшее), поэтому используется shifted inverse power iteration
  *
- * 实际采用更简单的方法：直接在 L 上做 power iteration 求最大特征值 λ_max，
- * 然后在 (λ_max·I - L) 上做 power iteration 求其最大特征值 μ_max，
- * λ₂ = λ_max - μ_max。但对小图我们直接用 deflation 更稳定。
+ * На практике применяется более простой способ: степенная итерация на L для нахождения λ_max,
+ * затем степенная итерация на (λ_max·I - L) для нахождения μ_max,
+ * λ₂ = λ_max - μ_max. Для малых графов deflation устойчивее.
  *
- * 简化实现：对小图（≤500 节点）使用 power iteration + deflation。
+ * Упрощённая реализация: для малых графов (≤500 узлов) используется power iteration + deflation.
  *
- * @returns Fiedler value (λ₂)。图节点数 ≤ 1 时返回 0。
+ * @returns Значение Фидлера (λ₂). Возвращает 0, если число узлов графа ≤ 1.
  */
 export function approximateFiedlerValue(G: WorldModel): number {
   const { L } = buildLaplacian(G);
@@ -176,20 +176,20 @@ export function approximateFiedlerValue(G: WorldModel): number {
 
   if (n <= 1) return 0;
 
-  // 全 1 向量归一化（λ₁ = 0 的特征向量）
+  // Нормированный вектор из единиц (собственный вектор для λ₁ = 0)
   const ones = new Array<number>(n).fill(1 / Math.sqrt(n));
 
-  // 使用 power iteration on (λ_max·I - L) 在正交于全 1 的子空间中求最大特征值
-  // 先求 λ_max (L 的最大特征值)
+  // Степенная итерация на (λ_max·I - L) в подпространстве, ортогональном вектору из единиц, для нахождения максимального собственного значения
+  // Сначала находим λ_max (максимальное собственное значение L)
   const maxIter = 200;
   const tol = 1e-10;
 
-  // Step 1: Power iteration 求 λ_max（确定性初始化，保证测试可重现）
+  // Step 1: степенная итерация для нахождения λ_max (детерминированная инициализация для воспроизводимости тестов)
   const x = new Array<number>(n);
   for (let i = 0; i < n; i++) x[i] = (i % 2 === 0 ? 1 : -1) / Math.sqrt(n);
   removeProjection(x, ones);
   let norm = vecNorm(x);
-  if (norm < tol) return 0; // 所有节点等价
+  if (norm < tol) return 0; // все узлы эквивалентны
   for (let i = 0; i < n; i++) x[i] /= norm;
 
   let lambdaMax = 0;
@@ -198,7 +198,7 @@ export function approximateFiedlerValue(G: WorldModel): number {
     removeProjection(y, ones);
     const newNorm = vecNorm(y);
     if (newNorm < tol) break;
-    const newLambda = vecDot(x, y); // Rayleigh quotient
+    const newLambda = vecDot(x, y); // частное Рэлея
     for (let i = 0; i < n; i++) x[i] = y[i] / newNorm;
     if (Math.abs(newLambda - lambdaMax) < tol) {
       lambdaMax = newLambda;
@@ -207,19 +207,19 @@ export function approximateFiedlerValue(G: WorldModel): number {
     lambdaMax = newLambda;
   }
 
-  if (lambdaMax < tol) return 0; // 所有特征值为 0（孤立节点）
+  if (lambdaMax < tol) return 0; // все собственные значения равны 0 (изолированные узлы)
 
-  // Step 2: 构建 M = λ_max·I - L（CSR），在正交于全 1 的子空间中求 M 的最大特征值 μ_max
+  // Step 2: строим M = λ_max·I - L (CSR) и находим максимальное собственное значение M μ_max в подпространстве, ортогональном вектору из единиц
   // λ₂ = λ_max - μ_max
   const M = buildShiftedMatrix(L, lambdaMax);
 
-  // Power iteration on M（确定性初始化：centered ramp，偏向低频特征向量）
-  // 第一次用交替符号（高频），第二次用 ramp（低频），避免初始向量落入 M 的零空间
+  // Степенная итерация на M (детерминированная инициализация: centered ramp, смещение к низкочастотным собственным векторам)
+  // Первый запуск — знакочередующийся (высокие частоты), второй — ramp (низкие частоты), чтобы начальный вектор не попал в нулевое пространство M
   const z = new Array<number>(n);
   for (let i = 0; i < n; i++) z[i] = 2 * i - n + 1;
   removeProjection(z, ones);
   norm = vecNorm(z);
-  if (norm < tol) return lambdaMax; // 只有两个不同特征值
+  if (norm < tol) return lambdaMax; // только два различных собственных значения
   for (let i = 0; i < n; i++) z[i] /= norm;
 
   let muMax = 0;
@@ -238,6 +238,6 @@ export function approximateFiedlerValue(G: WorldModel): number {
   }
 
   const fiedler = lambdaMax - muMax;
-  // 数值误差可能导致微小负值
+  // Числовые ошибки могут давать незначительные отрицательные значения
   return Math.max(0, fiedler);
 }

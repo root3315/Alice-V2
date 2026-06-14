@@ -1,6 +1,6 @@
 /**
- * 压力聚合：API 归一化和完整计算管线。
- * 对应 Python pressure.py api_aggregate() + compute_all_pressures()。
+ * Агрегация давления: нормализация API и полный вычислительный конвейер.
+ * Соответствует Python pressure.py api_aggregate() + compute_all_pressures().
  */
 
 import { DEFAULT_KAPPA } from "../graph/constants.js";
@@ -20,54 +20,54 @@ import { propagatePressuresMatrix as propagatePressures } from "./propagation.js
 export type { PressureResult } from "./p1-attention.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ADR-112 D4: AdaptiveKappa — 运行时信号统计驱动的自适应 κ
+// ADR-112 D4: AdaptiveKappa — адаптивное κ, управляемое статистикой сигналов во время выполнения
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 自适应 κ：基于运行时信号统计动态调整。
+ * Адаптивное κ: динамически подстраивается на основе статистики сигналов во время выполнения.
  *
  * κ_k(n) = max(κ_min_k, EMA_k(n))
  * EMA_k(n) = α × |P_k(n)| + (1-α) × EMA_k(n-1)
- * α = 0.02（50-tick 半衰期）
+ * α = 0.02 (полупериод 50 тиков)
  *
- * 效果：P3=16.55 运行后 → κ₃ 自动上调 → tanh(16.55/κ₃) 不再饱和。
+ * Эффект: после работы P3=16.55 → κ₃ автоматически повышается → tanh(16.55/κ₃) больше не насыщается.
  *
  * @see docs/adr/112-pressure-dynamics-rehabilitation/ §D4
  */
 export class AdaptiveKappa {
   private ema: [number, number, number, number, number, number];
   private readonly kappaMin: [number, number, number, number, number, number];
-  /** EMA 半衰期（秒）。审计修复: 从 tick-based alpha 改为时间驱动。 */
+  /** Полупериод EMA (секунды). Исправление по аудиту: изменён с tick-based alpha на time-driven. */
   private readonly halfLifeS: number;
 
   /**
-   * @param kappaMin 每维度的最小 kappa
-   * @param halfLifeS EMA 半衰期（秒）。默认 1500s（25 分钟）——
-   *   等价于旧 alpha=0.02 在 tick=30s 时的行为（50 ticks × 30s）。
-   *   时间驱动确保 patrol 模式（tick=300s）和 conversation 模式（tick=30s）
-   *   有一致的墙钟适应速度。
+   * @param kappaMin минимальное kappa для каждого измерения
+   * @param halfLifeS полупериод EMA (секунды). По умолчанию 1500s (25 минут) —
+   *   эквивалентно старому поведению alpha=0.02 при tick=30s (50 ticks × 30s).
+   *   Time-driven подход обеспечивает одинаковую скорость адаптации по настенным часам
+   *   для patrol-режима (tick=300s) и conversation-режима (tick=30s).
    */
   constructor(kappaMin: [number, number, number, number, number, number], halfLifeS = 1500) {
     this.kappaMin = [...kappaMin] as [number, number, number, number, number, number];
     this.halfLifeS = halfLifeS;
-    // 初始 EMA = kappaMin（冷启动时使用硬编码默认值）
+    // Начальный EMA = kappaMin (при холодном старте используются жёстко заданные значения по умолчанию)
     this.ema = [...kappaMin] as [number, number, number, number, number, number];
   }
 
   /**
-   * 更新 EMA 并返回当前有效 kappa。
-   * 每 tick 调用一次，在 computeAllPressures 完成后。
+   * Обновляет EMA и возвращает текущее действующее kappa.
+   * Вызывается один раз за тик, после завершения computeAllPressures.
    *
-   * @param pressures 当前 tick 的六维压力值
-   * @param dtS tick 间隔（秒）。用于计算时间驱动的 alpha。
-   *   alpha = 1 - exp(-dt * ln2 / halfLife)——确保无论 tick 间隔如何变化，
-   *   EMA 的墙钟半衰期恒定。
+   * @param pressures шестимерные значения давления текущего тика
+   * @param dtS интервал тика (секунды). Используется для вычисления time-driven alpha.
+   *   alpha = 1 - exp(-dt * ln2 / halfLife) — гарантирует постоянный полупериод EMA
+   *   по настенным часам независимо от изменения интервала тика.
    */
   update(
     pressures: [number, number, number, number, number, number],
     dtS?: number,
   ): [number, number, number, number, number, number] {
-    // 时间驱动 alpha：dt 越大 alpha 越大（一步跨度更大）
+    // Time-driven alpha: чем больше dt, тем больше alpha (шаг шире)
     const effectiveDt = dtS != null && dtS > 0 ? dtS : 60; // fallback 60s
     const alpha = 1 - Math.exp((-effectiveDt * Math.LN2) / this.halfLifeS);
     for (let i = 0; i < 6; i++) {
@@ -76,7 +76,7 @@ export class AdaptiveKappa {
     return this.current();
   }
 
-  /** 返回当前有效 kappa（max(kappaMin, EMA)）。 */
+  /** Возвращает текущее действующее kappa (max(kappaMin, EMA)). */
   current(): [number, number, number, number, number, number] {
     return [
       Math.max(this.kappaMin[0], this.ema[0]),
@@ -88,7 +88,7 @@ export class AdaptiveKappa {
     ];
   }
 
-  /** 用于序列化/调试。 */
+  /** Для сериализации/отладки. */
   toDict(): { ema: number[]; kappaMin: number[] } {
     return { ema: [...this.ema], kappaMin: [...this.kappaMin] };
   }
@@ -101,19 +101,19 @@ export interface AllPressures {
   P4: number;
   P5: number;
   P6: number;
-  /** ADR-23: 前瞻性压力（Thread horizon 驱动）。无 horizon 时为 0。 */
+  /** ADR-23: перспективное давление (управляется Thread horizon). Равно 0 при отсутствии horizon. */
   P_prospect: number;
-  /** API ∈ [0, 7)：6 个 tanh(P_k/κ_k) ∈ [0,1) + tanh(P_prospect/κ_prospect) ∈ [0,1)。 */
+  /** API ∈ [0, 7): 6 × tanh(P_k/κ_k) ∈ [0,1) + tanh(P_prospect/κ_prospect) ∈ [0,1). */
   API: number;
-  /** ADR-195: Peak-based API ∈ [0, 7) — 每维度最大单实体贡献的 tanh 归一化。驱动 tick 间隔。 */
+  /** ADR-195: Peak-based API ∈ [0, 7) — tanh-нормализация максимального вклада одной сущности по каждому измерению. Управляет интервалом тика. */
   API_peak: number;
   /** A(n) = A_max · tanh(API(n) / κ) */
   A: number;
-  /** 各压力分量的实体贡献（含传播后的有效值） */
+  /** Вклады сущностей по каждой компоненте давления (включая эффективные значения после распространения) */
   contributions: Record<string, Record<string, number>>;
-  /** ADR-26: P_prospect 逐实体贡献（用于 buildTensionMap）。 */
+  /** ADR-26: вклады P_prospect по каждой сущности (используется в buildTensionMap). */
   prospectContributions: Record<string, number>;
-  /** D2 Trend: 前 N ticks 的各维度压力总量历史（不含当前 tick），用于 Semantic Triple ⟨F,T,S⟩ 的 Trend 计算。 */
+  /** D2 Trend: история суммарного давления по измерениям за последние N тиков (без текущего тика), используется для вычисления Trend в Semantic Triple ⟨F,T,S⟩. */
   pressureHistory: {
     P1: number[];
     P2: number[];
@@ -124,14 +124,14 @@ export interface AllPressures {
   };
 }
 
-// -- D2 Trend: 压力历史 ring buffer（实例化，不持久化，重启后重新积累） ------
+// -- D2 Trend: кольцевой буфер истории давления (инстанциируется, не персистируется, после перезапуска накапливается заново) ------
 
 const PRESSURE_HISTORY_SIZE = 10;
 
-/** 压力历史实例——消除全局可变状态，保证测试隔离。 */
+/** Экземпляр истории давления — устраняет глобальное изменяемое состояние, обеспечивает изоляцию тестов. */
 export type PressureHistory = Array<[number, number, number, number, number, number]>;
 
-/** 创建一个空的压力历史实例。 */
+/** Создаёт пустой экземпляр истории давления. */
 export function createPressureHistory(): PressureHistory {
   return [];
 }
@@ -139,7 +139,7 @@ export function createPressureHistory(): PressureHistory {
 /**
  * API(G, n) = Σ_k tanh(P_k / κ_k) ∈ [0, 6)
  *
- * v4: tanh 归一化。API 是纯观测量，不反馈到任何压力函数。
+ * v4: tanh-нормализация. API — чистое наблюдаемое, не поступает на вход ни одной функции давления.
  */
 export function apiAggregate(
   p1: number,
@@ -159,8 +159,8 @@ export function apiAggregate(
 }
 
 /**
- * ADR-195: Peak-based API — 每维度取最大单实体贡献的 tanh 归一化。
- * 强度量 by construction：不随实体数量增长。
+ * ADR-195: Peak-based API — tanh-нормализация максимального вклада одной сущности по каждому измерению.
+ * Интенсивная метрика by construction: не растёт с увеличением числа сущностей.
  *
  * API_peak = Σ_k tanh(max_e(P_k(e)) / κ_k)
  *
@@ -190,12 +190,12 @@ export function observableMapping(api: number, aMax: number = 10.0, kappa: numbe
 }
 
 /**
- * 计算所有六个压力 + Laplacian 传播 + 归一化 API。
+ * Вычисляет все шесть давлений + распространение Лапласиана + нормализованный API.
  *
- * v4 管线：
- * 1. 计算本地压力 P1-P6（P3 不读 API）
- * 2. 传播: p_eff = propagate(G, local, μ)
- * 3. 归一化 API = Σ tanh(P_k / κ_k)
+ * Конвейер v4:
+ * 1. Вычислить локальные давления P1-P6 (P3 не читает API)
+ * 2. Распространение: p_eff = propagate(G, local, μ)
+ * 3. Нормализованный API = Σ tanh(P_k / κ_k)
  *
  * @see paper/ §3 eq 1-6: P_k(G, n) = f_k(G, n)
  * @see paper/ §5: API(G,n) = Σ tanh(P_k/κ_k)
@@ -208,29 +208,29 @@ export function computeAllPressures(
     threadAgeScale?: number;
     mu?: number;
     d?: number;
-    /** @deprecated 审计修复: forecast 分量已从 P4 移除，由 P_prospect 统一处理。保留参数避免调用方编译错误。 */
+    /** @deprecated Исправление по аудиту: компонента forecast удалена из P4, теперь централизованно обрабатывается через P_prospect. Параметр сохранён во избежание ошибок компиляции на стороне вызывающего кода. */
     deltaDeadline?: number;
-    /** ADR-23: P_prospect sigmoid 陡度。 */
+    /** ADR-23: крутизна сигмоиды P_prospect. */
     kSteepness?: number;
-    /** ADR-23: P_prospect 归一化 κ。 */
+    /** ADR-23: нормализующее κ для P_prospect. */
     kappaProspect?: number;
-    /** D2 Trend: 外部管理的压力历史实例（消除全局可变状态）。 */
+    /** D2 Trend: внешне управляемый экземпляр истории давления (устраняет глобальное изменяемое состояние). */
     history?: PressureHistory;
-    /** 当前墙钟时间（毫秒）。压力公式 dt 迁移后必须提供。 */
+    /** Текущее время по настенным часам (миллисекунды). Обязательно после миграции dt в формулах давления. */
     nowMs?: number;
-    /** ADR-112 D2: 环境好奇心基线 η。 */
+    /** ADR-112 D2: базовое значение фонового любопытства η. */
     eta?: number;
     /** ADR-112: P6 curiosity pressure smoothing window. */
     k?: number;
-    /** ADR-268/P6 audit: 显式 curiosity smoothing history，避免模块级共享状态。 */
+    /** ADR-268/P6 audit: явная история сглаживания curiosity, исключает разделяемое состояние на уровне модуля. */
     curiosityHistory?: CuriosityHistory;
-    /** FJ-MM 惯性系数 ρ ∈ [0,1)。传播前将本地压力与历史均值混合，抑制瞬态尖峰。默认 0.2。设 0 禁用。 */
+    /** Коэффициент инерции FJ-MM ρ ∈ [0,1). Смешивает локальное давление с историческим средним перед распространением, подавляя переходные выбросы. По умолчанию 0.2. Установить 0 для отключения. */
     rho?: number;
-    /** APPNP 传播配置。未设置时使用 legacy one-hop。 */
+    /** Конфигурация распространения APPNP. Если не задано, используется legacy one-hop. */
     propagationConfig?: PropagationConfig;
-    /** ADR-161 §3.4: per-channel 消息速率 EMA（传入 P3 群组轨迹驱动 theta）。 */
+    /** ADR-161 §3.4: EMA скорости сообщений per-channel (передаётся в P3 для управления theta через траекторию группы). */
     channelRateEma?: Map<string, { ema: number; variance: number }>;
-    /** ADR-161 §3.4: 当前 tick 墙钟持续时间（秒），用于 EMA 单位换算。 */
+    /** ADR-161 §3.4: продолжительность текущего тика по настенным часам (секунды), используется для пересчёта единиц EMA. */
     tickDt?: number;
   } = {},
 ): AllPressures {
@@ -253,7 +253,7 @@ export function computeAllPressures(
     tickDt,
   } = options;
 
-  // 1. 本地压力
+  // 1. Локальные давления
   const r1 = p1AttentionDebt(G, nowMs);
   const r2 = p2InformationPressure(G, n, nowMs, d);
   const r3 = p3RelationshipCooling(G, n, nowMs, channelRateEma, tickDt);
@@ -261,14 +261,14 @@ export function computeAllPressures(
   const r5 = p5ResponseObligation(G, n, nowMs);
   const r6 = p6CuriosityWithHistory(G, nowMs, eta, k, curiosityHistory);
 
-  // ADR-23: P_prospect（独立加法项，不参与 Laplacian 传播）
+  // ADR-23: P_prospect (независимое аддитивное слагаемое, не участвует в распространении Лапласиана)
   const rProspect = pProspect(G, n, nowMs, kSteepness);
 
-  // 2. FJ-MM 惯性平滑 + Laplacian 传播
-  // FJ-MM: 传播前将本地压力总量与历史均值混合，抑制瞬态尖峰。
+  // 2. Инерционное сглаживание FJ-MM + распространение Лапласиана
+  // FJ-MM: перед распространением смешивает суммарное локальное давление с историческим средним, подавляя переходные выбросы.
   // p_smoothed_k = (1-rho) * p_local_k + rho * mean(history[-2:])[k]
-  // 按维度计算缩放比，等比应用到 per-entity contributions。
-  // API aggregate 仍用原始 p_local（保持灵敏度）。
+  // Коэффициент масштабирования вычисляется по измерениям и пропорционально применяется к per-entity contributions.
+  // API aggregate по-прежнему использует исходный p_local (для сохранения чувствительности).
   const rawTotals = [r1.total, r2.total, r3.total, r4.total, r5.total, r6.total];
   const smoothingRatios = [1, 1, 1, 1, 1, 1];
   if (rho > 0 && history && history.length > 0) {
@@ -280,8 +280,8 @@ export function computeAllPressures(
     for (let i = 0; i < 6; i++) histMean[i] /= lastN.length;
     for (let i = 0; i < 6; i++) {
       const smoothed = (1 - rho) * rawTotals[i] + rho * histMean[i];
-      // 审计修复: clamp smoothingRatio 到 [0.1, 10]，防止压力骤降时比例极端放大。
-      // 旧代码在 rawTotals 从高值跌到 1e-14 时可产生 10^6 级乘子。
+      // Исправление по аудиту: clamp smoothingRatio в [0.1, 10], предотвращает экстремальное увеличение коэффициента при резком падении давления.
+      // Старый код мог давать множитель порядка 10^6, когда rawTotals падало с высокого значения до 1e-14.
       const rawRatio = rawTotals[i] > 1e-15 ? smoothed / rawTotals[i] : 1;
       smoothingRatios[i] = Math.max(0.1, Math.min(10, rawRatio));
     }
@@ -304,7 +304,7 @@ export function computeAllPressures(
   }
   const pEff = propagatePressures(G, localAll, mu, nowMs, propagationConfig);
 
-  // 按原始归属分配传播增量
+  // Распределяем прирост от распространения по исходной принадлежности
   const effContributions: Record<string, Record<string, number>> = {
     P1: {},
     P2: {},
@@ -326,7 +326,7 @@ export function computeAllPressures(
       const totalLocal = localAll[eid] ?? 0;
       const totalEff = pEff[eid] ?? totalLocal;
       if (totalLocal > 1e-10) {
-        // 按原始贡献比例分配传播后的有效值（1e-10 守卫防止浮点抵消导致除零爆炸）
+        // Распределяем эффективное значение после распространения пропорционально исходному вкладу (защита 1e-10 предотвращает деление на ноль из-за взаимного уничтожения плавающей точки)
         effContributions[pk][eid] = localVal * (totalEff / totalLocal);
       } else {
         effContributions[pk][eid] = localVal;
@@ -334,17 +334,17 @@ export function computeAllPressures(
     }
   }
 
-  // 3. tanh 归一化 API（纯观测量）+ P_prospect 独立加法项
-  // 设计决策：API 使用预传播本地总量（r_k.total），传播仅影响逐实体 contributions。
-  // 这是因为 API 是全局行动门控指标，不需要逐实体粒度；
-  // 而 contributions 的传播增量用于焦点集选择和张力 Map 构建。
+  // 3. tanh-нормализованный API (чистое наблюдаемое) + независимое аддитивное слагаемое P_prospect
+  // Проектное решение: API использует предраспространяемые локальные суммы (r_k.total), распространение влияет только на per-entity contributions.
+  // Это связано с тем, что API — глобальный индикатор порога действия, не требующий гранулярности по сущностям;
+  // при этом прирост от распространения в contributions используется для выбора фокусного множества и построения Tension Map.
   const apiBase = apiAggregate(r1.total, r2.total, r3.total, r4.total, r5.total, r6.total, kappa);
   const prospectTerm = tanhNormalize(rProspect.total, kappaProspect);
   const api = apiBase + prospectTerm;
   const a = observableMapping(api);
 
-  // D2 Trend: 构建 per-dimension 历史（不含当前 tick）→ 再更新 ring buffer
-  // 无 history 时返回空历史（向后兼容：dry-run 和无需 trend 的调用点）
+  // D2 Trend: формируем историю по измерениям (без текущего тика) → затем обновляем кольцевой буфер
+  // Если history отсутствует, возвращаем пустую историю (обратная совместимость: dry-run и вызовы без trend)
   const buf = history ?? [];
   const historyByDim = {
     P1: buf.map((h) => h[0]),
@@ -359,9 +359,9 @@ export function computeAllPressures(
     if (history.length > PRESSURE_HISTORY_SIZE) history.shift();
   }
 
-  // ADR-195: Peak-based API — 用原始 pre-smoothing contributions（与 apiBase 同源）
+  // ADR-195: Peak-based API — использует исходные pre-smoothing contributions (тот же источник, что и apiBase)
   const apiPeakVal = apiPeak(contribSources, kappa);
-  // prospect 加法项复用（peak 场景下 prospect 只有一个值，peak=total）
+  // Аддитивное слагаемое prospect переиспользуется (в peak-сценарии у prospect только одно значение, peak=total)
   const apiPeakTotal = apiPeakVal + prospectTerm;
 
   return {

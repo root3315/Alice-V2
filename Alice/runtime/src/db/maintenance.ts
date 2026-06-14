@@ -1,6 +1,6 @@
 /**
- * ADR-33 Phase 1: 数据库维护 + 重启恢复辅助。
- * ADR-79 M2: 图 GC（mark-sweep）。
+ * ADR-33 Phase 1: обслуживание базы данных + вспомогательные функции восстановления при перезапуске.
+ * ADR-79 M2: GC графа (mark-sweep).
  */
 import { desc, sql } from "drizzle-orm";
 import {
@@ -25,21 +25,21 @@ import {
 const log = createLogger("maintenance");
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ADR-79 M2: 图 GC 常量
+// ADR-79 M2: константы GC графа
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** GC 观察窗口 — 8h（ms），容纳临时封禁恢复。 */
+/** Окно наблюдения GC — 8 ч (мс), с запасом для восстановления после временных блокировок. */
 const GC_GRACE_MS = 8 * 3600 * 1000;
 
-/** 可达性分数阈值 — 5+ 次失败后进入候选。 */
+/** Порог оценки достижимости — кандидат на удаление после 5+ сбоев. */
 const GC_SCORE_THRESHOLD = 0.05;
 
-/** 亲密联系人豁免 — tier ≤ 15 不被 GC。 */
+/** Исключение для близких контактов — tier ≤ 15 не подлежат GC. */
 const GC_TIER_EXEMPT = 15;
 
 /**
- * 从 action_log 恢复 lastActionTick。
- * 启动时调用，避免重启后立即触发空闲自启动。
+ * Восстанавливает lastActionTick из action_log.
+ * Вызывается при запуске, чтобы избежать немедленного срабатывания авто-старта по простою после перезапуска.
  */
 export function recoverLastActionTick(): number {
   const db = getDb();
@@ -57,25 +57,25 @@ export function recoverLastActionTick(): number {
 }
 
 /**
- * ADR-79 M2: 图垃圾回收 — mark-sweep 两阶段。
+ * ADR-79 M2: сборка мусора графа — двухфазный mark-sweep.
  *
- * Mark: score < GC_SCORE_THRESHOLD && failure_type === 'permanent' → 设置 gc_candidate_ms
- * Sweep: gc_candidate_ms + GC_GRACE_MS 后仍无自愈 → removeEntity()
- * 豁免: tier ≤ 15 亲密联系人、有活跃 conversation 的频道节点
+ * Mark: score < GC_SCORE_THRESHOLD && failure_type === 'permanent' → устанавливает gc_candidate_ms
+ * Sweep: если по истечении gc_candidate_ms + GC_GRACE_MS самовосстановления не произошло → removeEntity()
+ * Исключения: близкие контакты tier ≤ 15, узлы каналов с активным conversation
  *
- * @returns 被 GC 的节点 ID 列表
+ * @returns Список ID удалённых узлов
  */
 export function gcGraph(_currentTick: number, G: WorldModel, nowMs: number = Date.now()): string[] {
   const removed: string[] = [];
 
-  // 扫描所有 channel 和 contact 节点
+  // Сканируем все узлы channel и contact
   const candidates = [...G.getEntitiesByType("channel"), ...G.getEntitiesByType("contact")];
 
   for (const nodeId of candidates) {
     if (!G.has(nodeId)) continue;
     const nodeType = G.getNodeType(nodeId);
 
-    // 提取 GC 相关属性（按节点类型分派）
+    // Извлекаем GC-атрибуты (по типу узла)
     let score = 1.0;
     let failureType: string | null = null;
     let gcCandidateMs: number | null = null;
@@ -95,35 +95,35 @@ export function gcGraph(_currentTick: number, G: WorldModel, nowMs: number = Dat
       gcCandidateMs = ct.gc_candidate_ms ?? null;
     }
 
-    // 豁免检查：亲密联系人
+    // Проверка исключений: близкие контакты
     if (tier <= GC_TIER_EXEMPT) continue;
 
-    // 豁免检查：有活跃 thread 或 conversation
+    // Проверка исключений: есть активный thread или conversation
     if (nodeType === "channel") {
       const activeConv = findActiveConversation(G, nodeId);
       if (activeConv) continue;
     }
 
-    // Mark 阶段：score 低 + permanent failure → 设候选 ms
+    // Фаза Mark: низкий score + permanent failure → устанавливаем gc_candidate_ms
     if (score < GC_SCORE_THRESHOLD && failureType === "permanent") {
       if (gcCandidateMs == null) {
         if (nodeType === "channel") G.updateChannel(nodeId, { gc_candidate_ms: nowMs });
         else if (nodeType === "contact") G.updateContact(nodeId, { gc_candidate_ms: nowMs });
         log.info("GC marked candidate", { nodeId, score, failureType });
       } else if (nowMs - gcCandidateMs >= GC_GRACE_MS) {
-        // Sweep 阶段：观察窗口到期，无自愈 → 删除
+        // Фаза Sweep: окно наблюдения истекло, самовосстановления нет → удаляем
         log.info("GC removing unreachable node", { nodeId, score, markedAt: gcCandidateMs });
         G.removeEntity(nodeId);
         removed.push(nodeId);
       }
     } else if (gcCandidateMs != null && score >= GC_SCORE_THRESHOLD) {
-      // 已恢复但还留着 gc_candidate_ms → 清除标记
+      // Восстановился, но gc_candidate_ms всё ещё установлен → снимаем метку
       if (nodeType === "channel") G.updateChannel(nodeId, { gc_candidate_ms: null });
       else if (nodeType === "contact") G.updateContact(nodeId, { gc_candidate_ms: null });
     }
   }
 
-  // 孤儿 conversation 清理：channel 被 GC 后遗留的 conversation 节点
+  // Очистка осиротевших conversation: узлы conversation, оставшиеся после GC channel
   for (const convId of G.getEntitiesByType("conversation")) {
     if (!G.has(convId)) continue;
     const convAttrs = G.getConversation(convId);
@@ -134,7 +134,7 @@ export function gcGraph(_currentTick: number, G: WorldModel, nowMs: number = Dat
     }
   }
 
-  // 孤儿 info_item 清理：contact/channel 被 GC 后遗留的事实节点
+  // Очистка осиротевших info_item: узлы фактов, оставшиеся после GC contact/channel
   for (const itemId of G.getEntitiesByType("fact")) {
     if (!G.has(itemId)) continue;
     const itemAttrs = G.getFact(itemId);
@@ -154,8 +154,8 @@ export function gcGraph(_currentTick: number, G: WorldModel, nowMs: number = Dat
 }
 
 /**
- * ADR-117 D6: 清理过期 fact 节点（retrievability < 0.01）。
- * 每次最多清理 10 个，避免大批量删除阻塞。
+ * ADR-117 D6: очистка устаревших узлов fact (retrievability < 0.01).
+ * За один цикл удаляется не более 10, чтобы не блокировать массовым удалением.
  */
 export function gcExpiredFacts(G: WorldModel, nowMs: number): string[] {
   const removed: string[] = [];
@@ -181,15 +181,15 @@ export function gcExpiredFacts(G: WorldModel, nowMs: number): string[] {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ADR-134 D3: Thread Expiry — 幽灵线程回收
+// ADR-134 D3: Thread Expiry — сборка мусора призрачных тредов
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 线程寿命：7 天后自动过期。 */
+/** Время жизни треда: автоматическое устаревание через 7 дней. */
 const THREAD_EXPIRY_S = 7 * 86_400;
 
 /**
- * 标记过期 open thread（7 天未活动）→ status: "expired"。
- * P4 不计算 expired thread → 消除幽灵 P4。
+ * Помечает устаревший open thread (7 дней без активности) → status: "expired".
+ * P4 не учитывает expired thread → устраняет призрачный P4.
  *
  * @see docs/adr/134-temporal-coherence.md §D3
  */
@@ -199,7 +199,7 @@ export function gcExpiredThreads(G: WorldModel, nowMs: number): number {
     if (!G.has(tid)) continue;
     const attrs = G.getThread(tid);
     if (attrs.status !== "open") continue;
-    // ADR-134 D3: 基于最后活动时间（advance/thread_review 更新），回退到创建时间
+    // ADR-134 D3: на основе времени последней активности (обновляется advance/thread_review), fallback на время создания
     const lastActivityMs = attrs.last_activity_ms ?? (attrs.created_ms || nowMs);
     const idleS = (nowMs - lastActivityMs) / 1000;
     if (idleS > THREAD_EXPIRY_S) {
@@ -211,10 +211,10 @@ export function gcExpiredThreads(G: WorldModel, nowMs: number): number {
 }
 
 /**
- * 日志生命周期管理：清理过旧记录，防止 DB 无限膨胀。
- * 建议每 100 ticks 调用一次。
+ * Управление жизненным циклом логов: очистка устаревших записей, предотвращение бесконечного роста БД.
+ * Рекомендуется вызывать каждые 100 tick.
  *
- * ADR-79 M2: 可选传入 WorldModel，启用图 GC。
+ * ADR-79 M2: необязательный WorldModel — включает GC графа.
  */
 export function runMaintenance(
   currentTick: number,
@@ -227,14 +227,14 @@ export function runMaintenance(
   } = {},
 ): ReturnType<typeof runAnomalyCheck> {
   const db = getDb();
-  const TICK_RETENTION = 5000; // 保留最近 5000 ticks
-  const SNAPSHOT_RETENTION = 10; // 保留最近 10 个图快照
+  const TICK_RETENTION = 5000; // хранить последние 5000 tick
+  const SNAPSHOT_RETENTION = 10; // хранить последние 10 снапшотов графа
 
   const cutoffTick = currentTick - TICK_RETENTION;
 
   maybeRebuildRhythmProfiles(options.rhythmProfileRebuild);
 
-  // ADR-79 M2: 图 GC（即使 cutoffTick <= 0 也运行，GC 有自己的观察窗）
+  // ADR-79 M2: GC графа (запускается даже при cutoffTick <= 0 — у GC собственное окно наблюдения)
   if (G) {
     try {
       gcGraph(currentTick, G);
@@ -283,16 +283,16 @@ export function runMaintenance(
     }
   }
 
-  if (cutoffTick <= 0) return runAnomalyCheck(currentTick, G); // 还没运行够，跳过清理但仍检测异常
+  if (cutoffTick <= 0) return runAnomalyCheck(currentTick, G); // ещё недостаточно данных — очистку пропускаем, но аномалии проверяем
 
   try {
-    // 清理旧 tick_log
+    // Очищаем старые записи tick_log
     db.delete(tickLog).where(sql`${tickLog.tick} < ${cutoffTick}`).run();
 
-    // 清理旧 action_log
+    // Очищаем старые записи action_log
     db.delete(actionLog).where(sql`${actionLog.tick} < ${cutoffTick}`).run();
 
-    // M3 修复: 单条 SQL 删除超出保留数的快照，消除 N+1 查询
+    // M3 исправление: удаляем лишние снапшоты одним SQL-запросом, устраняя N+1
     const sqlite = getSqlite();
     const result = sqlite
       .prepare(
@@ -311,7 +311,7 @@ export function runMaintenance(
     log.warn("Maintenance failed", e);
   }
 
-  // 异常检测（每次维护时运行）
+  // Проверка аномалий (запускается при каждом обслуживании)
   return runAnomalyCheck(currentTick, G);
 }
 

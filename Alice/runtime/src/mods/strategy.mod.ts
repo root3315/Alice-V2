@@ -1,17 +1,17 @@
 /**
- * Strategy Mod — 行为策略层（M4）。
+ * Strategy Mod — слой поведенческих стратегий (M4).
  *
- * 纯被动观察 + 贡献，不产生副作用：
- * - listen DECLARE_ACTION / SEND_MESSAGE → 收集行为数据
- * - onTickEnd → 扫描图状态，生成策略提示
- * - contribute → 注入 strategy-hints + self-awareness section
+ * Чисто пассивное наблюдение + вклад, без побочных эффектов:
+ * - listen DECLARE_ACTION / SEND_MESSAGE → сбор поведенческих данных
+ * - onTickEnd → сканирование состояния графа, генерация стратегических подсказок
+ * - contribute → инжекция strategy-hints + секции self-awareness
  *
- * 设计哲学（叙事引擎 126 号提案）：
- * - 反应提示而非执行 — 系统提供信号，LLM 决定行为
- * - 结构即反馈 — 图的缺陷放进 Prefill，LLM 自然趋向填补
+ * Философия дизайна (нарративный движок, предложение №126):
+ * - Реактивные подсказки, не исполнение — система предоставляет сигналы, LLM принимает решения
+ * - Структура как обратная связь — дефекты графа помещаются в Prefill, LLM естественно стремится их заполнить
  *
- * 参考: narrative-engine/mods/npc.mod.ts (三支柱 NPC 自主性)
- * 参考: narrative-engine/docs/rpg/94-npc-agency-primitive-design.md
+ * Ссылка: narrative-engine/mods/npc.mod.ts (три столпа автономии NPC)
+ * Ссылка: narrative-engine/docs/rpg/94-npc-agency-primitive-design.md
  */
 import { desc, gt, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -49,7 +49,7 @@ import {
   type StrategyState,
 } from "./strategy/types.js";
 
-// -- Mod 定义 -----------------------------------------------------------------
+// -- Определение Mod -----------------------------------------------------------------
 
 export const strategyMod = createMod<StrategyState>("strategy", {
   category: "mechanic",
@@ -74,9 +74,9 @@ export const strategyMod = createMod<StrategyState>("strategy", {
   },
 })
   /**
-   * 监听 DECLARE_ACTION → 记录行动到 recentActions。
-   * 注：联系人最后交互时间由 observer.mod 写到图属性 last_alice_action_ms，
-   * 不在 strategy state 中冗余存储。
+   * Слушает DECLARE_ACTION → записывает действие в recentActions.
+   * Примечание: время последнего взаимодействия с контактом записывается в graph-атрибут last_alice_action_ms через observer.mod,
+   * избыточное хранение в strategy state не ведётся.
    */
   .listen("DECLARE_ACTION", (ctx, args) => {
     const target = args.target ? String(args.target) : null;
@@ -86,18 +86,18 @@ export const strategyMod = createMod<StrategyState>("strategy", {
       ms: ctx.nowMs,
       intent: args.intent ? String(args.intent) : "",
     });
-    // 环形缓冲
+    // Кольцевой буфер
     if (ctx.state.recentActions.length > MAX_RECENT_ACTIONS) {
       ctx.state.recentActions.shift();
     }
   })
   /**
-   * 监听 SEND_MESSAGE → 更新发消息目标的最后交互 + M2 群聊状态。
+   * Слушает SEND_MESSAGE → обновляет последнее взаимодействие с получателем + M2 состояние группового чата.
    */
   .listen("SEND_MESSAGE", (ctx, args) => {
     const chatId = args.chatId ? String(args.chatId) : null;
 
-    // M2: 群聊消息追踪
+    // M2: отслеживание сообщений группового чата
     if (chatId) {
       const channelId = ensureChannelId(chatId) ?? chatId;
       if (!ctx.state.groupStates[channelId]) {
@@ -107,7 +107,7 @@ export const strategyMod = createMod<StrategyState>("strategy", {
       const senderName = args.senderName ? String(args.senderName) : null;
       const isAlice = args.isOutgoing === true || args.isOutgoing === "true";
 
-      // 更新发言者列表
+      // Обновление списка говорящих
       if (senderName) {
         gs.recentSpeakers = gs.recentSpeakers.filter((s) => s !== senderName);
         gs.recentSpeakers.push(senderName);
@@ -116,7 +116,7 @@ export const strategyMod = createMod<StrategyState>("strategy", {
         }
       }
 
-      // 更新话题关键词
+      // Обновление ключевых слов темы
       const text = args.text ? String(args.text) : "";
       if (text) {
         const newKeywords = extractKeywords(text);
@@ -128,22 +128,22 @@ export const strategyMod = createMod<StrategyState>("strategy", {
         }
       }
 
-      // 更新参与率
+      // Обновление доли участия
       gs.totalMessages++;
       if (isAlice) gs.aliceMessages++;
       gs.participationRatio = gs.totalMessages > 0 ? gs.aliceMessages / gs.totalMessages : 0;
     }
   })
   .onTickEnd((ctx) => {
-    // groupStates / messageFrequency 为无界 Record<string, ...>。
-    // 增长上限 = Alice 社交圈内的独立频道数（Dunbar 数量级），KB 级，无需裁剪。
+    // groupStates / messageFrequency — неограниченные Record<string, ...>.
+    // Верхний предел роста = число уникальных каналов в социальном круге Alice (порядок Данбара), уровень КБ, обрезка не нужна.
 
-    // B2 修复: 从 message_log 更新入站消息的群聊状态
+    // B2 fix: обновление состояния группового чата из message_log для входящих сообщений
     updateIncomingGroupState(ctx);
-    // G7: 暴露 participationRatio 到图属性
+    // G7: экспорт participationRatio в graph-атрибут
     syncParticipationToGraph(ctx);
 
-    // 聚合所有 hint 生成器
+    // Агрегация всех генераторов подсказок
     const hints: StrategyHint[] = [
       ...generateRelationshipHints(ctx),
       ...generateAttentionHints(ctx),
@@ -158,15 +158,15 @@ export const strategyMod = createMod<StrategyState>("strategy", {
       ...generateBotToolHints(ctx),
     ];
 
-    // M4: 人格漂移审计
+    // M4: аудит дрейфа личности
     const driftHint = auditPersonalityDrift(ctx);
     if (driftHint) hints.push(driftHint);
 
     ctx.state.activeHints = hints;
   })
   /**
-   * ADR-47 G1: 返回当前活跃的危机频道列表。
-   * 供 evolve.ts 危机门控使用。
+   * ADR-47 G1: возвращает список текущих активных кризисных каналов.
+   * Используется в evolve.ts для кризисного гейтинга.
    * @see docs/adr/47-gap-closure.md §G1
    */
   .query("crisis_channels", {
@@ -180,13 +180,13 @@ export const strategyMod = createMod<StrategyState>("strategy", {
   .contribute((ctx): ContributionItem[] => {
     const items: ContributionItem[] = [];
 
-    // ADR-47 G8: 承诺上下文关联触发 — 当前 actionTarget 有关联 thread 时注入 hint
-    // 使用局部数组，不 mutate state（contribute 应为 read-only）
+    // ADR-47 G8: триггер контекстной привязки обязательств — инжектировать hint, если у текущего actionTarget есть связанный thread.
+    // Используется локальный массив, state не мутируется (contribute должен быть read-only).
     const allHints = [...ctx.state.activeHints];
     const relState = readModState(ctx, "relationships");
     const actionTarget = relState?.targetNodeId ?? null;
     if (actionTarget) {
-      // 从 actionTarget 推断关联的 contact ID（channel:XXX → contact:XXX）
+      // Вывод связанного contact ID из actionTarget (channel:XXX → contact:XXX)
       const targetIds: string[] = [actionTarget];
       const chId = ensureChannelId(actionTarget);
       const ctId = ensureContactId(actionTarget);
@@ -209,10 +209,10 @@ export const strategyMod = createMod<StrategyState>("strategy", {
       }
     }
 
-    // 策略提示 — 紧跟 pressure section 之后
+    // Стратегические подсказки — сразу после секции давления
     if (allHints.length > 0) {
       const mHints = new PromptBuilder();
-      // 按类型分组，每类型最多 3 条（防止 context 膨胀）
+      // Группировка по типу, не более 3 на тип (предотвращение разбухания контекста)
       const byType: Record<string, StrategyHint[]> = {};
       for (const h of allHints) {
         if (!byType[h.type]) byType[h.type] = [];
@@ -220,7 +220,7 @@ export const strategyMod = createMod<StrategyState>("strategy", {
       }
       for (const [type, hints] of Object.entries(byType)) {
         if (type === "overnight_briefing") {
-          // ADR-196 F10: overnight briefing 保留多行结构（list() 会压平 \n）
+          // ADR-196 F10: overnight briefing сохраняет многострочную структуру (list() сплющивает \n)
           for (const h of hints.slice(0, 1)) {
             for (const line of h.message.split("\n")) {
               mHints.line(line);
@@ -236,17 +236,17 @@ export const strategyMod = createMod<StrategyState>("strategy", {
       }
     }
 
-    // ADR-72 W2: buildCapabilitySection 已移除——Capability Hints 统一到 declaration.ts。
+    // ADR-72 W2: buildCapabilitySection удалён — Capability Hints унифицированы в declaration.ts.
     // @see docs/adr/72-tool-surface-phase2-intent-grouping.md §W2
 
-    // 自我觉察 — 最近行动模式摘要
+    // Самоосознание — сводка по паттернам недавних действий
     if (ctx.state.recentActions.length >= 3) {
       const mSelf = new PromptBuilder();
 
-      // 从 action_log 查询最近行动的声部分布
+      // Запрос распределения голосов по недавним действиям из action_log
       try {
         const db = getDb();
-        // ADR-110: 使用 createdAt 替代 tick 窗口查询（50 分钟 = 3_000_000 ms）
+        // ADR-110: используем createdAt вместо запроса по tick-окну (50 минут = 3_000_000 ms)
         const voiceDistribution = db
           .select({
             voice: actionLog.voice,
@@ -259,7 +259,7 @@ export const strategyMod = createMod<StrategyState>("strategy", {
           .all();
 
         if (voiceDistribution.length > 0) {
-          // EST: 语义标签替代原始计数——LLM 消费离散类别
+          // EST: семантические метки вместо сырых счётчиков — LLM потребляет дискретные категории
           const dominant = voiceDistribution[0];
           const secondary = voiceDistribution[1];
           const voiceToFeeling: Record<string, string> = {
@@ -277,9 +277,9 @@ export const strategyMod = createMod<StrategyState>("strategy", {
           mSelf.line(`${pattern}.`);
         }
 
-        // ADR-109: 表达模态分布 — 行为自我模型第三维
+        // ADR-109: распределение экспрессивных модальностей — третье измерение поведенческой самомодели
         // @see docs/adr/109-expressive-palette/README.md
-        // ADR-110: 使用 createdAt 替代 tick 窗口查询
+        // ADR-110: используем createdAt вместо запроса по tick-окну
         const modalityRows = db
           .select({
             actionType: actionLog.actionType,
@@ -312,7 +312,7 @@ export const strategyMod = createMod<StrategyState>("strategy", {
         if (modalityTotal >= 8) {
           const rich =
             (byModality.sticker ?? 0) + (byModality.voice ?? 0) + (byModality.media ?? 0);
-          // ADR-210: 降低门槛——不仅"完全没发过"才提醒，占比 < 10% 也提醒
+          // ADR-210: снижение порога — напоминать не только при полном отсутствии, но и при доле < 10%
           if (rich === 0) {
             mSelf.line("All text lately — no stickers or anything fun in a while.");
           } else if (modalityTotal >= 10 && rich / modalityTotal < 0.1) {
@@ -320,10 +320,10 @@ export const strategyMod = createMod<StrategyState>("strategy", {
           }
         }
       } catch {
-        // DB 不可用时跳过
+        // Пропускаем, если БД недоступна
       }
 
-      // 目标分散度 — 语义标签替代原始计数
+      // Рассредоточенность целей — семантические метки вместо сырых счётчиков
       const targets = new Set(ctx.state.recentActions.map((a) => a.target).filter(Boolean));
       const targetDesc =
         targets.size <= 1
@@ -339,22 +339,22 @@ export const strategyMod = createMod<StrategyState>("strategy", {
       }
     }
 
-    // M4: 人格漂移 — 审计结果仅内部监控，不注入 LLM 可见 prompt
+    // M4: дрейф личности — результаты аудита только для внутреннего мониторинга, не инжектируются в LLM-видимый prompt
 
-    // M2: 频道动态注入
-    // 有参与度的频道：独立 section（含 Active speakers + topic 等详情）
-    // 零参与度（mostly listening）：折叠为单个汇总 section（节省 token）
+    // M2: инжекция динамики каналов
+    // Каналы с участием: отдельная section (с деталями Active speakers + topic и др.)
+    // Нулевое участие (mostly listening): свёртывается в единую сводную section (экономия токенов)
     const listeningChannels: string[] = [];
 
     for (const [channelId, gs] of Object.entries(ctx.state.groupStates)) {
-      if (gs.totalMessages < 3) continue; // 跳过低活跃
+      if (gs.totalMessages < 3) continue; // Пропускаем малоактивные
 
-      // 零参与度 → 收集后统一折叠
+      // Нулевое участие → собрать и свернуть вместе
       if (gs.participationRatio === 0) {
         if (!ctx.graph.has(channelId) || ctx.graph.getNodeType(channelId) !== "channel") continue;
         const chatType = ctx.graph.getChannel(channelId).chat_type;
         const channelName = safeDisplayName(ctx.graph, channelId);
-        // 私聊附带对方名字，群聊显示群名
+        // Личный чат — имя собеседника, групповой — название группы
         const speakerHint =
           chatType === "private" && gs.recentSpeakers.length > 0
             ? gs.recentSpeakers[0]
@@ -363,7 +363,7 @@ export const strategyMod = createMod<StrategyState>("strategy", {
         continue;
       }
 
-      // 有参与度 → 独立 section
+      // С участием → отдельная section
       const mGroup = new PromptBuilder();
       if (gs.recentSpeakers.length > 0) {
         mGroup.kv("Active speakers", gs.recentSpeakers.slice(-5).join(", "));
@@ -375,7 +375,7 @@ export const strategyMod = createMod<StrategyState>("strategy", {
             ? "You've been somewhat active."
             : "You haven't said much here.";
       mGroup.line(partLabel);
-      // ADR-83 D7: 使用图中 LLM 生成的 topic 替代 raw TF keywords（宁缺毋滥）
+      // ADR-83 D7: использовать сгенерированную LLM topic из графа вместо сырых TF-ключевых слов (лучше ничего, чем мусор)
       if (ctx.graph.has(channelId) && ctx.graph.getNodeType(channelId) === "channel") {
         const chAttrs = ctx.graph.getChannel(channelId);
         const topic = chAttrs.topic;
@@ -395,7 +395,7 @@ export const strategyMod = createMod<StrategyState>("strategy", {
       );
     }
 
-    // 零参与度频道汇总（一行代替 N 个独立 section）
+    // Сводка каналов с нулевым участием (одна строка вместо N отдельных section)
     if (listeningChannels.length > 0) {
       const summary = new PromptBuilder();
       summary.line(listeningChannels.slice(0, 10).join(", "));

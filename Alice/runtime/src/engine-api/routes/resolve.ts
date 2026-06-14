@@ -1,10 +1,10 @@
 /**
- * Engine API - 名称解析路由。
+ * Engine API — маршруты разрешения имён.
  *
  * POST /resolve/name -> { ok: true, result: { nodeId, telegramId, type } }
  *
- * ADR-237: 让 LLM 能用名称（如 @林秀）指定目标，而非数字 ID。
- * 复用 display.ts 的 resolveDisplayName 函数。
+ * ADR-237: позволяет LLM указывать цели по имени (например @Линь Сюй), а не по числовому ID.
+ * Повторно использует функцию resolveDisplayName из display.ts.
  *
  * @see docs/adr/237-name-resolution.md
  */
@@ -148,11 +148,11 @@ function bridgeProtocolError(platform: string): Record<string, unknown> {
 
 /**
  * POST /resolve/name
- * Body: { name: string } 或 { name: string, type?: "contact" | "channel" }
+ * Body: { name: string } или { name: string, type?: "contact" | "channel" }
  *
- * 返回:
- * - { ok: true, result: { nodeId, telegramId, type } } — 找到
- * - { ok: true, result: null } — 未找到
+ * Возвращает:
+ * - { ok: true, result: { nodeId, telegramId, type } } — найдено
+ * - { ok: true, result: null } — не найдено
  */
 export async function handleResolveName(
   req: IncomingMessage,
@@ -181,10 +181,10 @@ export async function handleResolveName(
     return;
   }
 
-  // 去掉 @ 前缀（LLM 习惯写 @林秀）
+  // Убираем префикс @ (LLM склонен писать @ИмяФамилия)
   const cleanName = name.startsWith("@") ? name.slice(1) : name;
 
-  // 调用 resolveDisplayName
+  // Вызываем resolveDisplayName
   const nodeId = resolveDisplayName(deps.G, cleanName);
 
   if (nodeId === null) {
@@ -199,10 +199,10 @@ export async function handleResolveName(
     return;
   }
 
-  // 提取 Telegram 数字 ID
+  // Извлекаем числовой ID Telegram
   const telegramId = extractNumericId(nodeId) ?? null;
 
-  // 判断类型
+  // Определяем тип
   const type = nodeId.startsWith("contact:")
     ? "contact"
     : nodeId.startsWith("channel:")
@@ -227,7 +227,7 @@ export async function handleResolveName(
  * POST /resolve/target
  * Body: { target: string }
  *
- * 返回 stable target ref；同名多候选返回 typed ambiguous_target。
+ * Возвращает stable target ref; при нескольких кандидатах с одним именем возвращает typed ambiguous_target.
  */
 export async function handleResolveTarget(
   req: IncomingMessage,

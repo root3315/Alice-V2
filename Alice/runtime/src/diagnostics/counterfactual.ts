@@ -1,12 +1,12 @@
 /**
- * A4 D5 必要性反事实分析 — ADR-76 自动化行为验证。
+ * A4 D5 контрфактический анализ необходимости — автоматизированная верификация поведения ADR-76.
  *
- * A4 同时报告两个不同反事实：
- * - cooling_gate_counterfactual: 移除 active_cooling 后，有多少沉默会行动。
- * - social_cost_counterfactual: 移除 C_social 后，有多少沉默会行动。
+ * A4 одновременно сообщает о двух разных контрфактах:
+ * - cooling_gate_counterfactual: сколько случаев молчания привели бы к действию при отключении active_cooling.
+ * - social_cost_counterfactual: сколько случаев молчания привели бы к действию при отключении C_social.
  *
- * 这两个 plane 不能混在一起。active_cooling 是行动密度/节奏抑制；
- * social_cost 才是社交成本项本身。
+ * Эти два plane нельзя смешивать. active_cooling — подавление плотности/ритма действий;
+ * social_cost — сам по себе компонент социальной стоимости.
  *
  * @see docs/adr/76-naturalness-validation-methodology.md
  * @see docs/adr/63-theory-validation-checklist.md §V2
@@ -29,31 +29,31 @@ const NON_SOCIAL_COST_REASONS = new Set([
 const SOCIAL_COST_BOTTLENECKS = new Set(["U_social_safety", "social_cost", "C_social"]);
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 类型
+// Типы
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface CounterfactualD5Report {
-  /** 反事实样本来源。 */
+  /** Источник контрфактических выборок. */
   source: "candidate_trace" | "silence_log";
-  /** 样本完整性。 */
+  /** Полнота выборки. */
   sampleStatus: "real" | "partial" | "empty";
-  /** 沉默样本总数。 */
+  /** Общее число образцов молчания. */
   totalSilenceSamples: number;
-  /** 与 D5 反事实无关的沉默样本数，例如没有候选可行动。 */
+  /** Число образцов молчания, не релевантных контрфактическому D5 (например, нет кандидата для действия). */
   nonApplicableSilences: number;
-  /** 进入 D5 反事实范围的沉默样本数。 */
+  /** Число образцов молчания, попадающих в область контрфактического D5. */
   applicableSilences: number;
-  /** 缺少 deltaP/socialCost 的沉默样本数。 */
+  /** Число образцов молчания с отсутствующими deltaP/socialCost. */
   partialSilences: number;
-  /** 沉默总数（有 netValue 和 socialCost 数据的）。 */
+  /** Общее число случаев молчания с данными netValue и socialCost. */
   analyzableSilences: number;
-  /** 兼容字段：所有 plane 的翻转合计。新读面应看 coolingGate/socialCost。 */
+  /** Поле совместимости: суммарное число переворотов по всем plane. В новом виде смотреть coolingGate/socialCost. */
   flippedActions: number;
-  /** 兼容字段：所有 plane 的合计翻转率。新读面应看 coolingGate/socialCost。 */
+  /** Поле совместимости: суммарная частота переворотов по всем plane. В новом виде смотреть coolingGate/socialCost. */
   flipRate: number;
-  /** 按沉默原因分组的翻转统计。 */
+  /** Статистика переворотов по причинам молчания. */
   flipsByReason: Record<string, { total: number; flipped: number; rate: number }>;
-  /** 按沉默原因分组的样本质量统计。 */
+  /** Статистика качества выборки по причинам молчания. */
   sampleQualityByReason: Record<
     string,
     {
@@ -64,20 +64,20 @@ export interface CounterfactualD5Report {
       analyzable: number;
     }
   >;
-  /** 行动总数（参考基线）。 */
+  /** Общее число действий (базовая линия). */
   totalActions: number;
   /**
-   * 无 D5 时的行动频率变化 = (totalActions + flippedActions) / totalActions。
-   * ADR-63 V2 预测：此值 >> 1（D5 显著抑制行动频率）。
+   * Изменение частоты действий без D5 = (totalActions + flippedActions) / totalActions.
+   * ADR-63 V2 предсказывает: значение >> 1 (D5 значительно подавляет частоту действий).
    */
   frequencyMultiplier: number;
-  /** 按目标分组的翻转分布（哪些目标受 D5 保护最多）。 */
+  /** Распределение переворотов по целям (какие цели D5 защищает больше всего). */
   flipsByTarget: Record<string, number>;
-  /** 移除 active_cooling gate 后的反事实。 */
+  /** Контрфакт после отключения active_cooling gate. */
   coolingGate: CounterfactualPlaneReport;
-  /** 移除 social cost 后的反事实。 */
+  /** Контрфакт после отключения social cost. */
   socialCost: CounterfactualPlaneReport;
-  /** IAUS 乘法评分下，将 U_social_safety 置为 1 后的候选排序反事实。 */
+  /** Контрфакт ранжирования кандидатов при установке U_social_safety=1 в мультипликативной оценке IAUS. */
   socialSafetyRankAblation: SocialSafetyRankAblationReport;
 }
 
@@ -93,23 +93,23 @@ export interface CounterfactualPlaneReport {
 }
 
 export interface SocialSafetyRankAblationReport {
-  /** 有候选池可重放的 tick 数。 */
+  /** Число тиков с воспроизводимым пулом кандидатов. */
   totalPools: number;
-  /** 至少一个候选含 U_social_safety 的 tick 数。 */
+  /** Число тиков, где хотя бы один кандидат содержит U_social_safety. */
   analyzablePools: number;
-  /** 参与 ablation 的 sociability 候选数。 */
+  /** Число кандидатов с sociability, участвующих в ablation. */
   socialSafetyCandidateCount: number;
-  /** U_social_safety 的平均值。 */
+  /** Среднее значение U_social_safety. */
   meanSocialSafety: number;
-  /** ablation 后平均分数提升倍数（只统计含 U_social_safety 的候选）。 */
+  /** Средний коэффициент роста оценки после ablation (только кандидаты с U_social_safety). */
   meanLift: number;
-  /** ablation 后最大分数提升倍数。 */
+  /** Максимальный коэффициент роста оценки после ablation. */
   maxLift: number;
-  /** ablation 后 top candidate 发生变化的 tick 数。 */
+  /** Число тиков, в которых top candidate изменился после ablation. */
   changedTop: number;
-  /** changedTop / analyzablePools。 */
+  /** changedTop / analyzablePools. */
   changeRate: number;
-  /** 变化样例。 */
+  /** Примеры изменений. */
   topChanges: Array<{
     tick: number;
     original: CandidateSummary;
@@ -126,18 +126,18 @@ export interface CandidateSummary {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 分析函数
+// Функции анализа
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * D5 反事实分析：令 C_social = 0 后有多少沉默会翻转。
+ * Контрфактический анализ D5: сколько случаев молчания перевернётся при C_social = 0.
  *
- * 使用 silence_log 中已记录的 deltaP 和 socialCost 重建 NSV：
- * - 原始 NSV = netValue = deltaP - lambda * socialCost（已被门控跳过）
- * - 反事实 NSV' = deltaP（移除 socialCost）
- * - 如果 NSV' > 0 且原始决策是沉默，则该决策翻转
+ * Использует deltaP и socialCost из silence_log для реконструкции NSV:
+ * - Исходный NSV = netValue = deltaP - lambda * socialCost (пропущен через gate)
+ * - Контрфактический NSV' = deltaP (без socialCost)
+ * - Если NSV' > 0, а исходное решение — молчание, то решение переворачивается
  *
- * 注意：仅分析 reason 不是 rate_cap 的沉默（rate_cap 与 D5 无关）。
+ * Примечание: анализируются только случаи молчания, где reason ≠ rate_cap (rate_cap не связан с D5).
  */
 export function counterfactualD5(): CounterfactualD5Report {
   const db = getDb();
@@ -217,7 +217,7 @@ export function counterfactualD5(): CounterfactualD5Report {
     (s) => !NON_APPLICABLE_REASONS.has(s.reason) || s.deltaP !== null || s.socialCost !== null,
   );
 
-  // 只分析有完整数值数据的沉默记录。
+  // Анализируются только записи молчания с полными числовыми данными.
   const analyzable = applicable.filter((s) => s.deltaP !== null && s.socialCost !== null);
   const partialSilences = applicable.length - analyzable.length;
   const sampleStatus = applicable.length === 0 ? "empty" : partialSilences > 0 ? "partial" : "real";

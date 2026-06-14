@@ -1,14 +1,14 @@
 /**
- * ADR-199 W3: 延迟反馈模块 — 系统性延迟评估消息发送后的外部反应。
+ * ADR-199 W3: Модуль отложенной обратной связи — системная отсроченная оценка внешней реакции после отправки сообщений.
  *
- * 解决 Decision→Outcome 闭环断裂：
- * - 发言后的外部反馈（是否被回复/忽略）没有被系统性延迟回写
- * - computeExternalFeedback 只在 rate_outcome 内部调用
+ * Решает разрыв контура Decision→Outcome:
+ * - Внешняя обратная связь после реплики (ответили / проигнорировали) не записывалась с системной задержкой
+ * - computeExternalFeedback вызывался только внутри rate_outcome
  *
- * 本模块在 evolveTick 中定期扫描：
- * 1. 找出 Alice 最近发过消息但尚未评估 outcome 的 channel
- * 2. 调用 computeExternalFeedback 推断外部反馈
- * 3. 回写 last_outcome_quality / last_outcome_ms / rv_trust
+ * Этот модуль периодически сканирует в evolveTick:
+ * 1. Находит channel, где Alice недавно писала, но outcome ещё не оценён
+ * 2. Вызывает computeExternalFeedback для вывода внешней обратной связи
+ * 3. Записывает last_outcome_quality / last_outcome_ms / rv_trust
  *
  * @see docs/adr/199-closure-feedback-structural-upgrade.md
  */
@@ -21,11 +21,11 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("deferred-outcome");
 
-/** 延迟评估的最小等待时间（ms）— 给对方足够的回复窗口。 */
-const MIN_DELAY_MS = 3 * 60 * 1000; // 3 分钟
-/** 延迟评估的最大窗口（ms）— 超过此时间不再评估。 */
-const MAX_DELAY_MS = 30 * 60 * 1000; // 30 分钟
-/** 外部反馈置信度阈值 — 低于此值不回写（信号不足）。 */
+/** Минимальное время ожидания перед отложенной оценкой (мс) — даём собеседнику достаточное окно для ответа. */
+const MIN_DELAY_MS = 3 * 60 * 1000; // 3 минуты
+/** Максимальное окно отложенной оценки (мс) — после этого времени оценка не производится. */
+const MAX_DELAY_MS = 30 * 60 * 1000; // 30 минут
+/** Порог достоверности внешней обратной связи — ниже этого значения не записываем (сигнал недостаточен). */
 const MIN_CONFIDENCE = 0.2;
 
 export interface PendingOutcome {
@@ -44,12 +44,12 @@ export interface DeferredFeedbackResult {
 }
 
 /**
- * 扫描所有 channel，找出 Alice 最近发过消息但尚未评估 outcome 的目标。
+ * Сканирует все channel и находит цели, где Alice недавно писала, но outcome ещё не оценён.
  *
- * 条件：
- * - last_alice_action_ms > last_outcome_ms（有行动但无评估）
- * - nowMs - last_alice_action_ms > MIN_DELAY_MS（已过最小等待时间）
- * - nowMs - last_alice_action_ms < MAX_DELAY_MS（未超最大窗口）
+ * Условия:
+ * - last_alice_action_ms > last_outcome_ms (есть действие, но нет оценки)
+ * - nowMs - last_alice_action_ms > MIN_DELAY_MS (минимальное время ожидания прошло)
+ * - nowMs - last_alice_action_ms < MAX_DELAY_MS (максимальное окно не превышено)
  */
 export function scanPendingOutcomes(G: WorldModel, nowMs: number): PendingOutcome[] {
   const pendings: PendingOutcome[] = [];
@@ -69,11 +69,11 @@ export function scanPendingOutcomes(G: WorldModel, nowMs: number): PendingOutcom
 }
 
 /**
- * 对一个 pending outcome 执行延迟评估：
- * 1. 调用 computeExternalFeedback 推断外部反馈
- * 2. 回写 channel.last_outcome_quality / last_outcome_ms
- * 3. 可选：回写 contact.rv_trust 微调
- * 4. 写入 deferred_outcome_log 审计表
+ * Выполняет отложенную оценку одного pending outcome:
+ * 1. Вызывает computeExternalFeedback для вывода внешней обратной связи
+ * 2. Записывает channel.last_outcome_quality / last_outcome_ms
+ * 3. Опционально: тонкая корректировка contact.rv_trust
+ * 4. Записывает в аудиторскую таблицу deferred_outcome_log
  */
 export function evaluateDeferredOutcome(
   G: WorldModel,
@@ -83,26 +83,26 @@ export function evaluateDeferredOutcome(
 ): DeferredFeedbackResult | null {
   const ext = computeExternalFeedback(G, pending.channelId, pending.actionMs, nowMs);
 
-  // 置信度太低（信号不足）→ 跳过
+  // Достоверность слишком низкая (сигнал недостаточен) → пропускаем
   if (ext.confidence < MIN_CONFIDENCE) return null;
 
   const delayMs = nowMs - pending.actionMs;
 
-  // 回写 channel
+  // Записываем в channel
   G.updateChannel(pending.channelId, {
     last_outcome_quality: ext.score,
     last_outcome_ms: nowMs,
   });
 
-  // 回写 contact（如果存在且有足够信号）
-  // ADR-199: 延迟反馈 → 关系向量微调 — 让"世界后果"真正塑形关系
-  // trust: 正反馈增加信任（"我说的话被认真对待了"），负反馈降低信任
-  // respect: 持续被忽略 → 降低 respect（"对方不把我的话当回事"）
+  // Записываем в contact (если существует и сигнал достаточен)
+  // ADR-199: Отложенная обратная связь → тонкая корректировка вектора отношений — позволяем «последствиям мира» реально формировать отношения
+  // trust: положительная обратная связь увеличивает доверие («мои слова восприняли серьёзно»), отрицательная снижает
+  // respect: постоянное игнорирование → снижение respect («собеседник не воспринимает мои слова»)
   if (pending.contactId && G.has(pending.contactId)) {
     const contact = G.getContact(pending.contactId);
     const trustDelta = ext.score * 0.05;
     const currentTrust = contact.rv_trust ?? 0.5;
-    // respect 只在负反馈时微降（正反馈不应抬高 respect——"被回复"不等于"被尊重"）
+    // respect снижается только при отрицательной обратной связи (положительная не должна поднимать respect — «получить ответ» ≠ «быть уважаемым»)
     const respectDelta = ext.score < -0.2 ? ext.score * 0.03 : 0;
     const currentRespect = contact.rv_respect ?? 0.5;
     G.updateContact(pending.contactId, {
@@ -115,7 +115,7 @@ export function evaluateDeferredOutcome(
     });
   }
 
-  // 写入审计日志
+  // Записываем в журнал аудита
   try {
     getDb()
       .insert(deferredOutcomeLog)

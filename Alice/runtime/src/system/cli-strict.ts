@@ -1,9 +1,10 @@
 /**
- * CLI 严格参数校验。
+ * CLI строгая валидация аргументов.
  *
- * citty 0.2.x 内部使用 `node:util.parseArgs(..., { strict: false })`，
- * 未声明的 flag 会被静默吞掉。对 Alice 这种 LLM 驱动 CLI，
- * 这会把“命令写错”伪装成“命令成功”，必须在入口层补一层严格校验。
+ * citty 0.2.x внутри использует `node:util.parseArgs(..., { strict: false })`,
+ * необъявленные флаги молча проглатываются. Для Alice — CLI на базе LLM —
+ * это маскирует “ошибку в команде” под “успешное выполнение”,
+ * поэтому на входном уровне необходим дополнительный строгий слой валидации.
  */
 
 export interface StrictArgDef {
@@ -57,11 +58,11 @@ function collectKnownOptions(argsDef: Record<string, StrictArgDef>): KnownOption
 }
 
 /**
- * 找出首个未知 flag。
+ * Найти первый неизвестный флаг.
  *
- * - `--flag=value` 视为 `--flag`
- * - `-abc` 按短 flag cluster 逐个检查
- * - `-100...` 这类负数视为参数值，不当作 flag
+ * - `--flag=value` трактуется как `--flag`
+ * - `-abc` проверяется посимвольно как кластер коротких флагов
+ * - `-100...` и подобные числа считаются значениями аргументов, не флагами
  */
 export function findUnknownOption(
   rawArgs: readonly string[],

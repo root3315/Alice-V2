@@ -1,7 +1,7 @@
 /**
- * ADR-248 W1: decision_trace 读取诊断。
+ * ADR-248 W1: Диагностика чтения decision_trace.
  *
- * 只读审计事实，帮助人类解释某个 tick/action 为什么发生。
+ * Read-only аудиторские факты, помогающие человеку объяснить, почему произошёл конкретный тик/действие.
  * @see docs/adr/248-dcp-reference-implementation-plan/README.md
  */
 import { listDecisionTraces, summarizeDecisionTrace } from "../db/decision-trace.js";

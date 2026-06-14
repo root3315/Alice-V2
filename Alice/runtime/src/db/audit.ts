@@ -1,8 +1,9 @@
 /**
- * 审计事件写入（ADR-54）。
+ * Запись аудит-событий (ADR-54).
  *
- * 关键运行时异常写入 audit_events 表，支持 SQL 结构化查询。
- * 写入失败静默忽略——审计不应影响主流程。
+ * Критические аномалии времени выполнения записываются в таблицу audit_events
+ * и доступны для структурированных SQL-запросов.
+ * Сбои записи молча игнорируются — аудит не должен влиять на основной процесс.
  *
  * @see docs/adr/54-pre-mortem-safety-net.md
  */
@@ -12,13 +13,13 @@ import { auditEvents } from "./schema.js";
 export type AuditLevel = "fatal" | "error" | "warn";
 
 /**
- * 写入一条审计事件。
+ * Записывает одно аудит-событие.
  *
- * @param tick    当前 tick（如不在 tick 上下文中可传 -1）
- * @param level   严重程度
- * @param source  来源模块（与 createLogger tag 一致）
- * @param message 事件描述
- * @param details 附加细节（序列化为 JSON）
+ * @param tick    Текущий tick (передать -1, если не в tick-контексте)
+ * @param level   Уровень серьёзности
+ * @param source  Исходный модуль (соответствует тегу createLogger)
+ * @param message Описание события
+ * @param details Дополнительные детали (сериализуются в JSON)
  */
 export function writeAuditEvent(
   tick: number,

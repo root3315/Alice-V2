@@ -1,19 +1,19 @@
 /**
- * Prompt 日志 — 生产环境拦截完整 LLM prompt + 响应，落盘为 markdown。
+ * Prompt-лог — перехват полного LLM prompt + ответа в production, сохранение в markdown.
  *
- * 启用方式：环境变量 ALICE_PROMPT_LOG=true
- * 输出目录：runtime/prompt-logs/（自动创建，.gitignore 排除）
+ * Включение: переменная окружения ALICE_PROMPT_LOG=true
+ * Директория вывода: runtime/prompt-logs/ (создаётся автоматически, исключена в .gitignore)
  *
- * 每次 LLM 调用产生一个 markdown 文件，包含：
- * - 元数据（tick / target / voice / round / 时间）
- * - 完整 system prompt
- * - 完整 user prompt
- * - LLM 生成的脚本（rawScript）
- * - 执行结果（afterward / 调用计数 / transcript / thinks / instructionErrors / errors / command output）
+ * Каждый вызов LLM порождает один markdown-файл, содержащий:
+ * - Метаданные (tick / target / voice / round / время)
+ * - Полный system prompt
+ * - Полный user prompt
+ * - Скрипт, сгенерированный LLM (rawScript)
+ * - Результат выполнения (afterward / счётчик вызовов / transcript / thinks / instructionErrors / errors / command output)
  *
- * 用途：事后诊断 prompt 工程问题——看 LLM 看到了什么、产出了什么。
+ * Назначение: постфактум-диагностика проблем prompt-инжиниринга — что видел LLM и что выдал.
  *
- * @see docs/adr/78-naturalness-hotfixes.md — 实战群聊诊断
+ * @see docs/adr/78-naturalness-hotfixes.md — диагностика группового чата в бою
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -27,15 +27,15 @@ import { renderDcpShadowContext } from "./dcp-shadow.js";
 const log = createLogger("prompt-log");
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-/** prompt-logs 目录（runtime/prompt-logs/） */
+/** Директория prompt-logs (runtime/prompt-logs/). */
 const LOG_DIR = resolve(__dirname, "../../prompt-logs");
 
-/** 是否启用 prompt 日志。 */
+/** Включён ли prompt-лог. */
 export function isPromptLogEnabled(): boolean {
   return process.env.ALICE_PROMPT_LOG === "true" || process.env.ALICE_PROMPT_LOG === "1";
 }
 
-/** prompt 快照的输入数据。 */
+/** Входные данные для prompt-снимка. */
 export interface PromptSnapshot {
   tick: number;
   target: string | null;
@@ -49,9 +49,9 @@ export interface PromptSnapshot {
   };
   system: string;
   user: string;
-  /** LLM 生成的脚本（rawScript，null = LLM 调用失败）。 */
+  /** Скрипт, сгенерированный LLM (rawScript; null = вызов LLM завершился ошибкой). */
   script: string | null;
-  /** 执行数据（LLM 调用成功时存在）。 */
+  /** Данные выполнения (присутствует при успешном вызове LLM). */
   execution?: {
     afterward: Afterward;
     toolCallCount: number;
@@ -60,7 +60,7 @@ export interface PromptSnapshot {
     signalCallCount?: number;
     budgetExhausted: boolean;
     transcript?: TCAssistantRoundTrace[];
-    /** 聚合的 `$ cmd\noutput` 块（完整命令+输出对）。 */
+    /** Агрегированные блоки `$ cmd\noutput` (полные пары команда+вывод). */
     commandOutput: string;
     thinks: string[];
     queryLogs: Array<{ fn: string; result: string }>;
@@ -104,10 +104,10 @@ function renderTranscript(transcript: TCAssistantRoundTrace[]): string[] {
 }
 
 /**
- * 将 prompt 快照写入 markdown 文件。
+ * Записывает prompt-снимок в markdown-файл.
  *
- * 文件名格式：{tick}-{round}-{target}-{timestamp}.md
- * 非阻塞——写入失败只 log.warn，不影响主流程。
+ * Формат имени файла: {tick}-{round}-{target}-{timestamp}.md
+ * Неблокирующий — ошибка записи выдаёт лишь log.warn, не влияя на основной поток.
  */
 export function logPromptSnapshot(snapshot: PromptSnapshot): void {
   if (!isPromptLogEnabled()) return;
@@ -157,7 +157,7 @@ export function logPromptSnapshot(snapshot: PromptSnapshot): void {
       parts.push("## LLM Script", "", "```sh", snapshot.script, "```", "");
     }
 
-    // 执行结果
+    // Результат выполнения
     if (snapshot.execution) {
       const ex = snapshot.execution;
 
@@ -221,7 +221,7 @@ export function logPromptSnapshot(snapshot: PromptSnapshot): void {
     writeFileSync(filepath, parts.join("\n"), "utf-8");
     log.info("Prompt snapshot saved", { filepath: filename });
   } catch (e) {
-    // 写入失败不影响主流程
+    // Ошибка записи не влияет на основной поток
     log.warn("Failed to save prompt snapshot", {
       error: e instanceof Error ? e.message : String(e),
     });

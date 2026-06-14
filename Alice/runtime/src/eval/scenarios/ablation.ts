@@ -1,10 +1,10 @@
 /**
- * ADR-137: 消融实验场景选集 — 从现有场景中挑选覆盖关键决策模式的子集。
+ * ADR-137: Подборка сценариев для абляционных экспериментов — подмножество существующих сценариев, охватывающее ключевые паттерны принятия решений.
  *
- * 选取原则（§D5）：
- * - 覆盖 7 种决策模式（私聊回复、群聊克制、共情、多步推理、工具使用、等待、群聊参与）
- * - 每种模式 2-3 个场景
- * - 场景的期望行为在三条件下应该产生可区分的差异
+ * Принципы отбора (§D5):
+ * - Охватывает 7 паттернов принятия решений (личный чат — ответ, групповой чат — сдержанность, эмпатия, многошаговые рассуждения, использование инструментов, ожидание, участие в группе)
+ * - 2-3 сценария на каждый паттерн
+ * - Ожидаемое поведение сценария должно давать различимые результаты при трёх условиях
  *
  * @see docs/adr/137-pressure-field-ablation.md §D5
  */
@@ -13,46 +13,46 @@ import { APP_SCENARIOS } from "./apps.js";
 import { BRANCH_SCENARIOS } from "./branches.js";
 
 /**
- * 消融实验场景 ID 列表 — 按决策模式分组。
+ * Список ID сценариев для абляционных экспериментов — сгруппирован по паттернам принятия решений.
  *
- * | 决策模式          | 场景数 | 场景 ID                                            |
- * |-------------------|--------|----------------------------------------------------|
- * | 私聊直接回复       | 2      | branch.reply.direct, branch.baseline.greeting       |
- * | 群聊克制           | 3      | branch.silence.group_listen, branch.silence.group_debate, branch.observe_then_silence.already_answered |
- * | 共情回复           | 2      | branch.reply.emotional, branch.reply.burst_patience |
- * | 多步推理           | 2      | branch.observe.query_contact, branch.observe.query_topic |
- * | 工具使用           | 3      | branch.observe.calendar_app, app.weather.tomorrow, app.browser.search |
- * | 等待/沉默         | 2      | branch.wait.half_sentence, branch.stay.unfinished      |
- * | 群聊参与           | 2      | branch.reply.group_help, branch.reply.p5_high       |
- * | 合计              | 16     |                                                     |
+ * | Паттерн решений           | Кол-во | ID сценариев                                       |
+ * |---------------------------|--------|----------------------------------------------------|
+ * | Прямой ответ в личном чате | 2      | branch.reply.direct, branch.baseline.greeting       |
+ * | Сдержанность в группе      | 3      | branch.silence.group_listen, branch.silence.group_debate, branch.observe_then_silence.already_answered |
+ * | Эмпатичный ответ           | 2      | branch.reply.emotional, branch.reply.burst_patience |
+ * | Многошаговые рассуждения   | 2      | branch.observe.query_contact, branch.observe.query_topic |
+ * | Использование инструментов | 3      | branch.observe.calendar_app, app.weather.tomorrow, app.browser.search |
+ * | Ожидание/молчание          | 2      | branch.wait.half_sentence, branch.stay.unfinished      |
+ * | Участие в группе           | 2      | branch.reply.group_help, branch.reply.p5_high       |
+ * | Итого                      | 16     |                                                     |
  */
 const ABLATION_SCENARIO_IDS: readonly string[] = [
-  // 私聊直接回复（sanity check）
+  // Прямой ответ в личном чате (sanity check)
   "branch.reply.direct",
   "branch.baseline.greeting",
-  // 群聊克制（Baseline 的 Rule 3 可能过度回复）
+  // Сдержанность в группе (Baseline Rule 3 может давать избыточные ответы)
   "branch.silence.group_listen",
   "branch.silence.group_debate",
   "branch.observe_then_silence.already_answered",
-  // 共情回复（voice instinct 是否提升情感适配）
+  // Эмпатичный ответ (улучшает ли voice instinct эмоциональное соответствие)
   "branch.reply.emotional",
   "branch.reply.burst_patience",
-  // 多步推理（gold examples 引导 observe 流程）
+  // Многошаговые рассуждения (направляют ли gold examples процесс observe)
   "branch.observe.query_contact",
   "branch.observe.query_topic",
-  // 工具使用（gold examples 对工具调用的引导效果）
+  // Использование инструментов (эффективность gold examples при вызовах инструментов)
   "branch.observe.calendar_app",
   "app.weather.tomorrow",
   "app.browser.search",
-  // 等待/沉默（caution voice 是否提升克制能力）
+  // Ожидание/молчание (повышает ли caution voice способность к сдержанности)
   "branch.wait.half_sentence",
   "branch.stay.unfinished",
-  // 群聊参与（situation lines 的群组上下文是否提升话题相关性）
+  // Участие в группе (улучшает ли групповой контекст situation lines тематическую релевантность)
   "branch.reply.group_help",
   "branch.reply.p5_high",
 ];
 
-/** 从全量场景中筛选消融实验子集。 */
+/** Выбирает подмножество для абляционных экспериментов из полного набора сценариев. */
 export function getAblationScenarios(): readonly EvalScenario[] {
   const idSet = new Set(ABLATION_SCENARIO_IDS);
   const all = [...BRANCH_SCENARIOS, ...APP_SCENARIOS];

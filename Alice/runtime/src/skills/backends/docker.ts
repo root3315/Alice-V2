@@ -1,9 +1,9 @@
 /**
- * Docker 容器隔离执行后端。
+ * Бэкенд изолированного выполнения в Docker-контейнере.
  *
- * 容器通过 TCP (host.docker.internal) 与宿主 Engine API 通信。
- * 主路径采用常驻 session container + `docker exec`，避免每次 shell 都冷启动容器。
- * 一次性 `docker run --rm` 仍保留为调试/回退命令构建能力。
+ * Контейнер общается с Engine API хоста по TCP (host.docker.internal).
+ * Основной путь — постоянный session-контейнер + `docker exec`, чтобы избежать холодного старта при каждом вызове shell.
+ * Одноразовый `docker run --rm` сохранён для отладки и резервного построения команд.
  *
  * @see docs/adr/201-os-for-llm.md
  */
@@ -84,31 +84,31 @@ export function resolveDockerIsolationProfile(
 }
 
 export interface DockerExecOptions {
-  /** 容器内执行的命令模板（支持 {{param}} 变量替换）。 */
+  /** Шаблон команды для выполнения внутри контейнера (поддерживает подстановку переменных {{param}}). */
   command: string;
-  /** 传给 `sh -c` 的额外位置参数。 */
+  /** Дополнительные позиционные аргументы, передаваемые в `sh -c`. */
   args?: string[];
-  /** 模板参数。 */
+  /** Параметры шаблона. */
   params: Record<string, unknown>;
-  /** Docker 镜像名。 */
+  /** Имя Docker-образа. */
   image: string;
-  /** Engine API TCP 端口。容器内通过 host.docker.internal:port 访问。 */
+  /** TCP-порт Engine API. Доступен внутри контейнера по адресу host.docker.internal:port. */
   enginePort?: number;
-  /** ALICE_SKILL 环境变量。 */
+  /** Переменная окружения ALICE_SKILL. */
   skillName: string;
-  /** 容器是否允许网络访问。 */
+  /** Разрешён ли контейнеру сетевой доступ. */
   network: boolean;
-  /** 容器内存限制（如 "512m"）。 */
+  /** Ограничение памяти контейнера (например, "512m"). */
   memory: string;
-  /** 超时（秒）。 */
+  /** Таймаут (в секундах). */
   timeout: number;
-  /** 容器内工作目录。 */
+  /** Рабочая директория внутри контейнера. */
   cwd?: string;
-  /** 额外环境变量。 */
+  /** Дополнительные переменные окружения. */
   env?: Record<string, string>;
-  /** 额外挂载。默认按 source:target 只读挂载。 */
+  /** Дополнительные монтирования. По умолчанию монтируются только для чтения (source:target). */
   extraMounts?: Array<{ source: string; target?: string; readOnly?: boolean }>;
-  /** 容器隔离档位。`container` 为历史别名，会解析到默认 profile。 */
+  /** Уровень изоляции контейнера. `container` — исторический псевдоним, разрешается в profile по умолчанию. */
   isolation?: DockerIsolationMode;
 }
 
@@ -131,9 +131,9 @@ interface DockerInspectState {
 const sessionLocks = new Map<string, Promise<DockerSessionSpec>>();
 
 /**
- * 构建 docker run 参数数组（不含 "docker" 本身）。
+ * Формирует массив аргументов для docker run (без самого "docker").
  *
- * 导出供测试验证命令构建正确性。
+ * Экспортируется для тестовой проверки корректности построения команды.
  */
 export function buildDockerArgs(opts: DockerExecOptions): string[] {
   const cmd = interpolateShell(opts.command, opts.params);
@@ -178,7 +178,7 @@ export function buildDockerExecArgs(opts: DockerExecOptions, sessionName: string
   const cmd = interpolateShell(opts.command, opts.params);
   const args = ["exec", ...buildDockerExecConfig(opts)];
 
-  // 工作目录
+  // Рабочая директория
   if (opts.cwd) {
     args.push("-w", opts.cwd);
   }
@@ -241,8 +241,8 @@ function buildDockerExecConfig(opts: DockerExecOptions): string[] {
 
   if (opts.env) {
     for (const [key, value] of Object.entries(opts.env)) {
-      // ALICE_ENGINE_URL / ALICE_SKILL 由本函数统一管理，
-      // 跳过调用方 env 中的同名键以防宿主路径覆盖容器路径
+      // ALICE_ENGINE_URL / ALICE_SKILL управляются этой функцией централизованно —
+      // пропускаем одноимённые ключи из env вызывающей стороны, чтобы пути хоста не перекрыли пути контейнера
       if (key === "ALICE_ENGINE_URL" || key === "ALICE_SKILL") continue;
       args.push("-e", `${key}=${value}`);
     }
@@ -252,8 +252,9 @@ function buildDockerExecConfig(opts: DockerExecOptions): string[] {
 }
 
 function getDockerSessionSpec(opts: DockerExecOptions): DockerSessionSpec {
-  // enginePort 不納入 signature：它在 docker exec 時動態注入（-e ALICE_ENGINE_URL），
-  // 不影響容器身份。若納入，每次重啓（port 0 隨機分配）都會産生新容器且舊容器永不清理。
+  // enginePort не входит в signature: он динамически инжектируется при docker exec (-e ALICE_ENGINE_URL)
+  // и не влияет на идентичность контейнера. Если включить, каждый перезапуск (port 0 — случайный)
+  // порождал бы новый контейнер, а старые никогда бы не убирались.
   const signaturePayload = JSON.stringify({
     image: opts.image,
     network: opts.network,
@@ -390,9 +391,9 @@ function shouldFallbackToHardened(error: unknown, opts: DockerExecOptions): bool
 }
 
 /**
- * 在 Docker 容器中执行命令。
+ * Выполняет команду в Docker-контейнере.
  *
- * @returns stdout 文本
+ * @returns текст stdout
  */
 export function executeDockerCommand(opts: DockerExecOptions): Promise<string> {
   return executeDockerProcess(opts).then((result) => {

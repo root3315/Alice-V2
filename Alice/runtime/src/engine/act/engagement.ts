@@ -1,8 +1,8 @@
 /**
- * ADR-107: 浏览会话辅助函数 — 压力估算、等待回复、脚本执行结果合并。
+ * ADR-107: Вспомогательные функции сессии просмотра — оценка давления, ожидание ответа, слияние результатов выполнения скриптов.
  *
- * ADR-214 Wave A: 删除 actions/instructions/lastSilenceReason（死字段）。
- * shell-native 架构下 RecordedAction 管线始终为空。
+ * ADR-214 Wave A: удалены actions/instructions/lastSilenceReason (мёртвые поля).
+ * В shell-native архитектуре конвейер RecordedAction всегда пуст.
  *
  * @see docs/adr/107-engagement-session/README.md
  */
@@ -13,16 +13,16 @@ import {
 } from "../../core/script-execution.js";
 import { CHAT_TYPE_WEIGHTS, DUNBAR_TIER_WEIGHT, PRESSURE_SPECS } from "../../graph/constants.js";
 import type { WorldModel } from "../../graph/world-model.js";
-// ADR-222: CONVERSATION_INERTIA_BOOST 已删除。Continuation 使用固定系数 0.67（≈ 旧 1/1.5）。
+// ADR-222: CONVERSATION_INERTIA_BOOST удалён. Continuation использует фиксированный коэффициент 0.67 (≈ старый 1/1.5).
 import type { GraphPerturbation } from "../../telegram/mapper.js";
 import type { ActContext } from "../react/orchestrator.js";
 import type { SubcycleResult } from "../react/types.js";
 
-// ── EngagementSession: 替代 loop.ts 中 10 个并行变量 ────────────────
+// ── EngagementSession: заменяет 10 параллельных переменных в loop.ts ────────────────
 
 /**
- * ADR-107: 浏览会话状态容器。
- * ADR-214 Wave A: 删除 actions/instructions/lastSilenceReason/pendingActions/markAllExecuted。
+ * ADR-107: Контейнер состояния сессии просмотра.
+ * ADR-214 Wave A: удалены actions/instructions/lastSilenceReason/pendingActions/markAllExecuted.
  */
 export class EngagementSession {
   execution: ScriptExecutionResult = emptyScriptExecutionResult();
@@ -40,19 +40,19 @@ export class EngagementSession {
     | "resting"
     | "fed_up"
     | "cooling_down" = "complete";
-  /** 可参数化 subcycle 上限（群聊收束用）。 */
+  /** Параметризуемый лимит подциклов (для завершения в групповом чате). */
   private readonly _maxSubcycles: number;
 
   constructor(maxSubcycles: number = MAX_SUBCYCLES) {
     this._maxSubcycles = maxSubcycles;
   }
 
-  /** ADR-235: 最后一次 TC 循环的可观测性元数据。 */
+  /** ADR-235: метаданные наблюдаемости последнего TC-цикла. */
   lastTcMeta?: SubcycleResult["tcMeta"];
-  /** 最近一次 LLM 调用失败分类。 */
+  /** Классификация последнего сбоя LLM-вызова. */
   failureKind?: SubcycleResult["failureKind"];
 
-  /** 吸收一个子周期的结果到 engagement 级累积。 */
+  /** Вбирает результат одного подцикла в накопитель уровня engagement. */
   absorb(sub: SubcycleResult): void {
     this.execution = mergeScriptExecutionResults([this.execution, sub.execution]);
     this.errorCount += sub.execution.errors.length;
@@ -61,30 +61,30 @@ export class EngagementSession {
     if (sub.failureKind) this.failureKind = sub.failureKind;
   }
 
-  /** 检查 engagement 是否可以继续（未超出子周期/时长上限）。 */
+  /** Проверяет, может ли engagement продолжаться (не превышены лимиты подциклов/длительности). */
   canContinue(): boolean {
     return this.subcycle < this._maxSubcycles && this.elapsed < MAX_ENGAGEMENT_DURATION;
   }
 
-  /** 将累积数据合并为 ScriptExecutionResult（用于 processResult 审计）。 */
+  /** Сливает накопленные данные в ScriptExecutionResult (для аудита в processResult). */
   toMergedResult(): ScriptExecutionResult {
     return this.execution;
   }
 }
 
-// ── ADR-107: 浏览会话常量 ──────────────────────────────────────
-// @see docs/adr/107-engagement-session/README.md §设计常量
-export const MAX_ENGAGEMENT_DURATION = 180_000; // 单次浏览会话最大时长 (3 min)
-export const EXPECT_REPLY_TIMEOUT = 60_000; // 单次 expect_reply 等待上限 (60s)
-export const STAY_TIMEOUT = 15_000; // stay 观望最长等待 (15s)
-export const PREEMPTION_FACTOR = 1.5; // 抢占阈值：新事件紧急度 / 当前 hold 的比值
-const TYPING_EXTENSION = 15_000; // 每次 typing 延长 15s
-const MAX_TYPING_EXTEND_FACTOR = 2; // 最多延长到原始超时的 2 倍
-export const MAX_SUBCYCLES = 5; // 单次浏览会话最大子周期数
+// ── ADR-107: Константы сессии просмотра ──────────────────────────────────────
+// @see docs/adr/107-engagement-session/README.md §константы-дизайна
+export const MAX_ENGAGEMENT_DURATION = 180_000; // Максимальная длительность одной сессии (3 мин)
+export const EXPECT_REPLY_TIMEOUT = 60_000; // Лимит ожидания expect_reply (60 с)
+export const STAY_TIMEOUT = 15_000; // Максимальное ожидание при stay (15 с)
+export const PREEMPTION_FACTOR = 1.5; // Порог вытеснения: срочность нового события / удерживаемый hold
+const TYPING_EXTENSION = 15_000; // Продление таймаута при каждом typing на 15 с
+const MAX_TYPING_EXTEND_FACTOR = 2; // Максимальное продление — до 2× исходного таймаута
+export const MAX_SUBCYCLES = 5; // Максимальное число подциклов в одной сессии
 
 /**
- * ADR-107: 快速估算单个事件的紧急度。O(1)，不扫描全图。
- * 用于浏览会话期间判断是否被更紧急的事件抢占。
+ * ADR-107: Быстрая оценка срочности одного события. O(1), без обхода графа.
+ * Используется в сессии просмотра для определения вытеснения более срочным событием.
  *
  * @see paper/ §7.5 Proposition (Quick Pressure Estimate)
  * @see docs/adr/107-engagement-session/README.md §preemption
@@ -109,7 +109,7 @@ export function quickPressureEstimate(G: WorldModel, event: GraphPerturbation): 
   }
 
   if (event.type === "new_message" && event.isContinuation) {
-    // ADR-222: continuation 权重 = directed × 0.67（保持旧 1/1.5 ≈ 0.67 的数值连续性）
+    // ADR-222: вес continuation = directed × 0.67 (сохраняет числовую преемственность старого 1/1.5 ≈ 0.67)
     return wTier * wResponse * 0.67;
   }
 
@@ -118,7 +118,7 @@ export function quickPressureEstimate(G: WorldModel, event: GraphPerturbation): 
 }
 
 /**
- * ADR-108: Listen-First — 将 watcher 注册与 await 拆分为两阶段。
+ * ADR-108: Listen-First — разделяет регистрацию watcher и await на два этапа.
  */
 export interface WatchResult {
   type: "reply" | "interrupt" | "timeout" | "activity";
@@ -221,10 +221,11 @@ export function prepareStayWatch(
   cancel: () => void;
 } {
   const activityWatch = ctx.buffer.watch(
-    // ADR-247: watching 是继续注意，不是发言授权。
-    // 只有同目标 directed 新消息可以把 linger slot 重新唤醒；typing / ambient activity
-    // 仍进入 EventBuffer，由外层控制器按真实压力重新评估。
-    // @see docs/adr/247-block-contract-over-transport.md §P1：拆 `watching`
+    // ADR-247: watching — это продолжение внимания, а не разрешение говорить.
+    // Только directed-сообщение в целевой чат может заново разбудить linger-слот;
+    // typing / ambient activity по-прежнему попадают в EventBuffer и переоцениваются
+    // внешним контроллером по реальному давлению.
+    // @see docs/adr/247-block-contract-over-transport.md §P1: разбиение `watching`
     (e) =>
       e.type === "new_message" &&
       e.channelId === targetChannelId &&

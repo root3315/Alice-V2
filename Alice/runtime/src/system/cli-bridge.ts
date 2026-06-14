@@ -56,15 +56,15 @@ export function parseKeyValueArgs(args: string[]): Record<string, unknown> {
         continue;
       }
 
-      // 下一个参数是值（除非它以 -- 开头，那是另一个 flag）
-      // 单 - 后跟数字（如 -1009900000001）是合法值（负数 Telegram ID）
+      // Следующий аргумент — значение (кроме случаев, когда он начинается с --, что означает другой флаг)
+      // Одиночный - перед числом (например -1009900000001) — допустимое значение (отрицательный Telegram ID)
       if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
         body[arg.slice(2)] = parseCliValue(args[i + 1]);
         i += 2;
         continue;
       }
 
-      // --flag 无值 → true（布尔标志）
+      // --flag без значения → true (булев флаг)
       body[arg.slice(2)] = true;
       i++;
       continue;
@@ -139,11 +139,11 @@ export function renderBridgeResult(result: unknown): string {
   return JSON.stringify(result, null, 2);
 }
 
-// ── ADR-235: 人类可读渲染工具 ──
+// ── ADR-235: утилиты человекочитаемого рендеринга ──
 
 /**
- * 从 rawArgs 中提取 --json flag。
- * 返回过滤后的 args（不含 --json）和是否 json 模式。
+ * Извлекает флаг --json из rawArgs.
+ * Возвращает отфильтрованные args (без --json) и признак режима JSON.
  */
 export function extractJsonFlag(rawArgs: string[]): { json: boolean; args: string[] } {
   const has = rawArgs.includes("--json");
@@ -153,24 +153,24 @@ export function extractJsonFlag(rawArgs: string[]): { json: boolean; args: strin
   };
 }
 
-/** 截断长文本，用于确认消息中的预览。 */
+/** Обрезает длинный текст для предварительного просмотра в подтверждающих сообщениях. */
 export function truncate(text: string, max = 60): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max)}...`;
 }
 
-/** 渲染成功确认行。`✓ Sent: "hello"` */
+/** Формирует строку успешного подтверждения. `✓ Sent: "hello"` */
 export function renderConfirm(action: string, detail?: string): string {
   return detail ? `✓ ${action}: ${detail}` : `✓ ${action}`;
 }
 
-/** 渲染错误行。`✗ Rate limited` */
+/** Формирует строку ошибки. `✗ Rate limited` */
 export function renderError(msg: string): string {
   return `✗ ${msg}`;
 }
 
 /**
- * 渲染 key-value 对为多行文本。跳过 null/undefined 值。
+ * Форматирует пары ключ-значение в многострочный текст. Пропускает null/undefined значения.
  * ```
  * Channel: tech-discuss
  * Members: 42
@@ -187,37 +187,37 @@ export function renderKeyValue(pairs: Array<[string, unknown]>): string {
 }
 
 /**
- * 提取对象的摘要表示——优先用 title/name/id 等标识字段，
- * 其余字段紧凑渲染，避免全量 JSON 占据大量 token。
+ * Формирует краткое представление объекта — приоритет у идентифицирующих полей title/name/id,
+ * остальные поля рендерятся компактно, чтобы не тратить лишние токены на полный JSON.
  */
 function summarizeObject(obj: Record<string, unknown>): string {
-  // 标识字段优先级
+  // Приоритет идентифицирующих полей
   const label =
     obj.title ?? obj.name ?? obj.display_name ?? obj.displayName ?? obj.description ?? obj.id;
   if (label != null) {
     const id = obj.id != null && label !== obj.id ? `[#${obj.id}] ` : "";
-    // 收集非标识、非 null 的标量字段作为补充
+    // Собираем не-идентифицирующие, не-null скалярные поля как дополнение
     const extras: string[] = [];
     for (const [k, v] of Object.entries(obj)) {
       if (["id", "title", "name", "display_name", "displayName", "description"].includes(k))
         continue;
       if (v == null || v === "") continue;
-      if (typeof v === "object") continue; // 跳过嵌套
+      if (typeof v === "object") continue; // пропускаем вложенные объекты
       extras.push(`${k}: ${String(v)}`);
     }
     const suffix = extras.length > 0 ? ` (${extras.slice(0, 3).join(", ")})` : "";
     return `${id}${String(label)}${suffix}`;
   }
-  // 无标识字段——降级为紧凑 JSON
+  // Нет идентифицирующих полей — деградируем до компактного JSON
   return JSON.stringify(obj);
 }
 
 /**
- * 渲染 unknown 对象为人类可读文本（ADR-235 通用降级）。
+ * Преобразует unknown-объект в человекочитаемый текст (ADR-235, универсальный fallback).
  * - null → `✓ Done`
- * - string → 原文
- * - array → 编号列表（每项 toString 或 JSON）
- * - object → key: value 多行
+ * - string → исходный текст
+ * - array → нумерованный список (toString или JSON для каждого элемента)
+ * - object → key: value многострочно
  */
 export function renderHuman(result: unknown): string {
   if (result == null) return "✓ Done";
@@ -239,30 +239,30 @@ export function renderHuman(result: unknown): string {
       .join("\n");
   }
 
-  // object → key-value
+  // object → ключ-значение
   const entries = Object.entries(result as Record<string, unknown>);
   if (entries.length === 0) return "✓ Done";
   return renderKeyValue(entries);
 }
 
-/** JSON 模式输出（保留调试能力）。 */
+/** Вывод в режиме JSON (сохраняет возможность отладки). */
 export function renderJson(result: unknown): string {
   return JSON.stringify(result, null, 2);
 }
 
 /**
- * 格式化输出内容（ADR-239 简化版）。
- * 返回人类可读文本。JSON 模式由 makeRunner 处理。
+ * Форматирует выходное содержимое (упрощённая версия ADR-239).
+ * Возвращает человекочитаемый текст. Режим JSON обрабатывается в makeRunner.
  */
 export function formatOutput(humanText: string): string {
   return humanText;
 }
 
 /**
- * 统一错误退出函数（ADR-235）。
- * 输出 `✗ <msg>` 到 stderr，设置 exit code，然后退出。
- * @param cliName CLI 名称（如 "irc"、"alice-pkg"），用于错误前缀
- * @param msg 错误消息
+ * Единая функция выхода с ошибкой (ADR-235).
+ * Выводит `✗ <msg>` в stderr, устанавливает exit code и завершает процесс.
+ * @param cliName имя CLI (например "irc", "alice-pkg") — используется как префикс ошибки
+ * @param msg сообщение об ошибке
  */
 export function die(cliName: string, msg: string): never {
   process.stderr.write(`✗ ${cliName}: ${msg}\n`);

@@ -1,14 +1,14 @@
 /**
- * P5 Response Obligation — 论文 §3.5 对齐实现 + 工程增强。
+ * P5 Response Obligation — реализация выравнивания §3.5 статьи + инженерные улучшения.
  *
- * 论文公式：
+ * Формула из статьи:
  *   P₅(n) = Σ_{h ∈ H_active} directed(h, n) × w_tier(h) × w_chat(h) × decay(h, n)
  *
- * 工程修正（ADR-157, ADR-153, ADR-215）：
- * - 指数核替代双曲线（物理更正确，残余更低）
- * - Hawkes λ(t) 调制（对方活跃时义务持续）
- * - 对数缩放 directed（防止大规模图中未处理消息累积导致饱和）
- * - per-channel 义务上限（防止单频道消息风暴淹没系统）
+ * Инженерные правки (ADR-157, ADR-153, ADR-215):
+ * - Экспоненциальное ядро вместо гиперболы (физически корректнее, меньше остаточного сигнала)
+ * - Модуляция Hawkes λ(t) (обязательство сохраняется, пока собеседник активен)
+ * - Логарифмическое масштабирование directed (предотвращает насыщение при накоплении необработанных сообщений в крупных графах)
+ * - Ограничение обязательства per-channel (защита от шторма сообщений в одном канале)
  *
  * @see paper/ §3.5 Response Obligation
  * @see docs/adr/157-signal-decay-integrity.md
@@ -33,21 +33,22 @@ import {
   OBLIGATION_HALFLIFE_PRIVATE,
 } from "./signal-decay.js";
 
-// ADR-222 已删除
+// ADR-222 удалён
 
-/** alice_turn 时的额外回应义务加成（30%）。 */
+/** Дополнительный бонус обязательства ответа во время alice_turn (30%). */
 const TURN_OBLIGATION_BOOST = 1.3;
 
 /**
- * ADR-215: per-channel directed 上限。
- * 防止单频道消息风暴：即使未处理 100 条 directed 消息，
- * 有效义务上限为 ln(1+5) ≈ 1.8（而非 100）。
+ * ADR-215: ограничение directed per-channel.
+ * Защита от шторма сообщений в одном канале: даже при 100 необработанных directed-сообщениях
+ * эффективное обязательство ограничено значением ln(1+5) ≈ 1.8 (вместо 100).
  */
 const DIRECTED_CAP_PER_CHANNEL = 5.0;
 
 /**
- * 对数缩放 directed 计数：将线性增长的未处理消息计数
- * 转换为有界义务强度。大规模图中防止 P5 饱和。
+ * Логарифмическое масштабирование directed: преобразует линейно растущее число
+ * необработанных сообщений в ограниченную интенсивность обязательства. Предотвращает
+ * насыщение P5 в крупных графах.
  *
  * effectiveDirected = ln(1 + min(directed, DIRECTED_CAP_PER_CHANNEL))
  *
@@ -67,14 +68,14 @@ export function p5ResponseObligation(G: WorldModel, _n: number, nowMs: number): 
     const directedRaw = attrs.pending_directed;
     if (directedRaw <= 0) continue;
 
-    // ADR-215: 对数缩放 directed，防止大规模图中饱和
+    // ADR-215: логарифмическое масштабирование directed, предотвращает насыщение в крупных графах
     const directed = effectiveDirected(directedRaw);
 
-    // Wave 6: Tier bias correction — 通过 channel 的 tier_contact 推断 contactId，
-    // 读取 BeliefStore 中 tier 信念的 σ²，σ² 高时向基线回归。
+    // Wave 6: Tier bias correction — выводим contactId из tier_contact канала,
+    // читаем σ² убеждения tier из BeliefStore, при высоком σ² регрессируем к базовой линии.
     // @see paper/ §Social POMDP "Tier Overestimate Bias Correction"
     const contactId = chatIdToContactId(hid);
-    // ADR-91 Layer 2: Bot directed 消息降权 ×0.1
+    // ADR-91 Layer 2: снижение веса directed-сообщений от ботов ×0.1
     const isBot = contactId != null && G.has(contactId) && G.getContact(contactId).is_bot === true;
     const botWeight = isBot ? 0.1 : 1.0;
     const b = contactId ? beliefs.get(contactId, "tier") : undefined;
@@ -84,16 +85,16 @@ export function p5ResponseObligation(G: WorldModel, _n: number, nowMs: number): 
     const chatW = CHAT_TYPE_WEIGHTS[chatType]?.response ?? 1.0;
     const lastDirectedMs = readNodeMs(G, hid, "last_directed_ms");
     const ageS = Math.max(elapsedS(nowMs, lastDirectedMs), 1.0);
-    // ADR-157: 统一使用 signal-decay.ts 的指数核和半衰期常量。
-    // 半衰期：私聊 3600s，群聊 2400s（与 effectiveObligation 一致）。
-    // 旧版使用双曲线 1/(1+ageS/τ)，指数核 2^(-ageS/τ) 自然消退更符合事件信号物理。
+    // ADR-157: единообразно используем экспоненциальное ядро и константы полураспада из signal-decay.ts.
+    // Период полураспада: приватный чат 3600s, групповой 2400s (соответствует effectiveObligation).
+    // Старая версия использовала гиперболу 1/(1+ageS/τ); экспоненциальное ядро 2^(-ageS/τ) физически точнее описывает затухание событийного сигнала.
     // @see docs/adr/157-signal-decay-integrity.md §Fix 1
     const isPrivate = chatType === "private";
     const decayHalfLife = isPrivate ? OBLIGATION_HALFLIFE_PRIVATE : OBLIGATION_HALFLIFE_GROUP;
     const rawDecay = decaySignal(1.0, ageS, decayHalfLife);
-    // ADR-153 Phase 2: λ(t) 高 → 衰减减慢（对方仍在活跃，义务持续）
-    // k_p5 = 0.5, clamp [1, 2]。仿真验证：活跃期 2× 基线，沉默后收敛。
-    // @see simulation/experiments/exp_hawkes_phase2_validation.py 验证 1
+    // ADR-153 Phase 2: высокий λ(t) → замедление затухания (собеседник ещё активен, обязательство сохраняется)
+    // k_p5 = 0.5, зажим [1, 2]. Подтверждено симуляцией: в активный период 2× базовой линии, после тишины сходится.
+    // @see simulation/experiments/exp_hawkes_phase2_validation.py проверка 1
     let decay = rawDecay;
     const cId = chatIdToContactId(hid);
     if (cId && G.has(cId)) {
@@ -113,21 +114,21 @@ export function p5ResponseObligation(G: WorldModel, _n: number, nowMs: number): 
       }
     }
 
-    // ADR-156: social reception 独立调制（与 ADR-222 habituation 正交）。
-    // reception 是他人对 Alice 的社交反馈；habituation 是 Alice 自身的适应性衰减。
-    // reception=0（默认/未设置）→ 1.0（不惩罚无数据状态）。
+    // ADR-156: независимая модуляция social reception (ортогональна ADR-222 habituation).
+    // reception — социальная обратная связь от других к Алисе; habituation — адаптивное затухание самой Алисы.
+    // reception=0 (по умолчанию/не задан) → 1.0 (отсутствие данных не штрафуется).
     const reception = readSocialReception(G, hid);
     const receptionFactor =
       reception >= 0 ? 1.0 : reception > -0.3 ? 0.7 : reception > -0.6 ? 0.3 : 0.1;
 
-    // ADR-70 P0.5: Alice 正在为此频道思考 → 抑制 P5 累积
+    // ADR-70 P0.5: Алиса обдумывает ответ для этого канала → подавить накопление P5
     const thinkingSince = G.getChannel(hid).alice_thinking_since;
     if (thinkingSince != null) {
       contributions[hid] = directed * w * chatW * decay * receptionFactor * 0.1 * botWeight;
       continue;
     }
 
-    // M4: conversation turn awareness — 轮到 Alice 回复 → 额外义务
+    // M4: conversation turn awareness — очередь Алисы отвечать → дополнительное обязательство
     let turnBoost = 1.0;
     const convId = findActiveConversation(G, hid);
     if (convId && G.has(convId)) {

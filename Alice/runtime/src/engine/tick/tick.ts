@@ -1,23 +1,23 @@
 /**
- * Blackboard Tick 核心循环 — buildPrompt → callLLM → updateBoard。
+ * Blackboard Tick основной цикл — buildPrompt → callLLM → updateBoard.
  *
- * ADR-214 Wave A: resolveQueries 已删除（shell-native 架构下 actions 始终为空）。
+ * ADR-214 Wave A: resolveQueries удалён (в shell-native архитектуре actions всегда пусты).
  *
- * 核心循环语义：
- * 1. buildPrompt → callLLM（生成一个 structured block 并执行）
- * 2. updateBoard：执行结果写入 Blackboard
- * 3. Host 分两层判断：
- *    - afterward: 这一轮结束后的对话走向
- *    - intra-tick continuation: 基于本地 observations / 错误反馈决定是否立即续轮
+ * Семантика основного цикла:
+ * 1. buildPrompt → callLLM (генерирует один structured block и выполняет его)
+ * 2. updateBoard: результат выполнения записывается в Blackboard
+ * 3. Host принимает решение на двух уровнях:
+ *    - afterward: направление диалога после завершения текущего раунда
+ *    - intra-tick continuation: решение о немедленном продолжении на основе локальных observations / ошибок
  *
- * 终止条件（ADR-216 + ADR-246）：
- * - isTerminal(board) 非 null（budget 耗尽）
- * - 执行错误 / 指令错误 → 优先同一 tick 内自纠，不能被 afterward 覆盖
- * - afterward = waiting_reply / resting / fed_up / cooling_down → 无错误时终止
- * - afterward = watching 且 host 观察到新的本地 follow-up 上下文 → 同一 tick 内续轮
- * - afterward = watching 但 host 未观察到新的本地 follow-up 上下文 → 交给外层 watcher
- * - afterward = done 且有错误反馈 → 同一 tick 内自纠续轮
- * - 其余情况终止
+ * Условия завершения (ADR-216 + ADR-246):
+ * - isTerminal(board) не null (бюджет исчерпан)
+ * - Ошибки выполнения / ошибки инструкций → приоритет самокоррекции внутри того же tick, afterward не может переопределить
+ * - afterward = waiting_reply / resting / fed_up / cooling_down → завершение при отсутствии ошибок
+ * - afterward = watching и host обнаружил новый локальный follow-up контекст → продолжение внутри того же tick
+ * - afterward = watching, но host не обнаружил нового локального follow-up контекста → передача внешнему watcher
+ * - afterward = done и есть ошибки → самокоррекция с продолжением внутри того же tick
+ * - во всех прочих случаях — завершение
  *
  * @see docs/adr/169-fire-query-auto-continuation.md
  * @see docs/adr/142-action-space-architecture/README.md
@@ -47,7 +47,7 @@ import type {
 } from "./types.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// afterward → outcome 映射
+// afterward → outcome маппинг
 // ═══════════════════════════════════════════════════════════════════════════
 
 const AFTERWARD_TO_OUTCOME: Record<Afterward, TickOutcome> = {
@@ -174,12 +174,12 @@ function classifyContinuationTokens(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 依赖注入接口
+// Интерфейс внедрения зависимостей
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Tick 循环的外部依赖（测试可 mock）。 */
+/** Внешние зависимости Tick-цикла (могут быть замокированы в тестах). */
 export interface TickDeps {
-  /** 调用 LLM — 生成并执行一个 structured block，返回完整结果。 */
+  /** Вызов LLM — генерирует и выполняет один structured block, возвращает полный результат. */
   callLLM: (
     system: string,
     user: string,
@@ -190,26 +190,26 @@ export interface TickDeps {
     selectedProvider?: AvailableProvider,
   ) => Promise<TickCallResult>;
 
-  /** Prompt 构建覆盖（eval 消融实验用）。省略时使用 buildTickPrompt。 */
+  /** Переопределение построения prompt (для eval ablation-экспериментов). При отсутствии используется buildTickPrompt. */
   buildPrompt?: (
     board: Blackboard,
     allTools: readonly UnifiedTool[],
     ctx: TickPromptContext,
   ) => Promise<{ system: string; user: string }> | { system: string; user: string };
 
-  /** 每步完成后回调（eval 诊断用）。在 LLM 调用后触发。 */
+  /** Коллбэк после завершения каждого шага (для eval-диагностики). Вызывается после обращения к LLM. */
   onStep?: (info: { round: number; system: string; user: string; script: string | null }) => void;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 核心 tick 循环
+// Основной tick-цикл
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Blackboard Tick 循环 — 主入口。
+ * Blackboard Tick цикл — основная точка входа.
  *
- * 每步：buildTickPrompt → callLLM → updateBoard → inject errors
- * 终止：isTerminal(board) 非 null，或 afterward 信号中断
+ * Каждый шаг: buildTickPrompt → callLLM → updateBoard → inject errors
+ * Завершение: isTerminal(board) не null или сигнал afterward прерывает цикл
  */
 export async function tick(
   board: Blackboard,
@@ -227,7 +227,7 @@ export async function tick(
   const hostContinuationTrace: ActualContinuationReason[] = [];
 
   while (true) {
-    // 检查终止条件
+    // Проверка условий завершения
     const terminal = isTerminal(board);
     if (terminal != null) {
       outcome = terminal;
@@ -237,7 +237,7 @@ export async function tick(
     const round = board.budget.usedSteps;
     const obsBefore = board.observations.length;
 
-    // ── 构建 prompt ──
+    // ── Построение prompt ──
     const promptCtx: TickPromptContext = {
       ...ctx,
       messages: ctx.messages,
@@ -249,7 +249,7 @@ export async function tick(
       ? await deps.buildPrompt(board, allTools, promptCtx)
       : await buildTickPrompt(board, promptCtx);
 
-    // ── LLM 调用 ──
+    // ── Вызов LLM ──
     const execResult = await deps.callLLM(
       system,
       user,
@@ -296,17 +296,17 @@ export async function tick(
 
     lastExecResult = execResult;
 
-    // ── 更新 Blackboard ──
+    // ── Обновление Blackboard ──
     updateBoard(board, execResult);
 
-    // ── ADR-213: 执行结果 → observations（分形坍缩：round → 事实节点）──
+    // ── ADR-213: результат выполнения → observations (фрактальное свёртывание: round → узел-факт) ──
     if (execResult.logs.length > 0) {
       const outputText = execResult.logs.slice(0, 50).join("\n");
       board.observations.push(`(Command output:\n${outputText})`);
     }
 
-    // ── ADR-169: 脚本错误 → observations（LLM 自纠）──
-    // ADR-237 增强：将技术错误转换为自然语言描述
+    // ── ADR-169: ошибки скрипта → observations (самокоррекция LLM) ──
+    // ADR-237 улучшение: преобразование технических ошибок в описание на естественном языке
     if (execResult.errors.length > 0) {
       const naturalErrors =
         execResult.errorCodes.length > 0
@@ -315,7 +315,7 @@ export async function tick(
 
       let obs = `(с последней командой что-то пошло не так:\n${naturalErrors.map((e) => `- ${e}`).join("\n")})`;
 
-      // 已完成的操作
+      // Уже выполненные действия
       if (execResult.completedActions.length > 0) {
         const doneLines = execResult.completedActions.map((a) => `- ${a}`).join("\n");
         obs += `\n(это уже сделано, не повторяй:\n${doneLines})`;
@@ -324,7 +324,7 @@ export async function tick(
       board.observations.push(obs);
     }
 
-    // 指令错误（无效 consult category、参数 arity 等）——非致命但 LLM 应知晓
+    // Ошибки инструкций (невалидная consult category, неверное число аргументов и т.п.) — не фатальны, но LLM должен знать
     if (execResult.instructionErrors.length > 0) {
       const errLines = execResult.instructionErrors.map((e) => `- ${e}`).join("\n");
       board.observations.push(`(Instruction issues:\n${errLines})`);
@@ -335,7 +335,7 @@ export async function tick(
 
     const continuation = deriveIntraTickContinuation(execResult, continuationTokens);
 
-    // ── prompt 快照落盘 ──
+    // ── Сохранение snapshot prompt на диск ──
     logPromptSnapshot({
       tick: ctx.tick,
       target: ctx.item.target,
@@ -370,14 +370,14 @@ export async function tick(
       continue;
     }
 
-    // ── afterward 信号驱动退出 ──
+    // ── Выход по сигналу afterward ──
     outcome = AFTERWARD_TO_OUTCOME[execResult.afterward] ?? "terminal";
     break;
   }
 
   const result = drainBoard(board, outcome, Date.now() - startTime, episodeRound);
 
-  // ADR-235: 从最后一次 TC 循环结果中提取可观测性元数据
+  // ADR-235: Извлечение метаданных наблюдаемости из последнего результата TC-цикла
   if (lastExecResult) {
     const cmdLog = lastExecResult.commandOutput ?? "";
     if (lastExecResult.llmResidue) {

@@ -1,16 +1,16 @@
 /**
- * 对话会话实体生命周期管理 (ADR-26 §3)。
+ * Управление жизненным циклом сущностей диалоговой сессии (ADR-26 §3).
  *
- * Conversation 是图的第四种一级实体（channel/contact/thread/conversation），
- * 追踪 Alice 与联系人之间的交互会话状态。
+ * Conversation — четвёртый тип первичных сущностей графа (channel/contact/thread/conversation),
+ * отслеживает состояние интерактивной сессии между Alice и контактом.
  *
- * 与 Thread（话题维度）正交: Thread 是"帮 Bob debug"，
- * Conversation 是"今天下午和 Bob 的这段 DM 对话"。
+ * Ортогонально Thread (тематическое измерение): Thread — это «помочь Bob с debug»,
+ * Conversation — «этот DM-разговор с Bob сегодня днём».
  *
- * **核心不变式**：每个 channel 至多一个非终态（non-cooldown）对话。
- * 通过创建守卫强制执行——违反时旧对话自动终结为 cooldown。
+ * **Основной инвариант**: не более одного нетерминального (non-cooldown) диалога на канал.
+ * Принудительно соблюдается через охранник создания — при нарушении старый диалог автоматически переходит в cooldown.
  *
- * Phase 1: 纯函数，不调用 LLM，不写数据库，只被测试消费。
+ * Phase 1: чистые функции, без вызовов LLM, без записи в БД, потребляются только тестами.
  */
 
 import { ALICE_SELF } from "../graph/constants.js";
@@ -20,30 +20,30 @@ import type { WorldModel } from "../graph/world-model.js";
 import { ChatTarget } from "../prompt/types.js";
 import type { GraphPerturbation } from "../telegram/mapper.js";
 
-// -- 常量 -------------------------------------------------------------------
+// -- Константы -------------------------------------------------------------------
 
-/** ADR-110: pending 状态超时（秒）——群聊双握手等待窗口。 */
+/** ADR-110: Таймаут состояния pending (секунды) — окно ожидания двойного рукопожатия в групповом чате. */
 const N_PENDING_S = 300;
-/** ADR-110: closing → cooldown 的冷却时间（秒）。 */
+/** ADR-110: Время охлаждения closing → cooldown (секунды). */
 const M_COOLDOWN_S = 600;
-/** 私聊 closing 超时（秒）：异步 IM 场景，45 分钟。 */
+/** Таймаут closing для приватного чата (секунды): асинхронный IM-сценарий, 45 минут. */
 const CLOSING_TIMEOUT_PRIVATE_S = 2700;
-/** 群聊 closing 超时（秒）：群聊对话节奏快，15 分钟。 */
+/** Таймаут closing для группового чата (секунды): быстрый темп группового диалога, 15 минут. */
 const CLOSING_TIMEOUT_GROUP_S = 900;
-/** cooldown 对话 GC 超时（秒）：1 小时后删除实体。 */
+/** Таймаут GC для диалога в cooldown (секунды): удаление сущности через 1 час. */
 const COOLDOWN_GC_S = 3600;
 /**
- * ADR-218 F3: alice_turn TTL（秒）。
- * alice_turn 无新消息超过此时长 → 过期转 open，消散 isConversationContinuation bypass。
- * 10 分钟：如果 Alice 这么久都没回复，这个对话不再紧急。
+ * ADR-218 F3: TTL alice_turn (секунды).
+ * Если alice_turn не получает новых сообщений дольше этого времени → истекает и переходит в open, рассеивая bypass isConversationContinuation.
+ * 10 минут: если Alice так долго не отвечает, диалог больше не является срочным.
  */
 const ALICE_TURN_TTL_S = 600;
 
-// -- 内部工具 ---------------------------------------------------------------
+// -- Внутренние утилиты ---------------------------------------------------------------
 
 /**
- * 终结指定 channel 上所有非终态对话 → cooldown。
- * 强制执行"每个 channel 至多一个非终态对话"不变式。
+ * Завершает все нетерминальные диалоги в указанном channel → cooldown.
+ * Принудительно соблюдает инвариант «не более одного нетерминального диалога на channel».
  */
 function terminateAllForChannel(G: WorldModel, channelId: string, _nowMs: number): void {
   for (const convId of G.getEntitiesByType("conversation")) {
@@ -55,33 +55,33 @@ function terminateAllForChannel(G: WorldModel, channelId: string, _nowMs: number
   }
 }
 
-// -- 创建 -------------------------------------------------------------------
+// -- Создание -------------------------------------------------------------------
 
 /**
- * 检测是否应创建新的对话会话。
+ * Определяет, нужно ли создавать новую диалоговую сессию.
  *
- * 触发条件: directed new_message 到无活跃 conv 的 channel。
- * - 私聊: 直接进入 opening, turnState=alice_turn
- * - 群聊: 进入 pending（双握手，等待 Alice 回复确认参与）
+ * Условие срабатывания: directed new_message в channel без активного диалога.
+ * - Приватный чат: сразу переходит в opening, turnState=alice_turn
+ * - Групповой чат: переходит в pending (двойное рукопожатие, ожидание подтверждения участия от Alice)
  *
- * **Closing 守卫**：如果 channel 有 closing 对话，directed 消息意味着
- * 对方重新拉回 Alice → 重新激活而非创建新对话。这阻止了 leave 告别承诺
- * 被静默击穿的 F1 缺陷。
+ * **Охранник closing**: если в channel есть closing-диалог, directed-сообщение означает,
+ * что собеседник снова привлекает Alice → переактивация вместо создания нового диалога.
+ * Это предотвращает дефект F1 — тихое обходение обещания прощания leave.
  *
- * @returns 新创建/重新激活的 conversation ID，或 null（不创建）
+ * @returns ID созданного/переактивированного conversation, или null (не создавать)
  */
 export function detectConversationStart(G: WorldModel, event: GraphPerturbation): string | null {
-  // 只处理 directed new_message
+  // Обрабатываем только directed new_message
   if (event.type !== "new_message" || !event.isDirected) return null;
   if (!event.channelId) return null;
 
-  // 已有活跃会话 → 不创建
+  // Уже есть активная сессия → не создавать
   if (findActiveConversation(G, event.channelId)) return null;
 
   const channelId = event.channelId;
   const nowMs = event.nowMs ?? Date.now();
 
-  // Closing 守卫：对方 directed 消息拉回 Alice → 重新激活旧对话
+  // Охранник closing: directed-сообщение от собеседника возвращает Alice → переактивируем старый диалог
   const closingConvId = findClosingConversation(G, channelId);
   if (closingConvId && G.has(closingConvId)) {
     G.updateConversation(closingConvId, {
@@ -91,7 +91,7 @@ export function detectConversationStart(G: WorldModel, event: GraphPerturbation)
       closing_since_ms: undefined,
       message_count: (G.getConversation(closingConvId).message_count ?? 0) + 1,
     });
-    // 添加新参与者
+    // Добавляем нового участника
     if (event.contactId) {
       const participants = G.getConversation(closingConvId).participants ?? [];
       if (!participants.includes(event.contactId)) {
@@ -104,7 +104,7 @@ export function detectConversationStart(G: WorldModel, event: GraphPerturbation)
     return closingConvId;
   }
 
-  // 无活跃也无 closing → 清理旧终态对话，创建新对话
+  // Нет ни активного, ни closing → очищаем старые терминальные диалоги и создаём новый
   terminateAllForChannel(G, channelId, nowMs);
 
   const tick = event.tick;
@@ -133,7 +133,7 @@ export function detectConversationStart(G: WorldModel, event: GraphPerturbation)
     alice_message_count: 0,
   });
 
-  // 关系边
+  // Рёбра отношений
   G.addRelation(convId, "happens_in", channelId);
   if (event.contactId && G.has(event.contactId)) {
     G.addRelation(event.contactId, "participates", convId);
@@ -142,31 +142,31 @@ export function detectConversationStart(G: WorldModel, event: GraphPerturbation)
   return convId;
 }
 
-// -- 隐式对话创建 -----------------------------------------------------------
+// -- Неявное создание диалога -----------------------------------------------------------
 
 /**
- * 创建隐式对话：Alice 近期发言后，对方不用 reply 直接跟进。
+ * Создаёт неявный диалог: собеседник продолжает общение без reply после недавнего сообщения Alice.
  *
- * 与 detectConversationStart 的区别：
- * - detectConversationStart 要求 isDirected=true（reply / @mention / 私聊）
- * - createImplicitConversation 由 isContinuation=true 触发（Alice 近期发言的频道）
+ * Отличие от detectConversationStart:
+ * - detectConversationStart требует isDirected=true (reply / @mention / приватный чат)
+ * - createImplicitConversation срабатывает при isContinuation=true (канал, где Alice недавно говорила)
  *
- * **Closing 守卫**：Alice 已告别（closing），非 directed 的隐式消息
- * 不足以推翻告别承诺 → 拒绝创建。只有 directed 消息才能重新拉回 Alice。
+ * **Охранник closing**: Alice уже попрощалась (closing) — неявного, не-directed сообщения
+ * недостаточно для отмены обещания прощания → отказываем в создании. Только directed-сообщение может вернуть Alice.
  *
- * @returns 新创建的 conversation ID，或 null（不创建）
+ * @returns ID созданного conversation, или null (не создавать)
  */
 export function createImplicitConversation(G: WorldModel, event: GraphPerturbation): string | null {
   if (!event.channelId) return null;
-  // 已有活跃会话 → 不创建
+  // Уже есть активная сессия → не создавать
   if (findActiveConversation(G, event.channelId)) return null;
-  // Closing 守卫：Alice 已告别，拒绝隐式重新激活（F1 修复核心）
+  // Охранник closing: Alice уже попрощалась, отказываем в неявной переактивации (ключевое исправление F1)
   if (findClosingConversation(G, event.channelId)) return null;
 
   const channelId = event.channelId;
   const nowMs = event.nowMs ?? Date.now();
 
-  // 清理旧终态对话
+  // Очищаем старые терминальные диалоги
   terminateAllForChannel(G, channelId, nowMs);
 
   const tick = event.tick;
@@ -175,7 +175,7 @@ export function createImplicitConversation(G: WorldModel, event: GraphPerturbati
   const participants: string[] = [];
   if (event.contactId) participants.push(event.contactId);
 
-  // 隐式对话直接进入 opening + alice_turn
+  // Неявный диалог сразу переходит в opening + alice_turn
   G.addConversation(convId, {
     channel: channelId,
     participants,
@@ -188,7 +188,7 @@ export function createImplicitConversation(G: WorldModel, event: GraphPerturbati
     alice_message_count: 0,
   });
 
-  // 关系边
+  // Рёбра отношений
   G.addRelation(convId, "happens_in", channelId);
   if (event.contactId && G.has(event.contactId)) {
     G.addRelation(event.contactId, "participates", convId);
@@ -197,11 +197,11 @@ export function createImplicitConversation(G: WorldModel, event: GraphPerturbati
   return convId;
 }
 
-// -- 外部终结 ---------------------------------------------------------------
+// -- Внешнее завершение ---------------------------------------------------------------
 
 /**
- * 终结指定 channel 的活跃对话（kick/leave/permanent failure 时调用）。
- * 直接转 cooldown + 清理 pending_directed，不经过 closing 过渡。
+ * Завершает активный диалог в указанном channel (вызывается при kick/leave/permanent failure).
+ * Напрямую переходит в cooldown + очищает pending_directed, минуя переходное состояние closing.
  */
 export function terminateConversation(G: WorldModel, channelId: string): void {
   for (const convId of G.getEntitiesByType("conversation")) {
@@ -216,15 +216,15 @@ export function terminateConversation(G: WorldModel, channelId: string): void {
   }
 }
 
-// -- 更新 -------------------------------------------------------------------
+// -- Обновление -------------------------------------------------------------------
 
 /**
- * 更新已有对话会话的状态。
+ * Обновляет состояние существующей диалоговой сессии.
  *
- * 状态转移规则:
- * - pending + Alice 回复 → opening（双握手完成）
- * - opening + 对方回复 → active
- * - active: 更新 pace / turnState / activity tick
+ * Правила переходов состояний:
+ * - pending + ответ Alice → opening (двойное рукопожатие завершено)
+ * - opening + ответ собеседника → active
+ * - active: обновление pace / turnState / activity tick
  */
 export function updateConversation(G: WorldModel, convId: string, event: GraphPerturbation): void {
   if (!G.has(convId)) return;
@@ -235,7 +235,7 @@ export function updateConversation(G: WorldModel, convId: string, event: GraphPe
   const nowMs = event.nowMs ?? Date.now();
   const isAlice = event.contactId === ALICE_SELF;
 
-  // 更新活跃时间和消息计数
+  // Обновляем время активности и счётчик сообщений
   const msgCount = attrs.message_count + 1;
   G.updateConversation(convId, { last_activity_ms: nowMs, message_count: msgCount });
 
@@ -243,7 +243,7 @@ export function updateConversation(G: WorldModel, convId: string, event: GraphPe
     G.updateConversation(convId, { alice_message_count: attrs.alice_message_count + 1 });
   }
 
-  // 添加新参与者（不可变更新，避免意外原地修改）
+  // Добавляем нового участника (иммутабельное обновление, чтобы избежать случайной мутации на месте)
   const participants = attrs.participants ?? [];
   if (event.contactId && !participants.includes(event.contactId)) {
     G.updateConversation(convId, { participants: [...participants, event.contactId] });
@@ -252,23 +252,23 @@ export function updateConversation(G: WorldModel, convId: string, event: GraphPe
     }
   }
 
-  // ADR-110: pace（消息频率: messages / elapsed seconds）
+  // ADR-110: pace (частота сообщений: messages / elapsed seconds)
   const startMs = Number(attrs.start_ms ?? nowMs);
   const elapsedS = Math.max(1, (nowMs - startMs) / 1000);
   G.updateConversation(convId, { pace: msgCount / elapsedS });
 
-  // 状态转移
+  // Переходы состояний
   if (state === "pending" && isAlice) {
-    // 双握手: Alice 回复 → opening
+    // Двойное рукопожатие: Alice ответила → opening
     G.updateConversation(convId, { state: "opening", turn_state: "other_turn" });
   } else if (state === "opening" && !isAlice) {
-    // 对方回复 → active
+    // Собеседник ответил → active
     G.updateConversation(convId, { state: "active", turn_state: "alice_turn" });
   } else {
-    // active / opening: 更新 turnState
-    // 群聊感知：非 directed 消息 → open（中性态），不产生 alice_turn 义务。
-    // 修复：二值 turn 模型在群聊中导致 Alice 回复每条消息（穷追猛打）。
-    // 只有 directed 消息（reply/@mention）才应设置 alice_turn 触发回复义务。
+    // active / opening: обновляем turnState
+    // Учёт группового чата: не-directed сообщение → open (нейтральное), без обязательства alice_turn.
+    // Исправление: бинарная turn-модель в групповом чате заставляла Alice отвечать на каждое сообщение.
+    // Только directed сообщения (reply/@mention) должны устанавливать alice_turn и обязательство отвечать.
     if (isAlice) {
       G.updateConversation(convId, { turn_state: "other_turn" });
     } else {
@@ -280,21 +280,21 @@ export function updateConversation(G: WorldModel, convId: string, event: GraphPe
   }
 }
 
-// -- 对话动量 ---------------------------------------------------------------
+// -- Динамика диалога ---------------------------------------------------------------
 
 /**
- * ADR-110: 对话动量：从已有对话属性派生的对话参与惯性。
+ * ADR-110: Динамика диалога — инерция участия, производная от атрибутов существующего диалога.
  *
- * 当 pending_directed 递减到 0 后，Alice 仍应在活跃对话中保持参与感，
- * 而非突然失去所有对话优先级。动量通过以下方式自然衰减：
- * - 对话空闲 → idleDecay 趋近 0
- * - 对话转为 closing/cooldown → 状态过滤直接返回 0
+ * После того как pending_directed убывает до 0, Alice всё ещё должна сохранять вовлечённость
+ * в активном диалоге, а не резко терять весь приоритет. Динамика естественно затухает:
+ * - диалог простаивает → idleDecay стремится к 0
+ * - диалог переходит в closing/cooldown → фильтр по состоянию сразу возвращает 0
  *
- * @param G 伴侣图
- * @param channelId 目标频道 ID
- * @param tick 当前 tick
- * @param nowMs 当前墙钟时间（ms）
- * @returns 0-1 之间的动量值。0 = 无活跃对话或对话已冷却，1 = 高速往返中。
+ * @param G граф-компаньон
+ * @param channelId ID целевого канала
+ * @param tick текущий tick
+ * @param nowMs текущее настенное время (мс)
+ * @returns значение динамики от 0 до 1. 0 = нет активного диалога или диалог остыл, 1 = интенсивный обмен.
  *
  * @see paper-five-dim/ Open Question 6: Conversation-Mode Pressure Accumulation
  */
@@ -308,34 +308,34 @@ export function conversationMomentum(
   if (!convId || !G.has(convId)) return 0;
 
   const attrs = G.getConversation(convId);
-  // 只有 opening/active 状态有动量（pending 还未确认参与）
+  // Динамика есть только в состоянии opening/active (в pending участие ещё не подтверждено)
   if (attrs.state !== "active" && attrs.state !== "opening") return 0;
 
-  // 互惠度：Alice 消息占比，0.5 最佳（50/50 往返）
-  // ADR-158 Fix 4: totalMessages 必须包含 Alice 消息。
-  // message_count 仅计入站（perceive updateConversation 递增），
-  // alice_message_count 计出站（DECLARE_ACTION 递增）。
-  // 旧公式 totalMessages=message_count → aliceRate>1 → reciprocity 变负。
+  // Взаимность: доля сообщений Alice, оптимум 0.5 (50/50 обмен)
+  // ADR-158 Fix 4: totalMessages должен включать сообщения Alice.
+  // message_count считает только входящие (incrementing в perceive updateConversation),
+  // alice_message_count считает исходящие (incrementing в DECLARE_ACTION).
+  // Старая формула totalMessages=message_count → aliceRate>1 → reciprocity становится отрицательной.
   const totalMessages = Math.max(1, (attrs.message_count ?? 0) + (attrs.alice_message_count ?? 0));
   const aliceRate = (attrs.alice_message_count ?? 0) / totalMessages;
-  // 对称钟形：0.5 → 1.0（最佳互惠），0.0/1.0 → 0.0（单方面主导）
+  // Симметричный колокол: 0.5 → 1.0 (оптимальная взаимность), 0.0/1.0 → 0.0 (односторонняя доминация)
   const reciprocity = 1 - (2 * aliceRate - 1) ** 2;
 
-  // ADR-110: 空闲衰减 — 600 秒（10 分钟）半衰期
+  // ADR-110: Затухание при простое — период полураспада 600 секунд (10 минут)
   const lastActivityMs = Number(attrs.last_activity_ms ?? 0);
   const idleS = lastActivityMs > 0 ? Math.max(0, (nowMs - lastActivityMs) / 1000) : 0;
   const idleDecay = 0.5 ** (idleS / 600);
 
-  // Alice 轮次时动量额外提升（对方在等 Alice 回复）
+  // Дополнительный буст динамики в ход Alice (собеседник ждёт ответа)
   const turnBoost = attrs.turn_state === "alice_turn" ? 1.5 : 1.0;
 
   return Math.min(1, reciprocity * idleDecay * turnBoost);
 }
 
-// -- Tick 生命周期 ----------------------------------------------------------
+// -- Жизненный цикл по tick ----------------------------------------------------------
 
 /**
- * 从图中查询 channel 的 chat_type。
+ * Запрашивает chat_type канала из графа.
  */
 function getChannelChatType(G: WorldModel, channelId: string): ChatType | undefined {
   if (!G.has(channelId)) return undefined;
@@ -343,15 +343,15 @@ function getChannelChatType(G: WorldModel, channelId: string): ChatType | undefi
 }
 
 /**
- * ADR-110: 每 tick 检查对话会话超时，推进状态机。
+ * ADR-110: Проверяет таймауты диалоговых сессий каждый tick и продвигает автомат состояний.
  *
- * - pending + 超过 N_PENDING_S 秒 → cooldown（未建立的会话过期）
- * - active + 超过 nClosingS 秒无消息 → closing（记录 closing_since_ms）
- * - closing + 超过 M_COOLDOWN_S 秒 → cooldown
- * - cooldown + 超过 COOLDOWN_GC_S 秒 → 删除实体（F7 GC）
+ * - pending + более N_PENDING_S секунд → cooldown (не установившаяся сессия истекла)
+ * - active + более nClosingS секунд без сообщений → closing (записывается closing_since_ms)
+ * - closing + более M_COOLDOWN_S секунд → cooldown
+ * - cooldown + более COOLDOWN_GC_S секунд → удаление сущности (F7 GC)
  *
- * nClosingS 动态: max(baseTimeout, ceil(3 / pace_per_second))
- * baseTimeout: 群聊 900s / 私聊 2700s（F6 chat-type 感知）
+ * nClosingS динамически: max(baseTimeout, ceil(3 / pace_per_second))
+ * baseTimeout: групповой чат 900s / приватный 2700s (F6, учёт типа чата)
  */
 export function tickConversations(G: WorldModel, _tick: number, nowMs: number = Date.now()): void {
   for (const convId of G.getEntitiesByType("conversation")) {
@@ -362,7 +362,7 @@ export function tickConversations(G: WorldModel, _tick: number, nowMs: number = 
     const idleS = lastActivityMs > 0 ? Math.max(0, (nowMs - lastActivityMs) / 1000) : 0;
 
     if (state === "cooldown") {
-      // F7: cooldown GC — 超过 1 小时的终态对话删除实体，防止图无限增长
+      // F7: cooldown GC — удаляем терминальные диалоги старше 1 часа, чтобы граф не рос бесконечно
       if (idleS >= COOLDOWN_GC_S) {
         G.removeEntity(convId);
       }
@@ -371,41 +371,41 @@ export function tickConversations(G: WorldModel, _tick: number, nowMs: number = 
 
     if (state === "pending") {
       if (idleS >= N_PENDING_S) {
-        // ADR-90 W3: 关闭时清理义务残留——防止 turn_state 卡在 alice_turn
+        // ADR-90 W3: Очищаем остатки обязательств при закрытии — предотвращаем зависание turn_state в alice_turn
         G.updateConversation(convId, { state: "cooldown", turn_state: "closed" });
-        // F9: 清理 pending_directed 残留
+        // F9: Очищаем остатки pending_directed
         if (attrs.channel && G.has(attrs.channel)) {
           G.updateChannel(attrs.channel, { pending_directed: 0 });
         }
       }
     } else if (state === "opening" || state === "active") {
-      // ADR-218 F3: alice_turn TTL — 超时后过期转 open，消散 bypass 信号。
-      // 使用 last_activity_ms 作为 TTL 基准：alice_turn 设置时 last_activity_ms 同步更新，
-      // 新消息到达时 last_activity_ms 刷新 → TTL 自动重置。
+      // ADR-218 F3: TTL alice_turn — по истечении переходит в open, рассеивая bypass-сигнал.
+      // Используем last_activity_ms как базу TTL: при установке alice_turn last_activity_ms синхронно обновляется,
+      // при поступлении нового сообщения last_activity_ms обновляется → TTL автоматически сбрасывается.
       if (attrs.turn_state === "alice_turn" && idleS >= ALICE_TURN_TTL_S) {
         G.updateConversation(convId, { turn_state: "open" });
       }
 
-      // pace: messages/second（基于活跃期，不含空闲时间）
+      // pace: messages/second (основан на активном периоде, без учёта простоя)
       const startMs = Number(attrs.start_ms ?? 0);
       const lastActMs = Number(attrs.last_activity_ms ?? startMs);
       const msgCount = attrs.message_count ?? 0;
       const activePeriodS = startMs > 0 ? Math.max(1, (lastActMs - startMs) / 1000) : 1;
       const pacePerS = msgCount / activePeriodS;
-      // F6: chat-type 感知超时——群聊 15 分钟，私聊 45 分钟
+      // F6: таймаут с учётом типа чата — групповой 15 минут, приватный 45 минут
       const chatType = getChannelChatType(G, attrs.channel);
       const baseTimeout = ChatTarget.isGroupChat(chatType)
         ? CLOSING_TIMEOUT_GROUP_S
         : CLOSING_TIMEOUT_PRIVATE_S;
       const nClosingS = Math.max(baseTimeout, pacePerS > 0 ? Math.ceil(3 / pacePerS) : 3600);
       if (idleS >= nClosingS) {
-        // ADR-90 W3: 进入 closing 时清理 turn_state，斩断 isConversationContinuation 信号
+        // ADR-90 W3: При переходе в closing очищаем turn_state, обрывая сигнал isConversationContinuation
         G.updateConversation(convId, {
           state: "closing",
           turn_state: "closed",
           closing_since_ms: nowMs,
         });
-        // F9: 进入 closing 时清理 pending_directed 残留
+        // F9: При переходе в closing очищаем остатки pending_directed
         if (attrs.channel && G.has(attrs.channel)) {
           G.updateChannel(attrs.channel, { pending_directed: 0 });
         }

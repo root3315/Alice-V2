@@ -1,11 +1,11 @@
 /**
- * Sticker Palette — 语义标签 → fileId 映射查询层。
+ * Sticker Palette — слой запросов: семантический тег → fileId.
  *
- * Phase 1: 手动 INSERT 或管理脚本维护。
- * Phase 2: VLM 自动索引（describeMedia("sticker") 的副产物 → upsertFromVLM）
- *         + 使用频率追踪 + 加权采样 + 维度匹配兜底。
+ * Phase 1: ручной INSERT или поддержка через скрипт администратора.
+ * Phase 2: автоматическая индексация VLM (побочный продукт describeMedia("sticker") → upsertFromVLM)
+ *         + отслеживание частоты использования + взвешенная выборка + запасной подбор по измерениям.
  *
- * @see https://github.com/TelechaBot/anime-identify — 动漫图像分类
+ * @see https://github.com/TelechaBot/anime-identify — классификация аниме-изображений
  */
 import type { TelegramClient } from "@mtcute/node";
 import { and, eq, isNotNull, notInArray, sql } from "drizzle-orm";
@@ -15,14 +15,14 @@ import type { getDb } from "../../db/connection.js";
 import { stickerPalette } from "../../db/schema.js";
 import { createLogger } from "../../utils/logger.js";
 
-/** Drizzle DB 实例类型（与 getDb() 返回值对齐）。 */
+/** Тип экземпляра Drizzle DB (соответствует возвращаемому значению getDb()). */
 type Db = ReturnType<typeof getDb>;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Phase 1: 基础查询
+// Phase 1: Базовые запросы
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 获取所有启用的调色板标签（供 prompt 注入用）。 */
+/** Возвращает все активные теги палитры (для подстановки в prompt). */
 export function getPaletteLabels(db: Db): string[] {
   const rows = db
     .select({ label: stickerPalette.label, emoji: stickerPalette.emoji })
@@ -31,17 +31,17 @@ export function getPaletteLabels(db: Db): string[] {
   return rows.map((r) => `${r.emoji ?? "🏷️"} ${r.label}`);
 }
 
-/** 调色板是否非空（供 hasStickers 判断）。 */
+/** Проверяет, непуста ли палитра (для hasStickers). */
 export function hasPaletteEntries(db: Db): boolean {
   const row = db.select({ id: stickerPalette.id }).from(stickerPalette).limit(1).get();
   return row != null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Phase 2: VLM 自动索引
+// Phase 2: Автоматическая индексация VLM
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 快速查询贴纸是否已在调色板中（file_unique_id 去重）。 */
+/** Быстрая проверка: есть ли стикер в палитре (дедупликация по file_unique_id). */
 export function isInPalette(db: Db, fileUniqueId: string): boolean {
   const row = db
     .select({ id: stickerPalette.id })
@@ -52,7 +52,7 @@ export function isInPalette(db: Db, fileUniqueId: string): boolean {
   return row != null;
 }
 
-/** upsertFromVLM 参数（Zod 单一真相来源）。 */
+/** Параметры upsertFromVLM (единственный источник истины — Zod). */
 export const upsertParamsSchema = z.object({
   fileUniqueId: z.string(),
   fileId: z.string(),
@@ -67,8 +67,8 @@ export const upsertParamsSchema = z.object({
 export type UpsertParams = z.infer<typeof upsertParamsSchema>;
 
 /**
- * VLM 分析结果写入调色板。
- * file_unique_id 冲突时更新维度 + 刷新 file_id。
+ * Записывает результаты анализа VLM в палитру.
+ * При конфликте file_unique_id — обновляет измерения и обновляет file_id.
  */
 export function upsertFromVLM(db: Db, params: UpsertParams): void {
   db.insert(stickerPalette)
@@ -96,12 +96,12 @@ export function upsertFromVLM(db: Db, params: UpsertParams): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Phase 2: 维度匹配（已安装优先 → VLM 兜底）
+// Phase 2: Подбор по измерениям (установленные приоритетнее → VLM как запасной вариант)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * VLM 维度枚举值 — LLM 查询调色板的唯一词汇。
- * 与 stickerVlmSchema (src/llm/vision.ts) 保持同步。
+ * Перечисление измерений VLM — единственный словарь, которым LLM запрашивает палитру.
+ * Синхронизировано с stickerVlmSchema (src/llm/vision.ts).
  * @see docs/adr/148-sticker-palette-phase2-vlm-index.md §D3
  */
 const EMOTIONS = new Set([
@@ -127,17 +127,17 @@ const ACTIONS = new Set([
   "facepalm",
   "peek",
 ]);
-// "none" 不入集合——不是有意义的查询维度
+// "none" не входит в множество — не является осмысленным измерением для запроса
 
 /**
- * 按维度列查询候选贴纸。
+ * Запрос кандидатов по столбцу измерения.
  *
- * 两级采样（已安装优先）：
- * 1. 主池（setName IS NOT NULL）— Alice 自己安装的贴纸集，均匀随机
- * 2. 后备池（setName IS NULL）— VLM 从对话中发现的贴纸，仅当主池无匹配时降级
+ * Двухуровневая выборка (установленные приоритетнее):
+ * 1. Основной пул (setName IS NOT NULL) — наборы стикеров, установленные Алисой, равномерно случайно
+ * 2. Резервный пул (setName IS NULL) — стикеры, найденные VLM в диалогах; используется только при отсутствии совпадений в основном пуле
  *
- * 不做使用频率加权 — 避免高频贴纸固化。
- * @see stickerVlmSchema in src/llm/vision.ts — 维度枚举的单一真相来源
+ * Без взвешивания по частоте использования — чтобы избежать закрепления высокочастотных стикеров.
+ * @see stickerVlmSchema in src/llm/vision.ts — единственный источник истины для перечисления измерений
  */
 function pickByDimension(
   db: Db,
@@ -147,7 +147,7 @@ function pickByDimension(
 ): string | null {
   const col = column === "emotion" ? stickerPalette.emotion : stickerPalette.action;
 
-  // 主池：自己安装的贴纸集（优先）
+  // Основной пул: собственные установленные наборы стикеров (приоритет)
   const own = db
     .select({ fileId: stickerPalette.fileId })
     .from(stickerPalette)
@@ -157,7 +157,7 @@ function pickByDimension(
     return own[Math.floor(Math.random() * own.length)].fileId;
   }
 
-  // 后备池：VLM 发现的贴纸（主池无匹配时降级）
+  // Резервный пул: стикеры, найденные VLM (используется, если основной пул не дал совпадений)
   const fallback = db
     .select({ fileId: stickerPalette.fileId })
     .from(stickerPalette)
@@ -171,21 +171,21 @@ function pickByDimension(
 }
 
 /**
- * 解析语义标签 → fileId。
+ * Разрешает семантический тег в fileId.
  *
- * 匹配策略（按优先级）：
- * 1. VLM 维度匹配（happy, hug, laugh... — LLM 的标准词汇）
- * 2. 精确 label 匹配（VLM description 全文）
- * 3. 子串包含匹配（label ⊂ description 或 description ⊂ label）
- * 4. null（调用方判断是否为 raw fileId）
+ * Стратегия сопоставления (по приоритету):
+ * 1. Совпадение по измерению VLM (happy, hug, laugh... — стандартный словарь LLM)
+ * 2. Точное совпадение label (полный текст VLM description)
+ * 3. Совпадение по подстроке (label ⊂ description или description ⊂ label)
+ * 4. null (вызывающая сторона сама решает, является ли значение сырым fileId)
  *
- * 无启发式语言特定逻辑——LLM 直接使用 VLM 维度枚举查询。
- * @see stickerVlmSchema in src/llm/vision.ts — 维度枚举的单一真相来源
+ * Никакой эвристики, специфичной для языка — LLM запрашивает напрямую через перечисление измерений VLM.
+ * @see stickerVlmSchema in src/llm/vision.ts — единственный источник истины для перечисления измерений
  */
 export function resolveLabel(db: Db, label: string, chatId?: string | number): string | null {
   const lower = label.toLowerCase();
 
-  // 1. VLM dimension match — 维度值是 LLM 的标准查询词汇
+  // 1. VLM dimension match — значения измерений являются стандартным словарём запросов LLM
   if (EMOTIONS.has(lower)) {
     const hit = pickByDimension(db, "emotion", lower, chatId);
     if (hit) return hit;
@@ -195,7 +195,7 @@ export function resolveLabel(db: Db, label: string, chatId?: string | number): s
     if (hit) return hit;
   }
 
-  // 2-3. Text-based matching（精确 label → 子串包含）— 已安装优先，VLM 兜底
+  // 2-3. Text-based matching (точный label → совпадение по подстроке) — установленные приоритетнее, VLM как запасной вариант
   const ownRows = db
     .select({ label: stickerPalette.label, fileId: stickerPalette.fileId })
     .from(stickerPalette)
@@ -207,7 +207,7 @@ export function resolveLabel(db: Db, label: string, chatId?: string | number): s
   const ownPartial = ownRows.find((r) => label.includes(r.label) || r.label.includes(label));
   if (ownPartial) return ownPartial.fileId;
 
-  // 已安装无匹配 → VLM 后备池兜底
+  // Нет совпадений среди установленных → переход к резервному пулу VLM
   const vlmRows = db
     .select({ label: stickerPalette.label, fileId: stickerPalette.fileId })
     .from(stickerPalette)
@@ -223,12 +223,12 @@ export function resolveLabel(db: Db, label: string, chatId?: string | number): s
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Tier 2: keyword → emoji → palette 降级链
+// Tier 2: цепочка деградации keyword → emoji → palette
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 语义标签 → emoji 映射（结构侧，LLM 不可见）。
- * @see EMOTIONS, ACTIONS — 单一真相来源
+ * Сопоставление семантических тегов с emoji (на уровне структуры, LLM не видит).
+ * @see EMOTIONS, ACTIONS — единственный источник истины
  */
 export const KEYWORD_TO_EMOJI: Record<string, string> = {
   // emotions
@@ -253,8 +253,8 @@ export const KEYWORD_TO_EMOJI: Record<string, string> = {
 };
 
 /**
- * emoji → emotion 反向映射（bootstrap + Tier 2 共用）。
- * KEYWORD_TO_EMOJI 的反向版本 + 常见变体扩展。
+ * Обратное сопоставление emoji → emotion (используется и в bootstrap, и в Tier 2).
+ * Инверсия KEYWORD_TO_EMOJI + расширение распространёнными вариантами.
  */
 export const EMOJI_TO_EMOTION: Record<string, string> = {
   "😊": "happy",
@@ -277,7 +277,7 @@ export const EMOJI_TO_EMOTION: Record<string, string> = {
   "😍": "love",
 };
 
-/** emoji → action 反向映射。 */
+/** Обратное сопоставление emoji → action. */
 export const EMOJI_TO_ACTION: Record<string, string> = {
   "👋": "wave",
   "🤗": "hug",
@@ -291,15 +291,15 @@ export const EMOJI_TO_ACTION: Record<string, string> = {
 };
 
 /**
- * Tier 2 降级：keyword → emoji → palette.emoji 列匹配。
- * palette 有数据但维度列（emotion/action）缺失时（如 bootstrap 阶段），
- * 通过 emoji 列做间接匹配。
+ * Деградация Tier 2: keyword → emoji → сопоставление по столбцу palette.emoji.
+ * Используется, когда в палитре есть данные, но столбцы измерений (emotion/action) отсутствуют (например, на этапе bootstrap),
+ * и совпадение выполняется косвенно через столбец emoji.
  */
 export function resolveByEmoji(db: Db, keyword: string, _chatId?: string | number): string | null {
   const emoji = KEYWORD_TO_EMOJI[keyword.toLowerCase()];
   if (!emoji) return null;
 
-  // 已安装优先，VLM 兜底
+  // Установленные приоритетнее, VLM как запасной вариант
   const own = db
     .select({ fileId: stickerPalette.fileId })
     .from(stickerPalette)
@@ -318,16 +318,16 @@ export function resolveByEmoji(db: Db, keyword: string, _chatId?: string | numbe
   if (candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0].fileId;
 
-  // 多候选 → 均匀随机（emoji 列无使用频率维度）
+  // Несколько кандидатов → равномерно случайный (у столбца emoji нет измерения частоты использования)
   return candidates[Math.floor(Math.random() * candidates.length)].fileId;
 }
 
 /**
- * 生成可用关键词预览（Tier 3 error message 用）。
- * 从 palette 动态生成——有维度数据用维度，否则用 EMOTIONS/ACTIONS 常量。
+ * Генерирует предварительный просмотр доступных ключевых слов (для сообщений об ошибках Tier 3).
+ * Формируется динамически из палитры — если есть данные измерений, использует их; иначе константы EMOTIONS/ACTIONS.
  */
 export function getAvailableKeywords(db: Db): string {
-  // 查 palette 中存在的 emotion/action 值
+  // Запрашиваем значения emotion/action, присутствующие в палитре
   const emotionRows = db
     .select({ emotion: stickerPalette.emotion })
     .from(stickerPalette)
@@ -344,7 +344,7 @@ export function getAvailableKeywords(db: Db): string {
   const emotions = emotionRows.map((r) => r.emotion).filter(Boolean);
   const actions = actionRows.map((r) => r.action).filter(Boolean);
 
-  // 有维度数据 → 用实际数据；否则用常量集合
+  // Есть данные измерений → используем реальные данные; иначе — константные наборы
   const emotionList = emotions.length > 0 ? emotions : [...EMOTIONS].filter((e) => e !== "neutral");
   const actionList = actions.length > 0 ? actions : [...ACTIONS];
 
@@ -372,7 +372,7 @@ export function pickAnySticker(db: Db): string | null {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 已安装贴纸集增量同步
+// Инкрементальная синхронизация установленных наборов стикеров
 // ═══════════════════════════════════════════════════════════════════════════
 
 const syncLog = createLogger("sticker-sync");
@@ -384,17 +384,17 @@ export interface SyncStats {
 }
 
 /**
- * 增量同步已安装贴纸集 → palette（幂等，任何时候安全运行）。
+ * Инкрементальная синхронизация установленных наборов стикеров в палитру (идемпотентно, безопасно запускать в любой момент).
  *
- * 逻辑：
- * 1. 拉取已安装贴纸集列表（Telegram API）
- * 2. 对每个集：拉取详情 → 对每个贴纸：
- *    - fileUniqueId 已存在 → 刷新 fileId（Telegram 会更新 fileId）
- *    - fileUniqueId 不存在 → 插入粗标签（emoji→dimension）
- * 3. 清理过期贴纸：palette 中 setName 不在已安装列表中的行 → DELETE
- *    （排除 setName IS NULL 的 VLM 发现贴纸——它们不来自已安装集）
+ * Логика:
+ * 1. Получаем список установленных наборов стикеров (Telegram API)
+ * 2. Для каждого набора: получаем детали → для каждого стикера:
+ *    - fileUniqueId уже существует → обновляем fileId (Telegram может его обновить)
+ *    - fileUniqueId не существует → вставляем грубый тег (emoji→dimension)
+ * 3. Очистка устаревших стикеров: строки в палитре, где setName отсутствует в списке установленных → DELETE
+ *    (исключая стикеры VLM с setName IS NULL — они не из установленных наборов)
  *
- * @returns SyncStats — 同步统计
+ * @returns SyncStats — статистика синхронизации
  */
 export async function syncInstalledSets(client: TelegramClient, db: Db): Promise<SyncStats> {
   let added = 0;
@@ -419,13 +419,13 @@ export async function syncInstalledSets(client: TelegramClient, db: Db): Promise
         const fileId = doc.sticker.fileId;
         const fileUniqueId = doc.sticker.uniqueFileId;
 
-        // emoji → dimension 反向映射
+        // Обратное сопоставление emoji → dimension
         const emotion = EMOJI_TO_EMOTION[emoji] ?? "neutral";
         const action = EMOJI_TO_ACTION[emoji] ?? "none";
         const label = `${emoji} sticker`;
 
         try {
-          // 新贴纸：插入粗标签（不覆盖已有的精细 VLM 标签）
+          // Новый стикер: вставляем грубый тег (не перезаписываем существующие точные теги VLM)
           const { changes } = db
             .insert(stickerPalette)
             .values({
@@ -443,7 +443,7 @@ export async function syncInstalledSets(client: TelegramClient, db: Db): Promise
           if (changes > 0) {
             added++;
           } else {
-            // 已存在 → 刷新 fileId（Telegram 可能更新了 fileId）
+            // Уже существует → обновляем fileId (Telegram мог его изменить)
             const { changes: updateChanges } = db
               .update(stickerPalette)
               .set({ fileId })
@@ -457,7 +457,7 @@ export async function syncInstalledSets(client: TelegramClient, db: Db): Promise
             if (updateChanges > 0) refreshed++;
           }
         } catch {
-          // 单条失败不阻塞整体
+          // Ошибка одной записи не блокирует общий процесс
         }
       }
     } catch (e) {
@@ -468,10 +468,10 @@ export async function syncInstalledSets(client: TelegramClient, db: Db): Promise
     }
   }
 
-  // 清理过期贴纸：setName 不在已安装列表中的行（保护 VLM 贴纸：setName IS NULL）
+  // Очистка устаревших стикеров: строки, где setName не входит в список установленных (защищаем VLM-стикеры: setName IS NULL)
   try {
     if (installedSetNames.size === 0) {
-      // 无已安装贴纸集 → 清理所有来自贴纸集的条目
+      // Нет установленных наборов стикеров → удаляем все записи, принадлежащие наборам
       const { changes } = db.delete(stickerPalette).where(isNotNull(stickerPalette.setName)).run();
       removed = changes;
     } else {

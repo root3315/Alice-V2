@@ -1,15 +1,15 @@
 /**
- * DeliberationState — evolve 管线的工作记忆（中间时间尺度）。
+ * DeliberationState — рабочая память конвейера evolve (средний временной масштаб).
  *
- * 填补三时间尺度缺口：
- * - 慢（天-周）：WorldModel（社交图、记忆、关系）
- * - 中（多 tick，交互片段内）：DeliberationState（声部疲劳、沉默积累、冲动保留）← 本模块
- * - 快（单 tick）：computeTickPlan 纯函数
+ * Заполняет пробел между тремя временными масштабами:
+ * - Медленный (дни-недели): WorldModel (социальный граф, память, отношения)
+ * - Средний (несколько tick, внутри интерактивного фрагмента): DeliberationState (усталость голоса, накопление тишины, сохранение импульсов) ← этот модуль
+ * - Быстрый (один tick): чистая функция computeTickPlan
  *
- * 设计约束：
- * - 不破坏 computeTickPlan 的纯函数契约——DeliberationState 是输入的一部分
- * - 所有状态更新在 applyPlan 中执行——副作用边界不变
- * - 不持久化到 DB——仅存活于进程生命周期（重启时归零，符合"工作记忆"语义）
+ * Ограничения проектирования:
+ * - Не нарушает контракт чистой функции computeTickPlan — DeliberationState является частью входных данных
+ * - Все обновления состояния выполняются в applyPlan — граница побочных эффектов не меняется
+ * - Не сохраняется в БД — живёт только в рамках жизненного цикла процесса (обнуляется при перезапуске, соответствует семантике «рабочей памяти»)
  *
  * @see docs/adr/75-deliberation-state/75-deliberation-state.md
  * @see paper-five-dim/ Eq. voice-fatigue: φ_v(n) = min(1, (n - n_v^last) / K_v)
@@ -19,52 +19,52 @@
 import type { VoiceAction } from "../voices/personality.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 类型
+// Типы
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 被压制但仍有价值的行动冲动（跨 tick 携带）。 */
+/** Подавленный, но ценный импульс к действию (переносится между tick). */
 export interface PendingImpulse {
-  /** 声部行动类型。 */
+  /** Тип голосового действия. */
   action: VoiceAction;
-  /** 目标实体 ID。 */
+  /** ID целевой сущности. */
   target: string;
-  /** 创建时的 Net Social Value。 */
+  /** Net Social Value на момент создания. */
   netValue: number;
-  /** 冲动产生的 tick。 */
+  /** Tick, на котором возник импульс. */
   originTick: number;
-  /** ADR-110: 冲动产生的墙钟时间（ms）。 */
+  /** ADR-110: Настенное время возникновения импульса (мс). */
   originMs: number;
-  /** 每 tick 的 netValue 衰减乘子（0, 1）。 */
+  /** Множитель затухания netValue за каждый tick (0, 1). */
   decay: number;
   /**
-   * 情感显著性 [0, 1]。
-   * 高 salience 冲动衰减更慢（decay = 0.7 + 0.15 × salience）。
-   * 默认 0（退化为 IMPULSE_DEFAULT_DECAY）。
+   * Эмоциональная значимость [0, 1].
+   * Импульсы с высоким salience затухают медленнее (decay = 0.7 + 0.15 × salience).
+   * По умолчанию 0 (деградирует до IMPULSE_DEFAULT_DECAY).
    * @see docs/adr/151-algorithm-audit/priority-ranking.md #3
    */
   salience: number;
 }
 
 /**
- * DeliberationState — evolve 管线的跨 tick 工作记忆。
+ * DeliberationState — межтиковая рабочая память конвейера evolve.
  *
- * 生命周期：进程内（不持久化）。重启归零。
+ * Жизненный цикл: в рамках процесса (без сохранения). Обнуляется при перезапуске.
  */
 export interface DeliberationState {
-  // ── 声部疲劳 — 论文 Eq. voice-fatigue ──
-  /** ADR-110: 每个声部上次获胜的墙钟时间（ms）。 */
+  // ── Усталость голоса — Eq. voice-fatigue из статьи ──
+  /** ADR-110: Настенное время последней победы каждого голоса (мс). */
   voiceLastWon: Record<VoiceAction, number>;
 
-  // ── 冲动保留 — Inner Thoughts retention ──
-  /** 高 V 但被 VoI/gate 压制的候选，跨 tick 携带。 */
+  // ── Сохранение импульсов — удержание Inner Thoughts ──
+  /** Кандидаты с высоким V, подавленные VoI/gate, переносятся между tick. */
   pendingImpulses: PendingImpulse[];
 
-  // ── 沉默追踪 ──
-  /** 最近一次沉默的原因（gate reason string）。 */
+  // ── Отслеживание тишины ──
+  /** Причина последней тишины (строка gate reason). */
   lastSilenceReason: string | null;
 
-  // ── 行动谱系 — 上一个行动的决策上下文 ──
-  /** 上一个实际执行的行动的审议快照。 */
+  // ── Родословная действий — контекст принятия решения для последнего действия ──
+  /** Снимок обдумывания последнего фактически выполненного действия. */
   lastDeliberation: {
     voice: VoiceAction;
     target: string | null;
@@ -74,69 +74,69 @@ export interface DeliberationState {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 常量
+// Константы
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * ADR-110: 声部冷却窗口（秒）。
+ * ADR-110: Окно охлаждения голоса (секунды).
  *
- * 声部获胜后需要 K_v 秒才能完全恢复响度。
- * 默认 300 秒（5 分钟）——约一个短对话的长度。
+ * После победы голоса требуется K_v секунд для полного восстановления громкости.
+ * По умолчанию 300 секунд (5 минут) — примерно длина короткого разговора.
  *
  * @see paper-five-dim/ Eq. voice-fatigue: φ_v = min(1, elapsedS / K_v)
  */
 export const DEFAULT_VOICE_COOLDOWN = 300;
 
 /**
- * ADR-110: 冲动保留的最大 TTL（毫秒）。
- * 超过此期限的冲动自动淘汰。300_000 ms = 5 分钟。
+ * ADR-110: Максимальный TTL сохранения импульса (миллисекунды).
+ * Импульсы старше этого срока автоматически отбрасываются. 300_000 мс = 5 минут.
  */
 export const IMPULSE_MAX_TTL_MS = 300_000;
 
 /**
- * 冲动保留的最大数量。
- * 防止无限积累。
+ * Максимальное количество сохраняемых импульсов.
+ * Предотвращает бесконечное накопление.
  */
 export const IMPULSE_MAX_COUNT = 3;
 
 /**
- * 冲动进入队列的最低 V 阈值。
- * V 低于此值的候选不值得跨 tick 携带。
+ * Минимальный порог V для добавления импульса в очередь.
+ * Кандидаты с V ниже этого значения не стоят переноса между tick.
  */
 export const IMPULSE_MIN_VALUE = 0.05;
 
 /**
- * 冲动每 tick 的默认衰减乘子。
- * 0.7 意味着 3 tick 后 V 衰减到 34%。
+ * Множитель затухания импульса по умолчанию за каждый tick.
+ * 0.7 означает, что после 3 tick V снижается до 34%.
  */
 export const IMPULSE_DEFAULT_DECAY = 0.7;
 
 /**
- * Salience 对衰减乘子的最大提升量。
+ * Максимальное увеличение множителя затухания за счёт salience.
  * decay = IMPULSE_DEFAULT_DECAY + IMPULSE_SALIENCE_DECAY_BOOST × salience
- * salience=0 → decay=0.7, salience=1 → decay=0.85（半衰期 ~4.3 tick）。
+ * salience=0 → decay=0.7, salience=1 → decay=0.85 (период полураспада ~4.3 tick).
  * @see docs/adr/151-algorithm-audit/priority-ranking.md #3
  */
 export const IMPULSE_SALIENCE_DECAY_BOOST = 0.15;
 
 /**
- * ADR-189: VoI(null) 墙钟衰减速率（per second）。
+ * ADR-189: Скорость затухания VoI(null) по настенному времени (в секунду).
  *
  * VoI_effective = VoI_raw / (1 + silenceDurationS × rate)
  *
- * 校准：0.15 per patrol tick / 60s per patrol tick = 0.0025 per second。
- * 含义：60s 沉默后衰减 ~0.87，300s 后 ~0.57。
- * 与旧行为在 patrol 模式下等效，但 conversation 模式（3s tick）不再过快衰减。
+ * Калибровка: 0.15 за patrol-tick / 60 с за patrol-tick = 0.0025 в секунду.
+ * Смысл: после 60 с тишины затухание ~0.87, после 300 с ~0.57.
+ * Эквивалентно старому поведению в режиме patrol, но в режиме conversation (tick 3 с) затухание больше не происходит слишком быстро.
  *
  * @see paper-pomdp/ Def 5.3: VoI(null)
  */
 export const SILENCE_VOI_DECAY_RATE = 0.0025;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 工厂
+// Фабрика
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 创建一个空白的 DeliberationState（进程启动时使用）。 */
+/** Создаёт пустой DeliberationState (используется при запуске процесса). */
 export function createDeliberationState(): DeliberationState {
   const voiceLastWon: Record<VoiceAction, number> = {
     diligence: -Infinity,
@@ -153,16 +153,16 @@ export function createDeliberationState(): DeliberationState {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 更新函数（在 applyPlan 中调用）
+// Функции обновления (вызываются в applyPlan)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 在行动入队时更新 deliberation 状态。
+ * Обновляет состояние deliberation при постановке действия в очередь.
  *
- * - 记录获胜声部的 tick（声部疲劳）
- * - 清零连续沉默计数
- * - 记录行动谱系
- * - 清空 pendingImpulses 中与该 target 匹配的冲动（已满足）
+ * - Записывает tick победившего голоса (усталость голоса)
+ * - Сбрасывает счётчик последовательной тишины
+ * - Записывает родословную действия
+ * - Удаляет из pendingImpulses импульсы, соответствующие данному target (уже выполнены)
  */
 export function onActionEnqueued(
   state: DeliberationState,
@@ -175,18 +175,18 @@ export function onActionEnqueued(
   state.voiceLastWon[voice] = nowMs;
   state.lastSilenceReason = null;
   state.lastDeliberation = { voice, target, netValue, tick };
-  // 清除已满足的冲动（同 target 或同 voice+target）
+  // Удаляем выполненные импульсы (совпадение по target или по voice+target)
   state.pendingImpulses = state.pendingImpulses.filter(
     (imp) => !(imp.target === target && imp.action === voice),
   );
 }
 
 /**
- * 在沉默时更新 deliberation 状态。
+ * Обновляет состояние deliberation при тишине.
  *
- * - 递增连续沉默计数
- * - 记录沉默原因
- * - 衰减 pendingImpulses 中的 netValue，淘汰过期冲动
+ * - Увеличивает счётчик последовательной тишины
+ * - Записывает причину тишины
+ * - Затухает netValue в pendingImpulses, отбрасывает устаревшие импульсы
  */
 export function onSilence(
   state: DeliberationState,
@@ -195,7 +195,7 @@ export function onSilence(
   nowMs: number = Date.now(),
 ): void {
   state.lastSilenceReason = reason;
-  // ADR-110: 衰减 + 淘汰（使用墙钟 TTL）
+  // ADR-110: Затухание + отбраковка (используется настенный TTL)
   state.pendingImpulses = state.pendingImpulses
     .map((imp) => ({ ...imp, netValue: imp.netValue * imp.decay }))
     .filter(
@@ -204,12 +204,12 @@ export function onSilence(
 }
 
 /**
- * 将一个被压制的高价值候选加入冲动保留队列。
+ * Добавляет подавленного высокоценного кандидата в очередь сохранения импульсов.
  *
- * 调用时机：VoI-deferred 或 gate-rejected 但 V > IMPULSE_MIN_VALUE。
+ * Вызывается когда: VoI-deferred или gate-rejected, но V > IMPULSE_MIN_VALUE.
  *
- * salience 调制：decay = 0.7 + 0.15 × (salience ?? 0)。
- * 高情感显著性的冲动衰减更慢，在工作记忆中保持更久。
+ * Модуляция salience: decay = 0.7 + 0.15 × (salience ?? 0).
+ * Импульсы с высокой эмоциональной значимостью затухают медленнее и дольше сохраняются в рабочей памяти.
  * @see docs/adr/151-algorithm-audit/priority-ranking.md #3
  */
 export function addImpulse(
@@ -222,7 +222,7 @@ export function addImpulse(
   if (impulse.netValue < IMPULSE_MIN_VALUE) return;
   const salience = Math.max(0, Math.min(1, impulse.salience ?? 0));
   const decay = IMPULSE_DEFAULT_DECAY + IMPULSE_SALIENCE_DECAY_BOOST * salience;
-  // 去重：同 action+target 只保留最新
+  // Дедупликация: для одинакового action+target оставляем только последний
   state.pendingImpulses = state.pendingImpulses.filter(
     (imp) => !(imp.action === impulse.action && imp.target === impulse.target),
   );
@@ -232,7 +232,7 @@ export function addImpulse(
     salience,
     decay,
   });
-  // 容量限制：保留 V 最高的
+  // Ограничение ёмкости: оставляем с наибольшим V
   if (state.pendingImpulses.length > IMPULSE_MAX_COUNT) {
     state.pendingImpulses.sort((a, b) => b.netValue - a.netValue);
     state.pendingImpulses = state.pendingImpulses.slice(0, IMPULSE_MAX_COUNT);
@@ -240,21 +240,21 @@ export function addImpulse(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 声部疲劳计算（供 loudness.ts 使用）
+// Расчёт усталости голоса (используется в loudness.ts)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * ADR-110: 计算声部疲劳因子 φ_v（墙钟时间版）。
+ * ADR-110: Вычисляет коэффициент усталости голоса φ_v (на основе настенного времени).
  *
  * φ_v = min(1, elapsedS / K_v)
  *
- * - φ_v = 0: 刚获胜，完全疲劳
- * - φ_v = 1: 已恢复，无疲劳
+ * - φ_v = 0: только что победил, полная усталость
+ * - φ_v = 1: восстановился, усталости нет
  *
- * @param nowMs - 当前墙钟时间（ms）
- * @param voiceLastWonMs - 该声部上次获胜的墙钟时间（ms）
- * @param cooldown - 冷却窗口 K_v（秒）
- * @returns [0, 1] 范围的疲劳因子
+ * @param nowMs - текущее настенное время (мс)
+ * @param voiceLastWonMs - настенное время последней победы голоса (мс)
+ * @param cooldown - окно охлаждения K_v (секунды)
+ * @returns коэффициент усталости в диапазоне [0, 1]
  *
  * @see paper-five-dim/ Eq. voice-fatigue
  */
@@ -263,8 +263,8 @@ export function voiceFatigue(
   voiceLastWonMs: number,
   cooldown: number = DEFAULT_VOICE_COOLDOWN,
 ): number {
-  if (voiceLastWonMs === -Infinity) return 1; // 无历史 → 无疲劳
+  if (voiceLastWonMs === -Infinity) return 1; // Нет истории → нет усталости
   const elapsedS = (nowMs - voiceLastWonMs) / 1000;
-  if (elapsedS <= 0) return 0; // 同时刻 → 完全疲劳
+  if (elapsedS <= 0) return 0; // Одновременно → полная усталость
   return Math.min(1, elapsedS / Math.max(cooldown, 1));
 }

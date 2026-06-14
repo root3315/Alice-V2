@@ -22,7 +22,7 @@ export interface CommandCatalogEntry {
   packageName: string;
   kind: "system" | "skill";
   summary: string;
-  /** ADR-223: skill 的 whenToUse（从 manifest.yaml 提取）。 */
+  /** ADR-223: whenToUse для skill (извлекается из manifest.yaml). */
   whenToUse?: string;
 }
 
@@ -38,7 +38,7 @@ function safeReadText(path: string): string | null {
   }
 }
 
-/** ADR-216: --help 替代 man。系统命令 summary 硬编码。 */
+/** ADR-216: --help вместо man. Summary системных команд захардкожен. */
 const SYSTEM_COMMAND_SUMMARIES: Record<string, string> = {
   irc: "Telegram system chat client for Alice",
   album: "Alice group photo album search and send",
@@ -67,8 +67,8 @@ function readManifestMeta(entry: RegistryEntry): ManifestMeta {
       ? parsed.description.trim()
       : entry.name;
 
-  // ADR-223: 提取 whenToUse（优先 action 级——英文，与 shell manual 一致）。
-  // family.whenToUse 可能是中文（legacy category summary 遗留），不用。
+  // ADR-223: извлекаем whenToUse (приоритет — уровень action, на английском, совпадает с shell manual).
+  // family.whenToUse может быть на китайском (наследие legacy category summary) — не используем.
   const whenToUse = parsed?.actions?.[0]?.whenToUse as string | undefined;
 
   return { summary, whenToUse };
@@ -203,8 +203,8 @@ export async function probeCommandCatalog(options?: {
     });
     return fallbackVisibleNames(candidates, systemBinDir);
   });
-  // ADR-223: skill 命令通过 Engine API 执行，始终可见，不需要 probe。
-  // 只有 system 命令需要通过 probe 确认 binary 存在。
+  // ADR-223: команды skill выполняются через Engine API, всегда видимы, probe не нужен.
+  // Только system-команды требуют probe для подтверждения наличия бинарника.
   const commands = candidates.filter((c) => c.kind === "skill" || visibleCommands.has(c.name));
 
   return { commands };

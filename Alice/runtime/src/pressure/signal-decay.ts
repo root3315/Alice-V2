@@ -1,44 +1,48 @@
 /**
- * 信号衰减层 — 认知架构的感觉寄存器。
+ * Слой затухания сигналов — сенсорный регистр когнитивной архитектуры.
  *
- * 认知三层架构：
- *   感觉层（本模块）  — 原始观测 × 时间衰减 → 有效信号
- *   工作层（BeliefStore）— 多次观测的贝叶斯整合（μ, σ², tObs）
- *   情景层（info_item） — 长期存储 + 间隔重复
+ * Трёхуровневая когнитивная архитектура:
+ *   Сенсорный слой (этот модуль)  — сырое наблюдение × временное затухание → эффективный сигнал
+ *   Рабочий слой (BeliefStore)    — байесовская интеграция нескольких наблюдений (μ, σ², tObs)
+ *   Эпизодический слой (info_item) — долгосрочное хранение + интервальные повторения
  *
- * 核心不变量：
- *   所有用于控制决策（模式转换、门控、System 1 判断）的图属性读取
- *   MUST 通过本模块的衰减函数。直接读取 nodeAttrs 做布尔判断是反模式。
+ * Основные инварианты:
+ *   Все считывания атрибутов графа, используемые для управляющих решений
+ *   (переключение режимов, вентилирование, суждения System 1) MUST проходить
+ *   через функции затухания этого модуля. Прямое чтение nodeAttrs с булевой
+ *   оценкой является антипаттерном.
  *
- * 衰减核选择——事件信号 vs 记忆信号：
+ * Выбор ядра затухания — событийный сигнал vs сигнал памяти:
  *
- *   本模块的所有信号（obligation, mention, risk, outcome, outgoing, unread）
- *   均为**事件驱动信号**——由具体事件触发、随时间自然消退。
- *   正确的物理模型是**指数衰减**（一阶动力学）：
+ *   Все сигналы этого модуля (obligation, mention, risk, outcome, outgoing, unread)
+ *   являются **событийно-управляемыми сигналами** — активируются конкретным событием и
+ *   естественно затухают со временем.
+ *   Правильная физическая модель — **экспоненциальное затухание** (кинетика первого порядка):
  *     S_eff(t) = neutral + (S_raw - neutral) × 2^(-t / τ_half)
  *
- *   这与 Wickelgren (1974) 双曲线 (1+βt)^(-ψ) 是不同的物理过程：
- *   - 指数衰减 = 恒速率消退（感觉寄存器、药物清除、放射衰变）
- *   - 双曲线 = 记忆痕迹的干扰累积（Rubin & Wenzel 1996 的元分析对象）
+ *   Это отличается от гиперболы (1+βt)^(-ψ) Wickelgren (1974) — разные физические процессы:
+ *   - Экспоненциальное затухание = постоянная скорость убывания (сенсорный регистр, выведение лекарств, радиоактивный распад)
+ *   - Гипербола = накопление помех в следах памяти (предмет мета-анализа Rubin & Wenzel 1996)
  *
- *   Atkinson & Shiffrin (1968) 三存储模型中，感觉寄存器层的特征正是
- *   快速指数衰减（Sperling 1960 部分报告法实验：τ ≈ 250ms）。
- *   本模块将此机制推广到社交信号层（τ = 分钟~小时级）。
+ *   В трёхуровневой модели Atkinson & Shiffrin (1968) сенсорный регистр
+ *   характеризуется именно быстрым экспоненциальным затуханием
+ *   (эксперимент Sperling 1960 с частичным отчётом: τ ≈ 250ms).
+ *   Этот модуль распространяет данный механизм на слой социальных сигналов (τ = минуты~часы).
  *
- *   指数核的自然消退性质：10 个半衰期后残余 0.1%（2^-10 ≈ 0.001），
- *   无需人工硬截断，信号自然归零。
+ *   Свойство естественного затухания экспоненциального ядра: после 10 периодов полураспада
+ *   остаток составляет 0.1% (2^-10 ≈ 0.001) — сигнал обнуляется сам, без жёсткого порога.
  *
- * 抗性机制：
- *   1. 所有信号定义集中在此文件 — 单一事实源
- *   2. 每个信号绑定 (valueKey, tsKey, halfLife) — 无法遗漏时间戳
- *   3. 消费者只能导入命名函数 — API 强制时间感知
+ * Механизмы защиты:
+ *   1. Все определения сигналов сосредоточены в этом файле — единый источник истины
+ *   2. Каждый сигнал привязан к (valueKey, tsKey, halfLife) — временная метка не может быть пропущена
+ *   3. Потребители могут импортировать только именованные функции — API принудительно обеспечивает временнóе осознание
  *
- * @see docs/adr/134-temporal-coherence.md — 信号寿命与感知地平线
+ * @see docs/adr/134-temporal-coherence.md — срок жизни сигнала и горизонт восприятия
  * @see docs/adr/126-obligation-field-decay.md
- * @see Atkinson & Shiffrin (1968) — 三存储模型：感觉寄存器 = 指数衰减
- * @see Sperling (1960) — 部分报告法：感觉记忆指数衰减 τ ≈ 250ms
- * @see Wickelgren (1974) — 单迹脆弱性理论（记忆保持，非事件信号）
- * @see Rubin & Wenzel (1996) — 百年遗忘函数元分析（记忆保持，非事件信号）
+ * @see Atkinson & Shiffrin (1968) — трёхуровневая модель: сенсорный регистр = экспоненциальное затухание
+ * @see Sperling (1960) — метод частичного отчёта: экспоненциальное затухание сенсорной памяти τ ≈ 250ms
+ * @see Wickelgren (1974) — теория единого следа и уязвимости (сохранение памяти, не событийные сигналы)
+ * @see Rubin & Wenzel (1996) — мета-анализ функций забывания за сто лет (сохранение памяти, не событийные сигналы)
  */
 
 import { findActiveConversation } from "../graph/queries.js";
@@ -47,24 +51,24 @@ import { ChatTarget } from "../prompt/types.js";
 import { readNodeMs } from "./clock.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 通用衰减核心
+// Общее ядро затухания
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 事件信号指数衰减。
+ * Экспоненциальное затухание событийного сигнала.
  *
  * S_eff(t) = neutral + (S_raw - neutral) × 2^(-ageS / halfLifeS)
  *
- * 指数核性质：
- *   - 恰好 1 个半衰期后信号减半（定义）
- *   - 10 个半衰期后残余 0.1%（自然消退，无需硬截断）
- *   - 恒速率消退——与一阶动力学（感觉记忆、药物清除）一致
+ * Свойства экспоненциального ядра:
+ *   - Ровно через 1 период полураспада сигнал уменьшается вдвое (по определению)
+ *   - После 10 периодов остаток 0.1% (естественное затухание, жёсткий порог не нужен)
+ *   - Постоянная скорость убывания — соответствует кинетике первого порядка (сенсорная память, выведение лекарств)
  *
- * @param value - 原始信号值
- * @param ageS - 观测年龄（秒）
- * @param halfLifeS - 半衰期（秒）
- * @param neutral - 衰减目标（默认 0）
- * @returns 衰减后的有效值，趋向 neutral
+ * @param value - исходное значение сигнала
+ * @param ageS - возраст наблюдения (секунды)
+ * @param halfLifeS - период полураспада (секунды)
+ * @param neutral - целевое значение затухания (по умолчанию 0)
+ * @returns эффективное значение после затухания, стремящееся к neutral
  *
  * @see docs/adr/134-temporal-coherence.md §D1
  */
@@ -75,29 +79,29 @@ export function decaySignal(value: number, ageS: number, halfLifeS: number, neut
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 信号 1: Obligation（pending_directed 义务场）
+// Сигнал 1: Obligation (поле обязательства pending_directed)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 私聊义务半衰期（秒）。 */
+/** Период полураспада обязательства в приватном чате (секунды). */
 export const OBLIGATION_HALFLIFE_PRIVATE = 3600;
-/** 群聊义务半衰期（秒）。ADR-186: 统一为 3600s——响应紧迫度不应因场景而异。 */
+/** Период полураспада обязательства в групповом чате (секунды). ADR-186: унифицировано до 3600s — срочность ответа не должна зависеть от контекста. */
 export const OBLIGATION_HALFLIFE_GROUP = 3600;
 
 export const OBLIGATION_THRESHOLDS = {
-  /** 模式进入：只有新鲜义务才触发 patrol → conversation。 */
+  /** Вход в режим: только свежее обязательство запускает patrol → conversation. */
   modeEnter: 0.3,
-  /** 模式退出：义务已充分衰减时允许退出（滞回防震荡）。 */
+  /** Выход из режима: разрешён, когда обязательство достаточно затухло (гистерезис против осцилляций). */
   modeExit: 0.1,
-  /** 门控绕过：轻微陈旧仍允许绕过门控。 */
+  /** Обход вентилей: слегка устаревшее обязательство всё ещё позволяет обойти gate. */
   bypassGates: 0.2,
-  /** System 1 升级：任何非平凡义务都需要 LLM。 */
+  /** Эскалация System 1: любое нетривиальное обязательство требует LLM. */
   system1: 0.1,
-  /** Mod 信号：observer/consolidation 阈值。 */
+  /** Сигнал Mod: порог для observer/consolidation. */
   signal: 0.1,
 } as const;
 
 /**
- * 有效义务：pending_directed × 指数时间衰减（无地板）。
+ * Эффективное обязательство: pending_directed × экспоненциальное временное затухание (без пола).
  * Ω(h,t) = pending_directed(h) × 2^(-(t - t_last) / τ_half)
  */
 export function effectiveObligation(G: WorldModel, channelId: string, nowMs: number): number {
@@ -119,7 +123,7 @@ export function effectiveObligation(G: WorldModel, channelId: string, nowMs: num
   return decaySignal(directed, ageS, halfLife);
 }
 
-/** 便捷布尔：有效义务 > 阈值。默认 θ = 0.1。 */
+/** Удобный булев: эффективное обязательство > порога. По умолчанию θ = 0.1. */
 export function hasObligation(
   G: WorldModel,
   channelId: string,
@@ -130,19 +134,19 @@ export function hasObligation(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 信号 2: Mention（mentions_alice 名字提及）
+// Сигнал 2: Mention (упоминание имени mentions_alice)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 名字提及衰减半衰期（秒）。15 分钟——提及是瞬时社交信号。 */
+/** Период полураспада упоминания имени (секунды). 15 минут — упоминание является мгновенным социальным сигналом. */
 export const MENTION_HALFLIFE_S = 900;
 
 /**
- * 有效提及强度：mentions_alice × 时间衰减。
+ * Эффективная интенсивность упоминания: mentions_alice × временное затухание.
  *
- * 消费 mentions_alice（boolean → 1/0）和 mentions_alice_ms（时间戳）。
- * 15 分钟后衰减至 0.5，30 分钟后 0.25。
+ * Потребляет mentions_alice (boolean → 1/0) и mentions_alice_ms (временная метка).
+ * Через 15 минут затухает до 0.5, через 30 минут — до 0.25.
  *
- * @returns ∈ [0, 1]，0 = 无提及或完全衰减
+ * @returns ∈ [0, 1], 0 = нет упоминания или полное затухание
  */
 export function effectiveMention(G: WorldModel, channelId: string, nowMs: number): number {
   if (!G.has(channelId)) return 0;
@@ -151,17 +155,17 @@ export function effectiveMention(G: WorldModel, channelId: string, nowMs: number
   if (!attrs.mentions_alice) return 0;
 
   const mentionMs = readNodeMs(G, channelId, "mentions_alice_ms");
-  if (mentionMs <= 0) return 1; // 无时间戳 → 视为刚发生
+  if (mentionMs <= 0) return 1; // нет временной метки → считаем, что только что произошло
 
   const ageS = Math.max(0, (nowMs - mentionMs) / 1000);
   return decaySignal(1, ageS, MENTION_HALFLIFE_S);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 信号 3: Risk（risk_level 风险评级）
+// Сигнал 3: Risk (уровень риска risk_level)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 风险衰减半衰期（秒）。30 分钟——与 focus.ts 的 decayFactor(ageS/60, 10.0) 语义一致。 */
+/** Период полураспада риска (секунды). 30 минут — семантически соответствует decayFactor(ageS/60, 10.0) в focus.ts. */
 export const RISK_HALFLIFE_S = 1800;
 
 const RISK_NUMERIC: Record<string, number> = {
@@ -172,12 +176,12 @@ const RISK_NUMERIC: Record<string, number> = {
 };
 
 /**
- * 有效风险强度：risk_level（类别 → 数值）× 时间衰减。
+ * Эффективная интенсивность риска: risk_level (категория → число) × временное затухание.
  *
- * 复用 focus.ts 中已验证的衰减语义——那里正确地衰减了风险，
- * 但 system1.ts 和 social-cost.ts 遗漏了。本函数统一所有读取路径。
+ * Повторно используется проверенная семантика затухания из focus.ts — там риск корректно затухает,
+ * но system1.ts и social-cost.ts это пропустили. Данная функция унифицирует все пути считывания.
  *
- * @returns ∈ [0, 1]，0 = 无风险或完全衰减
+ * @returns ∈ [0, 1], 0 = нет риска или полное затухание
  */
 export function effectiveRisk(G: WorldModel, channelId: string, nowMs: number): number {
   if (!G.has(channelId)) return 0;
@@ -195,30 +199,30 @@ export function effectiveRisk(G: WorldModel, channelId: string, nowMs: number): 
 }
 
 /**
- * 风险是否低于 "需要关注" 阈值。替代 isLowRisk() 的布尔判断。
- * 阈值 0.3 = "low"(0.25) 和 "medium"(0.5) 的分界线。
- * "none"(0) 和 "low"(0.25) 视为可忽略，与旧 isLowRisk 语义一致。
+ * Риск ниже порога "требует внимания". Заменяет булеву проверку isLowRisk().
+ * Порог 0.3 = граница между "low"(0.25) и "medium"(0.5).
+ * "none"(0) и "low"(0.25) считаются незначимыми, что соответствует семантике старого isLowRisk.
  */
 export function isRiskNegligible(G: WorldModel, channelId: string, nowMs: number): boolean {
   return effectiveRisk(G, channelId, nowMs) < 0.3;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 信号 4: Outcome Quality（last_outcome_quality 交互质量）
+// Сигнал 4: Outcome Quality (качество взаимодействия last_outcome_quality)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 交互质量衰减半衰期（秒）。1 小时——过去的差评不应永久影响社交成本。 */
+/** Период полураспада качества взаимодействия (секунды). 1 час — прошлые плохие оценки не должны постоянно влиять на социальные издержки. */
 export const OUTCOME_HALFLIFE_S = 3600;
 
 /**
- * 有效交互质量：last_outcome_quality 向中性值 (0.5) 衰减。
+ * Эффективное качество взаимодействия: last_outcome_quality затухает к нейтральному значению (0.5).
  *
  * Q_eff(t) = 0.5 + (Q_raw - 0.5) × 2^(-ageS / halfLife)
  *
- * 新鲜的差评 (0.2) → 0.2（强信号）
- * 陈旧的差评 (0.2, 2h) → 趋向 0.5（中性）
+ * Свежая плохая оценка (0.2) → 0.2 (сильный сигнал)
+ * Старая плохая оценка (0.2, 2ч) → стремится к 0.5 (нейтрально)
  *
- * @returns ∈ [0, 1]，趋向 0.5（中性）
+ * @returns ∈ [0, 1], стремится к 0.5 (нейтрально)
  */
 export function effectiveOutcomeQuality(G: WorldModel, channelId: string, nowMs: number): number {
   if (!G.has(channelId)) return 0.5;
@@ -234,21 +238,21 @@ export function effectiveOutcomeQuality(G: WorldModel, channelId: string, nowMs:
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 信号 5: Outgoing Pressure（consecutive_outgoing 连发压力）
+// Сигнал 5: Outgoing Pressure (давление consecutive_outgoing — непрерывные исходящие)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 连发压力衰减半衰期（秒）。24 小时——一天后社交语境已重置。 */
+/** Период полураспада давления непрерывных исходящих (секунды). 24 часа — через сутки социальный контекст сброшен. */
 export const OUTGOING_HALFLIFE_S = 86400;
 
 /**
- * 有效连发压力：consecutive_outgoing × 时间衰减。
+ * Эффективное давление непрерывных исходящих: consecutive_outgoing × временное затухание.
  *
- * 5 分钟内连发 4 条 → 极高侵入性
- * 24 小时后连发 4 条 → 衰减到 2（允许重新接触）
+ * 4 сообщения за 5 минут → крайне высокая навязчивость
+ * 4 сообщения через 24 часа → затухает до 2 (повторный контакт допустим)
  *
- * 注意：原始计数器在对方回复时归零（mapper.ts），衰减只影响对方不回的情况。
+ * Примечание: исходный счётчик обнуляется при ответе собеседника (mapper.ts); затухание влияет только в случае отсутствия ответа.
  *
- * @returns ∈ [0, +∞)，0 = 无连发或完全衰减
+ * @returns ∈ [0, +∞), 0 = нет непрерывных исходящих или полное затухание
  */
 export function effectiveOutgoing(G: WorldModel, channelId: string, nowMs: number): number {
   if (!G.has(channelId)) return 0;
@@ -265,31 +269,31 @@ export function effectiveOutgoing(G: WorldModel, channelId: string, nowMs: numbe
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 信号 6: Unread Freshness（P1 未读消息新鲜度）
+// Сигнал 6: Unread Freshness (свежесть непрочитанных сообщений P1)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** P1 未读新鲜度半衰期（秒）。1 小时——与 obligation 私聊一致。 */
+/** Период полураспада свежести непрочитанных P1 (секунды). 1 час — соответствует obligation в приватном чате. */
 export const UNREAD_FRESHNESS_HALFLIFE_S = 3600;
 
 /**
- * Tonic 注意力增益系数。
+ * Коэффициент усиления тонического внимания.
  *
- * tonic = κ × ln(1 + rawUnread) 提供持续基线感知，
- * 防止旧积压因 phasic（EWMS）衰减而变得不可见。
+ * tonic = κ × ln(1 + rawUnread) обеспечивает постоянное базовое восприятие,
+ * не давая старым накопленным сообщениям стать невидимыми из-за затухания phasic (EWMS).
  *
  * @see docs/adr/176-tonic-phasic-attention.md
- * @see Posner & Petersen (1990) — tonic/phasic 注意力分解
+ * @see Posner & Petersen (1990) — декомпозиция tonic/phasic внимания
  */
 export const KAPPA_TONIC = 1.0;
 
 /**
- * 有效未读数：max(phasic, tonic)。
+ * Эффективное число непрочитанных: max(phasic, tonic).
  *
- * - Phasic（警觉）：EWMS × 指数衰减——刺激驱动，快速起效快速消退。
- * - Tonic（持续）：κ × ln(1 + rawUnread)——覆盖度感知，Weber-Fechner 对数缩放。
+ * - Phasic (настороженность): EWMS × экспоненциальное затухание — управляется стимулом, быстро возникает и быстро затухает.
+ * - Tonic (устойчивое): κ × ln(1 + rawUnread) — восприятие покрытия, логарифмическое масштабирование Вебера–Фехнера.
  *
- * max() 而非 sum()：避免双重计数新鲜消息。新消息用 phasic（更高信号），
- * 旧积压用 tonic（phasic 衰减到 tonic 地板以下后接管）。
+ * max() вместо sum(): избегаем двойного подсчёта свежих сообщений. Для новых сообщений используется phasic (сигнал выше),
+ * для старых накоплений — tonic (берёт на себя управление, когда phasic затухает ниже порога tonic).
  *
  * @see docs/adr/176-tonic-phasic-attention.md
  * @see docs/adr/134-temporal-coherence.md §D2
@@ -301,7 +305,7 @@ export function effectiveUnread(G: WorldModel, channelId: string, nowMs: number)
   const rawUnread = attrs.unread ?? 0;
   if (rawUnread <= 0) return 0;
 
-  // Phasic: EWMS × 指数衰减（ADR-150）
+  // Phasic: EWMS × экспоненциальное затухание (ADR-150)
   const ewms = Number(attrs.unread_ewms ?? 0);
   const ewmsMs = Number(attrs.unread_ewms_ms ?? 0);
   let phasic = 0;
@@ -310,37 +314,37 @@ export function effectiveUnread(G: WorldModel, channelId: string, nowMs: number)
     phasic = ewms * decaySignal(1.0, ageS, UNREAD_FRESHNESS_HALFLIFE_S);
   }
 
-  // Tonic: Weber-Fechner 对数感知（ADR-176）
+  // Tonic: логарифмическое восприятие Вебера–Фехнера (ADR-176)
   const tonic = KAPPA_TONIC * Math.log(1 + rawUnread);
 
   return Math.max(phasic, tonic);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 信号 7: Act Silence（连续 ACT 沉默的时间衰减）
+// Сигнал 7: Act Silence (временное затухание последовательных тишин ACT)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** ACT 沉默衰减半衰期（秒）。30 分钟——暂时性 Telegram 错误不应永久封锁频道。 */
+/** Период полураспада тишины ACT (секунды). 30 минут — временные ошибки Telegram не должны постоянно блокировать канал. */
 export const ACT_SILENCE_HALFLIFE_S = 1800;
 
-/** 连续行动沉默安全阈值。effectiveActSilences 超过此值时跳过 directed_override 候选。 */
+/** Безопасный порог последовательных тишин действий. При превышении effectiveActSilences пропускаем кандидата directed_override. */
 export const ACT_SILENCE_SAFETY_THRESHOLD = 5;
 
 /**
- * 沉默冷却阈值。effectiveActSilences >= 此值时，沉默原因标记为 "silence_cooldown"。
+ * Порог кулдауна тишины. Когда effectiveActSilences >= этого значения, причина тишины помечается как "silence_cooldown".
  * @see docs/adr/157-signal-decay-integrity.md §Fix 4
  */
 export const SILENCE_COOLDOWN_THRESHOLD = 3;
 
 /**
- * 有效 ACT 沉默计数：consecutive_act_silences × 时间衰减。
+ * Эффективное число тишин ACT: consecutive_act_silences × временное затухание.
  *
- * ADR-136: 替代旧的 `actSilences >= 3` 硬门控。连续失败后系统
- * 自动在 30 分钟半衰期内恢复——不再需要成功发送来"解锁"。
+ * ADR-136: заменяет старый жёсткий gate `actSilences >= 3`. После последовательных сбоев система
+ * автоматически восстанавливается в течение полупериода 30 минут — успешная отправка для "разблокировки" больше не нужна.
  *
- * 消费 consecutive_act_silences 和 last_act_silence_ms（时间戳）。
+ * Потребляет consecutive_act_silences и last_act_silence_ms (временная метка).
  *
- * @returns ≥ 0 的连续值。3 次失败 + 30 分钟后 → ~1.5。
+ * @returns непрерывное значение ≥ 0. 3 сбоя + 30 минут → ~1.5.
  *
  * @see docs/adr/136-constrained-vmax/README.md §2.3 σ_fail
  */
@@ -357,31 +361,31 @@ export function effectiveActSilences(
   if (silences <= 0) return 0;
 
   const lastSilenceMs = readNodeMs(G, channelId, "last_act_silence_ms");
-  if (lastSilenceMs <= 0) return silences; // 无时间戳 → 不衰减
+  if (lastSilenceMs <= 0) return silences; // нет временной метки → не затухает
 
   const ageS = Math.max(0, (nowMs - lastSilenceMs) / 1000);
   return decaySignal(silences, ageS, halfLifeS);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 信号 8: Aversion（社交回避的指数衰减）
+// Сигнал 8: Aversion (экспоненциальное затухание социального избегания)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 群聊回避衰减时间常数（秒）。群聊气氛变化快，2 小时。 */
+/** Временная константа затухания избегания группового чата (секунды). Атмосфера в группе меняется быстро — 2 часа. */
 const AVERSION_TAU_GROUP_S = 2 * 3600;
-/** 私聊回避衰减时间常数（秒）。私聊情绪持续更久，8 小时。 */
+/** Временная константа затухания избегания приватного чата (секунды). Личные эмоции длятся дольше — 8 часов. */
 const AVERSION_TAU_PRIVATE_S = 8 * 3600;
 
 /**
- * ADR-217: 有效回避强度 ∈ [0, 1]。
+ * ADR-217: эффективная интенсивность избегания ∈ [0, 1].
  *
- * 指数衰减：aversion(t) = A × exp(-age / τ)
- * τ 按 chat_type 区分：群聊 2h，私聊 8h。
+ * Экспоненциальное затухание: aversion(t) = A × exp(-age / τ)
+ * τ различается по chat_type: групповой чат 2ч, приватный 8ч.
  *
- * 不被 directed 消息重置（与 act_silences 完全分离）。
- * 恢复路径：时间自然衰减 + LLM 主动解除。
+ * Не сбрасывается directed-сообщениями (полностью отделено от act_silences).
+ * Пути восстановления: естественное временное затухание + явное снятие через LLM.
  *
- * @see docs/adr/217-pressure-field-aversion-gap.md §方案 D
+ * @see docs/adr/217-pressure-field-aversion-gap.md §Вариант D
  */
 export function effectiveAversion(G: WorldModel, channelId: string, nowMs: number): number {
   if (!G.has(channelId)) return 0;
@@ -391,7 +395,7 @@ export function effectiveAversion(G: WorldModel, channelId: string, nowMs: numbe
   if (raw <= 0) return 0;
 
   const eventMs = Number(attrs.aversion_ms ?? 0);
-  if (eventMs <= 0) return raw; // 无时间戳 → 不衰减
+  if (eventMs <= 0) return raw; // нет временной метки → не затухает
 
   const ageS = Math.max(0, (nowMs - eventMs) / 1000);
   const chatType = attrs.chat_type;
@@ -401,14 +405,14 @@ export function effectiveAversion(G: WorldModel, channelId: string, nowMs: numbe
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 信号 9: Resting（Alice 主动离席/睡觉）
+// Сигнал 9: Resting (Алиса намеренно отдыхает/спит)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Alice 主动选择休息时，普通行动候选应暂停。
+ * Когда Алиса активно выбирает отдых, обычные кандидаты действий должны быть приостановлены.
  *
- * 这是结构化的状态事实，不从“晚安”等文本里猜测。只有 LLM 显式给出
- * afterward=resting 时写入 self.resting_until_ms。
+ * Это структурированный факт состояния, а не вывод из текста вроде “спокойной ночи”.
+ * Запись в self.resting_until_ms производится только когда LLM явно возвращает afterward=resting.
  */
 export function isSelfResting(G: WorldModel, nowMs: number): boolean {
   if (!G.has("self")) return false;
@@ -417,21 +421,21 @@ export function isSelfResting(G: WorldModel, nowMs: number): boolean {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 对话延续信号（共享判定）
+// Сигнал продолжения диалога (общее определение)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 对话延续判定：目标频道处于活跃对话的 alice_turn 且无显式社交义务。
+ * Определение продолжения диалога: целевой канал находится в alice_turn активного разговора и нет явного социального обязательства.
  *
- * 三处消费者（evolve.ts ×2, iaus-scorer.ts ×1）共享此函数，
- * 消除 inline 重复导致的维护炸弹。
+ * Эта функция используется в трёх местах (evolve.ts ×2, iaus-scorer.ts ×1),
+ * устраняя inline-дублирование как источник проблем сопровождения.
  *
- * 返回 true 的条件（全部满足）：
- * 1. target 存在于图中
- * 2. 最后发言者不是 bot（bot 发言后 alice_turn 不代表社交期望）
- * 3. 无有效显式义务（effectiveObligation ≤ bypassGates）
- * 4. target 上有活跃对话（state ∈ {pending, opening, active}）
- * 5. 对话 turn_state === "alice_turn"
+ * Условия возврата true (все должны выполняться):
+ * 1. target существует в графе
+ * 2. Последний говорящий не является ботом (alice_turn после бота не означает социального ожидания)
+ * 3. Нет действующего явного обязательства (effectiveObligation ≤ bypassGates)
+ * 4. На target есть активный разговор (state ∈ {pending, opening, active})
+ * 5. turn_state разговора === "alice_turn"
  */
 export function isConversationContinuation(G: WorldModel, target: string, nowMs: number): boolean {
   if (!G.has(target)) return false;
@@ -442,23 +446,23 @@ export function isConversationContinuation(G: WorldModel, target: string, nowMs:
   return G.getConversation(convId).turn_state === "alice_turn";
 }
 
-// ─── ADR-222: Habituation（适应性衰减）──────────────────────────────
+// ─── ADR-222: Habituation (адаптивное затухание) ──────────────────────────────
 
 /**
- * ADR-222: 适应性衰减因子 ρ_H = 1/(1 + α·H_eff)。
+ * ADR-222: фактор адаптивного затухания ρ_H = 1/(1 + α·H_eff).
  *
- * H_eff = H · 2^(-elapsed/halfLife) 是时间衰减后的有效适应状态。
- * 对重复刺激的响应递减——从视网膜到皮层的普遍物理约束。
+ * H_eff = H · 2^(-elapsed/halfLife) — эффективное состояние адаптации после временного затухания.
+ * Убывающий отклик на повторяющиеся стимулы — универсальное физическое ограничение от сетчатки до коры.
  *
- * 与除法归一化模型同构：R = E/(σ+E)（Carandini & Heeger 2012）。
- * 双曲线 1/(1+αH) 是其 n=1 特例。
+ * Изоморфно модели делительной нормализации: R = E/(σ+E) (Carandini & Heeger 2012).
+ * Гипербола 1/(1+αH) является частным случаем при n=1.
  *
- * @param H - 适应性累积值（每次行动 +1.0，指数衰减）
- * @param habituationMs - 上次更新的墙钟时间（ms）
- * @param nowMs - 当前时间（ms）
- * @param alpha - 适应性强度（默认 0.5）
- * @param halfLifeS - 衰减半衰期（秒，默认 1800 = 30 分钟）
- * @returns 乘性衰减系数 ∈ (0, 1]
+ * @param H - накопленное значение адаптации (каждое действие +1.0, экспоненциальное затухание)
+ * @param habituationMs - время стены последнего обновления (ms)
+ * @param nowMs - текущее время (ms)
+ * @param alpha - интенсивность адаптации (по умолчанию 0.5)
+ * @param halfLifeS - период полураспада (секунды, по умолчанию 1800 = 30 минут)
+ * @returns мультипликативный коэффициент затухания ∈ (0, 1]
  *
  * @see docs/adr/222-habituation-truth-model.md
  * @see Carandini & Heeger (2012) — Normalization as a canonical neural computation
@@ -473,31 +477,31 @@ export function computeHabituationFactor(
   if (H <= 0 || habituationMs <= 0) return 1.0;
   const ageS = Math.max(0, (nowMs - habituationMs) / 1000);
   const effectiveH = H * 2 ** (-ageS / halfLifeS);
-  if (effectiveH < 0.01) return 1.0; // 数值归零
+  if (effectiveH < 0.01) return 1.0; // числовое обнуление
   return 1 / (1 + alpha * effectiveH);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ADR-225: Dormant Mode — 昼夜节律辅助
+// ADR-225: Dormant Mode — поддержка циркадного ритма
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 判断给定的本地小时是否在 quiet window 内。
- * 支持跨午夜（start > end，如 23-7）。
+ * Определить, находится ли данный местный час в quiet window.
+ * Поддерживает пересечение полуночи (start > end, например 23-7).
  * @see docs/adr/225-dormant-mode.md
  */
 export function isInQuietWindow(localHour: number, start: number, end: number): boolean {
   if (start <= end) {
-    // 不跨午夜（如 1-6）
+    // Без пересечения полуночи (например 1-6)
     return localHour >= start && localHour < end;
   }
-  // 跨午夜（如 23-7）
+  // С пересечением полуночи (например 23-7)
   return localHour >= start || localHour < end;
 }
 
 /**
- * Dormant 调制因子 ρ_C。
- * dormant 时全维度压力 ×0.1（包括 P5——睡觉时义务不累积）。
- * 非 dormant 时返回 1.0（无调制）。
+ * Фактор модуляции dormant ρ_C.
+ * В dormant-режиме давление по всем измерениям ×0.1 (включая P5 — обязательства не накапливаются во сне).
+ * Вне dormant-режима возвращает 1.0 (без модуляции).
  */
 export const DORMANT_PRESSURE_FACTOR = 0.1;

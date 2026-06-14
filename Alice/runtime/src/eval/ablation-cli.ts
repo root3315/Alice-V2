@@ -1,12 +1,12 @@
 /**
- * ADR-137: Ablation CLI — 消融实验命令行入口。
+ * ADR-137: Ablation CLI — точка входа командной строки для ablation-экспериментов.
  *
- * 用法：
- *   pnpm eval:ablation                          # 默认：1 run, temperature=0
+ * Использование:
+ *   pnpm eval:ablation                          # по умолчанию: 1 run, temperature=0
  *   pnpm eval:ablation -- --runs 3              # 3 runs
- *   pnpm eval:ablation -- --dump                # 失败场景导出 prompt dump
- *   pnpm eval:ablation -- --json                # 额外导出 JSON 报告
- *   pnpm eval:ablation -- --filter group_debate # 只跑匹配的场景（substring）
+ *   pnpm eval:ablation -- --dump                # экспорт prompt dump для неудачных сценариев
+ *   pnpm eval:ablation -- --json                # дополнительный экспорт JSON-отчёта
+ *   pnpm eval:ablation -- --filter group_debate # запускать только совпадающие сценарии (substring)
  *
  * @see docs/adr/137-pressure-field-ablation.md
  */
@@ -15,7 +15,7 @@ import { printAblationReport, runAblationSuite } from "./ablation.js";
 import { ABLATION_SCENARIOS } from "./scenarios/index.js";
 import type { EvalRunnerConfig } from "./types.js";
 
-// pnpm 有时会在 script args 前注入一个多余的 "--"
+// pnpm иногда вставляет лишний "--" перед аргументами скрипта
 const rawArgs = process.argv.slice(2);
 if (rawArgs[0] === "--") rawArgs.shift();
 
@@ -42,7 +42,7 @@ const config: EvalRunnerConfig = {
   providerName: values.provider as string | undefined,
 };
 
-// 场景过滤（substring 匹配）
+// Фильтрация сценариев (совпадение по substring)
 const filterStr = values.filter as string | undefined;
 const scenarios = filterStr
   ? ABLATION_SCENARIOS.filter((s) => s.id.includes(filterStr))
@@ -64,12 +64,12 @@ if (scenarios.length === 0) {
   process.exit(2);
 }
 
-// dump 目录
+// Директория dump
 const dumpDir = values.dump
   ? `eval-ablation-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`
   : undefined;
 
-// 流式进度
+// Потоковый прогресс
 let completed = 0;
 
 runAblationSuite(scenarios, config, {
@@ -91,7 +91,7 @@ runAblationSuite(scenarios, config, {
       console.log(`\nPrompt dumps + JSON report: ${dumpDir}/`);
     }
 
-    // 退出码：Δ_structural > 0 → 0（压力场有贡献），否则 1
+    // Код выхода: Δ_structural > 0 → 0 (поле давления вносит вклад), иначе 1
     process.exit(report.summary.deltaStructural > 0 ? 0 : 1);
   })
   .catch((err) => {

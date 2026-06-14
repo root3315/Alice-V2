@@ -4,9 +4,9 @@
  * The shell-native executor (`shell-executor.ts`) is the execution backend.
  * This module provides the shared result types used across the tick pipeline.
  *
- * ADR-214 Wave B: ScriptExecutionResult 是唯一的执行结果类型。
- * ExecutableResult / RecordedAction 已删除——shell-native 架构下 Telegram 动作
- * 通过容器内 Engine API HTTP 直接执行，结果以 completedActions 字符串追踪。
+ * ADR-214 Wave B: ScriptExecutionResult — единственный тип результата выполнения.
+ * ExecutableResult / RecordedAction удалены — в shell-native архитектуре Telegram-действия
+ * выполняются напрямую через Engine API HTTP внутри контейнера, результат отслеживается строками completedActions.
  */
 
 export type ExecutionObservationKind =
@@ -82,20 +82,20 @@ export interface ScriptExecutionResult {
   logs: string[];
   errors: string[];
   instructionErrors: string[];
-  /** 机器可解析错误码。运行时控制只能读取这里，不能从自然语言日志猜语义。 */
+  /** Машиночитаемые коды ошибок. Управление во время выполнения должно читать только отсюда, не угадывать семантику из логов на естественном языке. */
   errorCodes: ScriptExecutionErrorCode[];
-  /** 机器可解析错误细节。仅供诊断事实写入；控制流不得从自然语言日志反推。 */
+  /** Машиночитаемые детали ошибок. Предназначены только для записи диагностических фактов; управляющий поток не должен выводить их из логов на естественном языке. */
   errorDetails?: ScriptExecutionErrorDetail[];
   duration: number;
   thinks: string[];
   queryLogs: Array<{ fn: string; result: string }>;
-  /** 机器可解析 observation fact。续轮控制只能读取这里，不能从 logs/queryLogs 猜语义。 */
+  /** Машиночитаемый observation fact. Управление в следующем раунде должно читать только отсюда, не угадывать семантику из logs/queryLogs. */
   observations: ExecutionObservation[];
-  /** 已完成的动作（shell 脚本输出的 __ALICE_ACTION__ 行）。格式: "sent:chatId=X:msgId=Y" 等。 */
+  /** Завершённые действия (строки __ALICE_ACTION__ из вывода shell-скрипта). Формат: "sent:chatId=X:msgId=Y" и т.д. */
   completedActions: string[];
-  /** 已完成动作的机器可解析事实。语义判断以这里为准，completedActions 仅保留兼容。 */
+  /** Машиночитаемые факты о завершённых действиях. Семантические решения основываются на этом поле; completedActions сохраняется только для совместимости. */
   completedActionFacts?: CompletedAction[];
-  /** LLM 主动选择沉默的原因（null = 非沉默）。 */
+  /** Причина, по которой LLM активно выбрал молчание (null = не молчит). */
   silenceReason: string | null;
 }
 
@@ -380,8 +380,8 @@ export function extractFirstExternalMessageId(result: {
 }
 
 /**
- * completedActions 是否包含真实出站消息动作。
- * 唯一传感器是 __ALICE_ACTION__。自然语言确认行只允许给人看，不能反向进入控制流。
+ * Содержит ли completedActions реальные исходящие действия-сообщения.
+ * Единственный датчик — __ALICE_ACTION__. Строки подтверждения на естественном языке предназначены только для человека и не должны попадать в управляющий поток.
  */
 export function hasCompletedSend(result: {
   completedActions?: readonly string[];

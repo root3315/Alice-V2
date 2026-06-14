@@ -19,7 +19,7 @@ import { isTelegramActionError } from "../../telegram/errors.js";
 import type { EngineApiDeps } from "../server.js";
 import { TARGET_NOT_WHITELISTED_CODE, telegramTargetAllowed } from "../target-policy.js";
 
-// ── 去重缓存：防止 LLM 重试轮重发已成功的消息 ──
+// ── Кэш дедупликации: предотвращает повторную отправку уже успешных сообщений при повторных попытках LLM ──
 
 const DEDUPE_TTL_MS = 30_000;
 const DEDUPE_MAX_SIZE = 1000;
@@ -35,7 +35,7 @@ function hashText(text: string): string {
   return createHash("sha256").update(text).digest("hex").slice(0, 16);
 }
 
-/** 清理阈值 = 2×TTL，留 grace period 避免竞态删除刚过期条目 */
+/** Порог очистки = 2×TTL, оставляет grace period во избежание гонки при удалении только что устаревших записей */
 const DEDUPE_CLEANUP_MS = DEDUPE_TTL_MS * 2;
 
 function dedupeCleanup(): void {
@@ -110,7 +110,7 @@ function serverError(res: ServerResponse, fallback: string, err: unknown): void 
     return;
   }
 
-  // ADR-237: 记录完整错误堆栈便于排查
+  // ADR-237: логируем полный стек ошибки для диагностики
   console.error(`[Engine API] ${fallback}:`, err instanceof Error ? err.stack : err);
   res.writeHead(500, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: err instanceof Error ? err.message : fallback }));
@@ -149,7 +149,7 @@ export async function handleTelegramForward(
       return;
     }
     if (!ensureTargetAllowed(res, deps, chatId)) return;
-    // 去重：30 秒内相同 chatId + text → 返回缓存结果
+    // Дедупликация: одинаковый chatId + text в течение 30 секунд → возвращаем кэшированный результат
     const dedupeKey = `${chatId}:${hashText(text)}`;
     const cached = recentSends.get(dedupeKey);
     if (cached && Date.now() - cached.ts < DEDUPE_TTL_MS) {
@@ -157,7 +157,7 @@ export async function handleTelegramForward(
       res.end(JSON.stringify({ msgId: cached.msgId, deduplicated: true }));
       return;
     }
-    // LRU 溢出保护
+    // Защита от переполнения LRU
     if (recentSends.size >= DEDUPE_MAX_SIZE) dedupeCleanup();
     try {
       const result = await deps.telegramSend({ chatId, text, replyTo });
@@ -412,7 +412,7 @@ export async function handleTelegramForward(
       notConfigured(res, "forward");
       return;
     }
-    // ADR-206 W8: 跨聊天转发（fromChatId → toChatId）+ 可选评论
+    // ADR-206 W8: переадресация между чатами (fromChatId → toChatId) + необязательный комментарий
     const b = body as {
       fromChatId?: unknown;
       msgId?: unknown;

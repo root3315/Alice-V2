@@ -1,16 +1,16 @@
 /**
- * ADR-185 §1: Desire 中间层 — tension → 显式目标派生。
+ * ADR-185 §1: Промежуточный слой Desire — tension → вывод явных целей.
  *
- * 在压力信号和 IAUS 评分之间插入 Desire 层，将散落的 per-target 张力信号
- * 聚合为语义化目标（"我想联系小明"、"我该回复那个线程"）。
+ * Вставляет слой Desire между сигналами давления и оценкой IAUS, агрегируя
+ * разрозненные per-target сигналы напряжения в семантические цели («хочу написать Мише», «надо ответить в тот тред»).
  *
- * Desire 作为 post-CF 乘法 boost（类似 ADR-182 D1 Momentum），不是 Consideration：
- * - urgency 从 tension 维度派生，与 specialist Considerations 共享数据源 → 作为 Consideration 会 double-count
- * - Post-CF boost 不改变 Consideration 数量 n → 无需 CF 重校准
- * - 非期望 target 不被惩罚（区别于 Consideration 方案的近否决效应）
+ * Desire действует как пост-CF мультипликативный буст (аналогично ADR-182 D1 Momentum), а не как Consideration:
+ * - urgency производится из измерений tension и разделяет источник данных со specialist Considerations → как Consideration даст double-count
+ * - Post-CF boost не меняет количество Consideration n → повторная калибровка CF не нужна
+ * - Нежелаемые target не штрафуются (в отличие от почти-вето-эффекта схемы на основе Consideration)
  *
  * @see docs/adr/185-ecm-cross-pollination.md §1
- * @see docs/adr/182-v-maximizer-refactor.md D1 Momentum Bonus（先例）
+ * @see docs/adr/182-v-maximizer-refactor.md D1 Momentum Bonus (прецедент)
  */
 
 import { safeDisplayName } from "../graph/display.js";
@@ -19,32 +19,32 @@ import type { WorldModel } from "../graph/world-model.js";
 import { effectiveObligation } from "../pressure/signal-decay.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 类型
+// Типы
 // ═══════════════════════════════════════════════════════════════════════════
 
 export type DesireType =
-  | "fulfill_duty" // P5 高
-  | "reconnect" // P3 高
-  | "resolve_thread" // P4 高
-  | "reduce_backlog" // P1 高
-  | "explore"; // P6 高
+  | "fulfill_duty" // P5 высокий
+  | "reconnect" // P3 высокий
+  | "resolve_thread" // P4 высокий
+  | "reduce_backlog" // P1 высокий
+  | "explore"; // P6 высокий
 
 export interface Desire {
   type: DesireType;
   targetId: string;
-  /** urgency ∈ (0, 1] — 越高越紧迫。 */
+  /** urgency ∈ (0, 1] — чем выше, тем срочнее. */
   urgency: number;
-  /** 人类可读标签（如 "reply to 小明"）。 */
+  /** Человекочитаемая метка (например "reply to Миша"). */
   label: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 常量
+// Константы
 // ═══════════════════════════════════════════════════════════════════════════
 
 const MAX_DESIRES = 10;
 
-/** 各维度产生 desire 的最低阈值。低于阈值 → 信号不够强，不构成显式目标。 */
+/** Минимальный порог каждого измерения для генерации desire. Ниже порога → сигнал недостаточно силён, явная цель не формируется. */
 const DESIRE_THRESHOLDS: Record<DesireType, number> = {
   fulfill_duty: 0.2,
   reconnect: 0.3,
@@ -54,16 +54,16 @@ const DESIRE_THRESHOLDS: Record<DesireType, number> = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 核心函数
+// Основные функции
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 从 tensionMap 派生显式 Desire 列表。
+ * Выводит список явных Desire из tensionMap.
  *
- * 遍历每个 channel 实体的张力向量，检查 5 个维度是否超过阈值。
- * 产生的 desires 按 urgency 降序排列，取 top MAX_DESIRES。
+ * Обходит вектор напряжений каждой сущности channel, проверяет превышение порога по 5 измерениям.
+ * Полученные desires сортируются по убыванию urgency, берётся top MAX_DESIRES.
  *
- * 纯函数，无 DB/LLM 依赖。
+ * Чистая функция, без зависимостей от DB/LLM.
  */
 export function deriveDesires(
   tensionMap: Map<string, TensionVector>,
@@ -75,7 +75,7 @@ export function deriveDesires(
   for (const [entityId, t] of tensionMap) {
     const name = safeDisplayName(G, entityId);
 
-    // P5: 回应义务 — 使用 effectiveObligation（含衰减）
+    // P5: Обязанность ответить — используем effectiveObligation (с затуханием)
     const obligation = G.has(entityId) ? effectiveObligation(G, entityId, nowMs) : 0;
     if (obligation > DESIRE_THRESHOLDS.fulfill_duty) {
       desires.push({
@@ -86,7 +86,7 @@ export function deriveDesires(
       });
     }
 
-    // P3: 关系冷却
+    // P3: Охлаждение отношений
     if (t.tau3 > DESIRE_THRESHOLDS.reconnect) {
       desires.push({
         type: "reconnect",
@@ -96,7 +96,7 @@ export function deriveDesires(
       });
     }
 
-    // P4: 线程分歧
+    // P4: Расхождение треда
     if (t.tau4 > DESIRE_THRESHOLDS.resolve_thread) {
       desires.push({
         type: "resolve_thread",
@@ -106,7 +106,7 @@ export function deriveDesires(
       });
     }
 
-    // P1: 注意力积压
+    // P1: Накопленные непрочитанные
     if (t.tau1 > DESIRE_THRESHOLDS.reduce_backlog) {
       desires.push({
         type: "reduce_backlog",
@@ -116,7 +116,7 @@ export function deriveDesires(
       });
     }
 
-    // P6: 好奇心
+    // P6: Любопытство
     if (t.tau6 > DESIRE_THRESHOLDS.explore) {
       desires.push({
         type: "explore",
@@ -127,15 +127,15 @@ export function deriveDesires(
     }
   }
 
-  // 按 urgency 降序排列，截断到 MAX_DESIRES
+  // Сортируем по убыванию urgency, обрезаем до MAX_DESIRES
   desires.sort((a, b) => b.urgency - a.urgency);
   return desires.slice(0, MAX_DESIRES);
 }
 
 /**
- * 在已排序的 desires 中查找指定 target 的最高 urgency desire。
+ * Находит desire с наибольшим urgency для указанного target в уже отсортированном списке.
  *
- * desires 已按 urgency 降序排列，find 返回第一个匹配 = 最高 urgency。
+ * desires отсортированы по убыванию urgency, find возвращает первое совпадение = наибольший urgency.
  */
 export function findTopDesireForTarget(
   desires: readonly Desire[],

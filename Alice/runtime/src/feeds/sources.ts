@@ -1,12 +1,12 @@
 /**
- * ADR-167: Feed 数据源 — 直接对接公开 API。
+ * ADR-167: источники данных фидов — прямое подключение к публичным API.
  *
- * 每个数据源是一个异步函数，返回统一的 FeedItem[]。
- * 不依赖 RSSHub 等中间层，直接调平台公开 API。
+ * Каждый источник данных — асинхронная функция, возвращающая унифицированный FeedItem[].
+ * Не зависит от промежуточных слоёв вроде RSSHub, напрямую вызывает публичные API платформ.
  *
- * 数据源：
- * - 60s.viki.moe：热搜聚合（B站、HackerNews、Epic 免费游戏等）
- * - api.bgm.tv：Bangumi 官方 API（今日新番）
+ * Источники данных:
+ * - 60s.viki.moe: агрегатор горячих тем (Bilibili, HackerNews, бесплатные игры Epic и др.)
+ * - api.bgm.tv: официальный API Bangumi (аниме-премьеры сегодня)
  *
  * @see docs/adr/167-rsshub-perception-channel.md
  */
@@ -14,14 +14,14 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("feed-sources");
 
-/** 统一的 feed 条目。 */
+/** Унифицированная запись фида. */
 export interface FeedItem {
   title: string;
   url: string;
   snippet: string;
 }
 
-/** 带超时的 fetch 封装。 */
+/** Обёртка fetch с таймаутом. */
 async function fetchWithTimeout(url: string, timeoutMs = 10_000): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -32,11 +32,11 @@ async function fetchWithTimeout(url: string, timeoutMs = 10_000): Promise<Respon
   }
 }
 
-// ── 60s.viki.moe 数据源 ─────────────────────────────────────────────────────
+// ── Источник данных 60s.viki.moe ─────────────────────────────────────────────
 
 const VIKI_BASE = "https://60s.viki.moe";
 
-/** B站热搜。 */
+/** Горячие темы Bilibili. */
 export async function fetchBiliHot(limit = 5): Promise<FeedItem[]> {
   try {
     const resp = await fetchWithTimeout(`${VIKI_BASE}/v2/bili`);
@@ -57,7 +57,7 @@ export async function fetchBiliHot(limit = 5): Promise<FeedItem[]> {
   }
 }
 
-/** HackerNews Top。 */
+/** Топ HackerNews. */
 export async function fetchHackerNewsTop(limit = 5): Promise<FeedItem[]> {
   try {
     const resp = await fetchWithTimeout(`${VIKI_BASE}/v2/hacker-news/top`);
@@ -81,7 +81,7 @@ export async function fetchHackerNewsTop(limit = 5): Promise<FeedItem[]> {
   }
 }
 
-/** Epic 本周免费游戏。 */
+/** Бесплатные игры Epic этой недели. */
 export async function fetchEpicFreeGames(): Promise<FeedItem[]> {
   try {
     const resp = await fetchWithTimeout(`${VIKI_BASE}/v2/epic`);
@@ -111,7 +111,7 @@ export async function fetchEpicFreeGames(): Promise<FeedItem[]> {
   }
 }
 
-/** 历史上的今天。 */
+/** Этот день в истории. */
 export async function fetchTodayInHistory(limit = 3): Promise<FeedItem[]> {
   try {
     const resp = await fetchWithTimeout(`${VIKI_BASE}/v2/today-in-history`);
@@ -139,9 +139,9 @@ export async function fetchTodayInHistory(limit = 3): Promise<FeedItem[]> {
   }
 }
 
-// ── Bangumi 官方 API ─────────────────────────────────────────────────────────
+// ── Официальный API Bangumi ───────────────────────────────────────────────────
 
-/** 今日新番更新（Bangumi 官方 API，完全公开）。 */
+/** Аниме-премьеры сегодня (официальный API Bangumi, полностью открытый). */
 export async function fetchBangumiToday(limit = 5): Promise<FeedItem[]> {
   try {
     const resp = await fetchWithTimeout("https://api.bgm.tv/calendar");
@@ -156,7 +156,7 @@ export async function fetchBangumiToday(limit = 5): Promise<FeedItem[]> {
       }>;
     }>;
 
-    // 找今天是星期几（Bangumi weekday id: 1=Mon...7=Sun）
+    // Определяем день недели сегодня (Bangumi weekday id: 1=Mon...7=Sun)
     const todayId = new Date().getDay() || 7; // JS: 0=Sun → 7
     const todayEntry = calendar.find((d) => d.weekday.id === todayId);
     if (!todayEntry) return [];

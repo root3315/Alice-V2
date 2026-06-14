@@ -1,8 +1,8 @@
 /**
- * Strategy Mod — hint 生成函数集合。
+ * Strategy Mod — набор функций генерации подсказок.
  *
- * 从 onTickEnd 中提取的 11 类 hint 生成逻辑（不含 personality_drift）。
- * 每个函数接收 ModContext<StrategyState>，返回 StrategyHint[]。
+ * 11 видов логики генерации подсказок, вынесенных из onTickEnd (без personality_drift).
+ * Каждая функция принимает ModContext<StrategyState> и возвращает StrategyHint[].
  */
 
 function capitalizeFirst(s: string): string {
@@ -10,8 +10,8 @@ function capitalizeFirst(s: string): string {
 }
 
 /**
- * EST 原则：LLM 消费离散类别，不消费连续标量。
- * 消息数 → 语义描述。
+ * Принцип EST: LLM потребляет дискретные категории, а не непрерывные скаляры.
+ * Количество сообщений → семантическое описание.
  */
 function msgCountLabel(n: number): string {
   if (n >= 100) return "a flood of";
@@ -46,18 +46,18 @@ import {
   type StrategyState,
 } from "./types.js";
 
-// -- B2 修复: 入站消息群聊状态补充 -------------------------------------------
+// -- B2 fix: дополнение состояния группового чата из входящих сообщений -------------------------------------------
 
 /**
- * 从 message_log 更新入站消息的群聊状态。
+ * Обновляет состояние группового чата из входящих сообщений в message_log.
  *
- * 问题: GroupChatState 只在 SEND_MESSAGE listener 中更新，入站消息被遗漏。
- * 修复: onTickEnd 读取近期入站消息，补充更新群聊状态。
+ * Проблема: GroupChatState обновляется только в listener SEND_MESSAGE, входящие сообщения пропускаются.
+ * Исправление: onTickEnd читает недавние входящие сообщения и дополняет состояние группового чата.
  */
 export function updateIncomingGroupState(ctx: ModContext<StrategyState>): void {
   try {
     const db = getDb();
-    // ADR-110: 使用 createdAt 替代 tick 窗口查询（最近 60 秒）
+    // ADR-110: используем createdAt вместо запроса по tick-окну (последние 60 секунд)
     const recentIncoming = db
       .select({
         chatId: messageLog.chatId,
@@ -79,12 +79,12 @@ export function updateIncomingGroupState(ctx: ModContext<StrategyState>): void {
       }
       const gs = ctx.state.groupStates[channelId];
 
-      // 更新发言者（IRC 风格：name ~senderId）
+      // Обновление говорящих (IRC-стиль: name ~senderId)
       if (msg.senderName) {
-        // senderId 格式为 "contact:xxx" — 提取数字部分作为 ~id
+        // senderId имеет формат "contact:xxx" — извлекаем числовую часть как ~id
         const numId = msg.senderId ? extractNumericId(msg.senderId) : null;
         const tag = numId != null ? `${msg.senderName} @${numId}` : msg.senderName;
-        // 按 senderId 去重（避免改名后重复），无 senderId 时按 name 去重
+        // Дедупликация по senderId (чтобы избежать дублей при переименовании), при отсутствии senderId — по name
         const dedup = numId != null ? ` @${numId}` : msg.senderName;
         gs.recentSpeakers = gs.recentSpeakers.filter(
           (s) => !s.endsWith(dedup) && s !== msg.senderName,
@@ -95,7 +95,7 @@ export function updateIncomingGroupState(ctx: ModContext<StrategyState>): void {
         }
       }
 
-      // 更新关键词
+      // Обновление ключевых слов
       if (msg.text) {
         const kw = extractKeywords(msg.text);
         gs.topicKeywords.push(...kw);
@@ -104,17 +104,17 @@ export function updateIncomingGroupState(ctx: ModContext<StrategyState>): void {
         }
       }
 
-      // 更新消息计数（非 Alice 消息）
+      // Обновление счётчика сообщений (не Alice)
       gs.totalMessages++;
     }
   } catch {
-    // DB 不可用时跳过
+    // Пропускаем, если БД недоступна
   }
 }
 
-// -- G7: participation_ratio 图属性暴露 --------------------------------------
+// -- G7: экспорт graph-атрибута participation_ratio --------------------------------------
 
-/** 暴露 participationRatio 到图属性（供 system1 动态频率控制）。 */
+/** Экспортирует participationRatio в graph-атрибут (для динамического управления частотой в system1). */
 export function syncParticipationToGraph(ctx: ModContext<StrategyState>): void {
   for (const [channelId, gs] of Object.entries(ctx.state.groupStates)) {
     if (ctx.graph.has(channelId)) {
@@ -123,19 +123,19 @@ export function syncParticipationToGraph(ctx: ModContext<StrategyState>): void {
   }
 }
 
-// -- Hint 生成函数 -----------------------------------------------------------
+// -- Функции генерации подсказок -----------------------------------------------------------
 
-/** 1. 关系维护扫描 — 检查亲密联系人的沉默时间。 */
+/** 1. Сканирование поддержания отношений — проверка времени молчания у близких контактов. */
 export function generateRelationshipHints(ctx: ModContext<StrategyState>): StrategyHint[] {
   const hints: StrategyHint[] = [];
   for (const nodeId of ctx.graph.getEntitiesByType("contact")) {
     const attrs = ctx.graph.getContact(nodeId);
     const tier = Number(attrs.tier ?? 50);
-    // ADR-110: 阈值现在是秒
+    // ADR-110: пороговое значение теперь в секундах
     const thresholdS = getSilenceThresholdS(tier);
 
-    // last_alice_action_ms 由 observer.mod 写到 channel:xxx 节点（DECLARE_ACTION target = ensureGraphId）。
-    // 这里遍历 contact:xxx 节点，需同时查对应的 channel:xxx 变体。
+    // last_alice_action_ms записывается observer.mod в узел channel:xxx (DECLARE_ACTION target = ensureGraphId).
+    // Здесь перебираем узлы contact:xxx, нужно проверять также соответствующий вариант channel:xxx.
     const chVariant = ensureChannelId(nodeId) ?? "";
     const lastInteractionMs = Math.max(
       readNodeMs(ctx.graph, nodeId, "last_alice_action_ms"),
@@ -155,7 +155,7 @@ export function generateRelationshipHints(ctx: ModContext<StrategyState>): Strat
   return hints;
 }
 
-/** 2. 注意力不平衡检测 — 最近行动是否过度集中。 */
+/** 2. Детекция дисбаланса внимания — не слишком ли сконцентрированы недавние действия. */
 export function generateAttentionHints(ctx: ModContext<StrategyState>): StrategyHint[] {
   const hints: StrategyHint[] = [];
   const recent = ctx.state.recentActions.slice(-10);
@@ -181,13 +181,13 @@ export function generateAttentionHints(ctx: ModContext<StrategyState>): Strategy
   return hints;
 }
 
-/** 3. 机会窗口 — 检测刚上线的联系人。 */
+/** 3. Окно возможностей — определение только что вышедших онлайн контактов. */
 export function generateOpportunityHints(ctx: ModContext<StrategyState>): StrategyHint[] {
   const hints: StrategyHint[] = [];
   for (const nodeId of ctx.graph.getEntitiesByType("contact")) {
-    // ADR-110: 使用 readNodeMs 获取 returning 时间
+    // ADR-110: получаем время returning через readNodeMs
     const returningMs = readNodeMs(ctx.graph, nodeId, "returning_ms");
-    // ADR-110: 5 ticks × 60 = 300 秒
+    // ADR-110: 5 ticks × 60 = 300 секунд
     if (returningMs > 0 && (ctx.nowMs - returningMs) / 1000 <= 300) {
       const displayName = safeDisplayName(ctx.graph, nodeId);
       hints.push({
@@ -199,7 +199,7 @@ export function generateOpportunityHints(ctx: ModContext<StrategyState>): Strate
   return hints;
 }
 
-/** 4. 陈旧线程 — 有 open thread 但长时间无 beat。 */
+/** 4. Устаревшие нити — есть открытый thread, но давно не было beat. */
 export function generateStaleThreadHints(ctx: ModContext<StrategyState>): StrategyHint[] {
   const hints: StrategyHint[] = [];
   try {
@@ -217,14 +217,14 @@ export function generateStaleThreadHints(ctx: ModContext<StrategyState>): Strate
       .all();
 
     for (const t of staleThreads) {
-      // ADR-110/166: 统一使用 estimateAgeS（墙钟优先，tick × 60 兜底）
+      // ADR-110/166: единообразно используем estimateAgeS (приоритет wall-clock, fallback tick × 60)
       const lastBeatTick = t.lastBeatTick ?? t.createdTick;
       const staleDurationS = estimateAgeS(
         { createdAt: t.createdAt, tick: lastBeatTick },
         ctx.nowMs,
         ctx.tick,
       );
-      // 20 ticks × 60 = 1200 秒
+      // 20 ticks × 60 = 1200 секунд
       if (staleDurationS > 1200) {
         hints.push({
           type: "thread_stale",
@@ -233,19 +233,19 @@ export function generateStaleThreadHints(ctx: ModContext<StrategyState>): Strate
       }
     }
   } catch {
-    // DB 不可用时跳过
+    // Пропускаем, если БД недоступна
   }
   return hints;
 }
 
-/** 5. 待回复对话 — 轮到 Alice 的 conversation。 */
+/** 5. Ожидающие диалоги — conversation, где очередь за Alice. */
 export function generatePendingConversationHints(ctx: ModContext<StrategyState>): StrategyHint[] {
   const hints: StrategyHint[] = [];
   for (const convId of ctx.graph.getEntitiesByType("conversation")) {
     const conv = ctx.graph.getConversation(convId);
     if (conv.turn_state === "alice_turn" && conv.state !== "cooldown") {
       const participantId = conv.participants[0];
-      // 无障碍：用 display_name 替代 raw graph ID
+      // Доступность: используем display_name вместо raw graph ID
       const participantName =
         participantId && ctx.graph.has(participantId)
           ? String(ctx.graph.getDynamic(participantId, "display_name") ?? participantId)
@@ -261,17 +261,17 @@ export function generatePendingConversationHints(ctx: ModContext<StrategyState>)
 }
 
 /**
- * 6. 危机检测 — 频道消息频率突增（GOAL.md 场景 6）。
+ * 6. Детекция кризиса — резкий рост частоты сообщений в канале (сценарий 6 GOAL.md).
  *
- * Z-score 检测（替代旧频率比）：Z = (unread - μ) / σ，Z > 2.5 → 危机候选。
- * 统计显著性更强——正常活跃时段不会误触发（旧 4× 比率在低基线时极易误报）。
+ * Детекция по Z-score (замена старого отношения частот): Z = (unread - μ) / σ, Z > 2.5 → кризис-кандидат.
+ * Статистически значимее — в обычные активные периоды ложных срабатываний нет (старое отношение 4× часто ошибалось при малой базе).
  *
- * 检测的是**消息洪水**（统计异常突增），不是语义层的霸凌/攻击。
- * 生成的 hint 是情境感知（告诉 LLM 频道在发生什么），
- * gateCrisisMode 提供行为约束（别在洪水里刷屏）——两者互补而非矛盾。
- * Alice 被个人攻击的行为反应走涌现管线：feel() + mood + persona。
+ * Детектируется **флуд сообщений** (статистически аномальный рост), а не семантический буллинг/атака.
+ * Генерируемый hint — контекстная осведомлённость (сообщает LLM, что происходит в канале),
+ * gateCrisisMode обеспечивает поведенческое ограничение (не спамить во флуде) — оба дополняют, не противоречат.
+ * Поведенческая реакция Alice на личные атаки идёт через эмерджентный пайплайн: feel() + mood + persona.
  *
- * @see evolve.ts spikeContribs — ADR-191: 相同的 EMA + Z-score 方法，通过 tauSpike → rCaution 直接结构路径
+ * @see evolve.ts spikeContribs — ADR-191: тот же метод EMA + Z-score, прямой структурный путь через tauSpike → rCaution
  */
 export function generateCrisisHints(ctx: ModContext<StrategyState>): StrategyHint[] {
   const hints: StrategyHint[] = [];
@@ -281,7 +281,7 @@ export function generateCrisisHints(ctx: ModContext<StrategyState>): StrategyHin
     const attrs = ctx.graph.getChannel(channelId);
     const unread = attrs.unread ?? 0;
 
-    // 初始化频率窗口
+    // Инициализация окна частоты
     if (!ctx.state.messageFrequency[channelId]) {
       ctx.state.messageFrequency[channelId] = {
         recentCount: unread,
@@ -294,11 +294,11 @@ export function generateCrisisHints(ctx: ModContext<StrategyState>): StrategyHin
     }
 
     const window = ctx.state.messageFrequency[channelId];
-    // ADR-110: 使用 ms 判断时间流逝
+    // ADR-110: используем ms для определения прошедшего времени
     const msDelta = ctx.nowMs - (window.lastMs ?? 0);
     if (msDelta <= 0) continue;
 
-    // EMA 均值 + 方差更新（Welford 在线算法，与 generators.ts 一致）
+    // Обновление среднего EMA + дисперсии (онлайн-алгоритм Велфорда, аналогично generators.ts)
     const diff = unread - window.baseline;
     window.baseline = window.baseline + EMA_ALPHA * diff;
     const prevVariance = window.variance ?? 0;
@@ -310,15 +310,15 @@ export function generateCrisisHints(ctx: ModContext<StrategyState>): StrategyHin
     const isCrisis = !!ctx.state.crisisChannels[channelId];
     const hasVariance = (window.variance ?? 0) >= 1.0;
 
-    // Z-score 计算（方差充足时使用，否则回退到旧频率比）
+    // Вычисление Z-score (при достаточной дисперсии, иначе fallback на старое отношение частот)
     // biome-ignore lint/style/noNonNullAssertion: hasVariance guards non-null
     const z = hasVariance ? (unread - window.baseline) / Math.sqrt(window.variance!) : 0;
 
     if (!isCrisis) {
-      // 危机检测
+      // Детекция кризиса
       const isCrisisCandidate = hasVariance
         ? z > CRISIS_Z_THRESHOLD
-        : // 回退：旧频率比（variance 数据积累不足时）
+        : // Fallback: старое отношение частот (когда данных о дисперсии недостаточно)
           unread > CRISIS_MIN_BASELINE &&
           window.baseline > 0 &&
           unread / Math.max(window.baseline, 1) >= CRISIS_FREQUENCY_RATIO;
@@ -333,7 +333,7 @@ export function generateCrisisHints(ctx: ModContext<StrategyState>): StrategyHin
         });
       }
     } else {
-      // 危机恢复
+      // Восстановление после кризиса
       const isRecovered = hasVariance
         ? z < CRISIS_RECOVERY_Z
         : unread <= 0 || unread / Math.max(window.baseline, 1) < CRISIS_RECOVERY_RATIO;
@@ -354,7 +354,7 @@ export function generateCrisisHints(ctx: ModContext<StrategyState>): StrategyHin
   return hints;
 }
 
-/** 7. 群聊氛围感知（场景 4）— 检测活跃群聊 + M2 话题漂移窗口轮转。 */
+/** 7. Восприятие атмосферы группового чата (сценарий 4) — определение активных групп + M2 ротация окна дрейфа темы. */
 export function generateGroupAtmosphereHints(ctx: ModContext<StrategyState>): StrategyHint[] {
   const hints: StrategyHint[] = [];
   for (const channelId of ctx.graph.getEntitiesByType("channel")) {
@@ -362,14 +362,14 @@ export function generateGroupAtmosphereHints(ctx: ModContext<StrategyState>): St
     if (attrs.chat_type !== "group" && attrs.chat_type !== "supergroup") continue;
 
     const unread = attrs.unread ?? 0;
-    if (unread < 5) continue; // 只关注活跃群聊
+    if (unread < 5) continue; // Учитываем только активные группы
 
     const displayName = safeDisplayName(ctx.graph, channelId);
-    // ADR-110: 使用 readNodeMs 获取 last_alice_action 时间
+    // ADR-110: получаем время last_alice_action через readNodeMs
     const lastAliceActionMs = readNodeMs(ctx.graph, channelId, "last_alice_action_ms");
     const silenceSinceAliceS = (ctx.nowMs - lastAliceActionMs) / 1000;
 
-    // ADR-110: 15 ticks × 60 = 900 秒
+    // ADR-110: 15 ticks × 60 = 900 секунд
     if (lastAliceActionMs > 0 && silenceSinceAliceS > 900 && unread >= 10) {
       hints.push({
         type: "group_atmosphere",
@@ -377,7 +377,7 @@ export function generateGroupAtmosphereHints(ctx: ModContext<StrategyState>): St
       });
     }
 
-    // M2: 话题关键词窗口 FIFO 轮转（与 listener/updateIncomingGroupState 的 MAX_TOPIC_KEYWORDS 一致）
+    // M2: FIFO-ротация окна ключевых слов темы (соответствует MAX_TOPIC_KEYWORDS в listener/updateIncomingGroupState)
     const gs = ctx.state.groupStates[channelId];
     if (gs && gs.topicKeywords.length > MAX_TOPIC_KEYWORDS) {
       gs.topicKeywords = gs.topicKeywords.slice(-MAX_TOPIC_KEYWORDS);
@@ -386,14 +386,14 @@ export function generateGroupAtmosphereHints(ctx: ModContext<StrategyState>): St
   return hints;
 }
 
-/** 8. 行为模式识别（M4 三层增强）— 多维行为模式检测。 */
+/** 8. Распознавание паттернов поведения (трёхуровневое усиление M4) — многомерная детекция поведенческих паттернов. */
 export function generateBehaviorPatternHints(ctx: ModContext<StrategyState>): StrategyHint[] {
   const hints: StrategyHint[] = [];
   if (ctx.state.recentActions.length < 10) return hints;
 
   const last10 = ctx.state.recentActions.slice(-10);
 
-  // 8a. 声部单调性（同一 intent 重复出现）
+  // 8a. Монотонность голоса (один и тот же intent повторяется)
   const intentCounts: Record<string, number> = {};
   for (const a of last10) {
     if (a.intent) {
@@ -410,10 +410,10 @@ export function generateBehaviorPatternHints(ctx: ModContext<StrategyState>): St
     }
   }
 
-  // 8b. 节奏模式检测 — 行动间隔的规律性
-  // 参考: Buzsáki (2006) Rhythms of the Brain — 周期性模式即节律
+  // 8b. Детекция ритмического паттерна — регулярность интервалов между действиями
+  // Ссылка: Buzsáki (2006) Rhythms of the Brain — периодический паттерн есть ритм
   if (last10.length >= 5) {
-    // ADR-110/166: 统一使用 estimateEventMs 计算间隔
+    // ADR-110/166: единообразно используем estimateEventMs для вычисления интервалов
     const gaps: number[] = [];
     for (let i = 1; i < last10.length; i++) {
       const msI = estimateEventMs(last10[i], ctx.nowMs, ctx.tick);
@@ -424,7 +424,7 @@ export function generateBehaviorPatternHints(ctx: ModContext<StrategyState>): St
     const meanGap = gaps.reduce((s, g) => s + g, 0) / gaps.length;
     const variance = gaps.reduce((s, g) => s + (g - meanGap) ** 2, 0) / gaps.length;
     const stdGap = Math.sqrt(variance);
-    // CV (变异系数) < 0.3 → 高度规律
+    // CV (коэффициент вариации) < 0.3 → высокая регулярность
     const cv = meanGap > 0 ? stdGap / meanGap : 0;
     if (cv < 0.3 && meanGap > 0) {
       hints.push({
@@ -434,8 +434,8 @@ export function generateBehaviorPatternHints(ctx: ModContext<StrategyState>): St
     }
   }
 
-  // 8c. 跨联系人重复检测 — 同一 intent 对 3+ 不同目标
-  // 参考: Goffman (1959) "表演的自我" — 对不同人用相同策略 = "公式化"
+  // 8c. Детекция повторений у разных контактов — один и тот же intent для 3+ разных целей
+  // Ссылка: Goffman (1959) "Представление себя другим в повседневной жизни" — одинаковая стратегия с разными людьми = "формульность"
   const intentTargets: Record<string, Set<string>> = {};
   for (const a of last10) {
     if (a.intent && a.target) {
@@ -456,19 +456,19 @@ export function generateBehaviorPatternHints(ctx: ModContext<StrategyState>): St
 }
 
 /**
- * 9. 守夜人简报（场景 1 增强）— 结构化分频道摘要。
+ * 9. Ночная сводка (усиление сценария 1) — структурированная сводка по каналам.
  *
- * 当 Alice 长时间不活跃后恢复时，生成按频道分组的简报：
- * - 按紧急度排序：directed (私聊/回复) > mention (群聊@) > background
- * - 每频道标注消息数、directed/mention 数量
- * - 从 message_log 获取详细信息，图属性兜底
+ * Генерируется при возобновлении активности Alice после длительного перерыва:
+ * - Сортировка по приоритету: directed (личный чат/ответ) > mention (@упоминание в группе) > background
+ * - Для каждого канала: число сообщений, количество directed/mention
+ * - Детали берутся из message_log, graph-атрибуты — запасной вариант
  *
  * @see docs/adr/53-audit-gap-closure.md
  */
 export function generateOvernightBriefingHints(ctx: ModContext<StrategyState>): StrategyHint[] {
   const allActions = ctx.state.recentActions;
   const lastAction = allActions.length > 0 ? allActions[allActions.length - 1] : null;
-  // ADR-110: 使用 ms 计算静默时间
+  // ADR-110: используем ms для вычисления времени молчания
   const lastActionMs = lastAction?.ms ?? 0;
   const lastActionTick = lastAction?.tick ?? 0;
   const inactiveDurationS = estimateAgeS(
@@ -477,10 +477,10 @@ export function generateOvernightBriefingHints(ctx: ModContext<StrategyState>): 
     ctx.tick,
   );
 
-  // Alice 静默超过 3600 秒（1 小时）且有行动记录
+  // Alice молчала более 3600 секунд (1 час) и есть записи о действиях
   if (inactiveDurationS <= 3600 || lastActionTick === 0) return [];
 
-  // 尝试从 message_log 获取详细分频道统计
+  // Попытка получить подробную статистику по каналам из message_log
   interface ChannelSummary {
     chatId: string;
     displayName: string;
@@ -494,7 +494,7 @@ export function generateOvernightBriefingHints(ctx: ModContext<StrategyState>): 
 
   try {
     const db = getDb();
-    // ADR-110: 使用 createdAt 替代 tick 窗口查询
+    // ADR-110: используем createdAt вместо запроса по tick-окну
     const cutoffMs = lastActionMs > 0 ? lastActionMs : ctx.nowMs - inactiveDurationS * 1000;
     const rows = db
       .select({
@@ -524,18 +524,18 @@ export function generateOvernightBriefingHints(ctx: ModContext<StrategyState>): 
         chatType,
       });
     }
-    // 只有 DB 实际返回了数据才算成功，否则 fallback 到图属性
+    // Считаем успешным только если БД действительно вернула данные, иначе fallback на graph-атрибуты
     usedDb = channelSummaries.length > 0;
   } catch {
-    // DB 不可用，回退到图属性
+    // БД недоступна, fallback на graph-атрибуты
   }
 
-  // 回退：从图属性获取基础统计
+  // Fallback: базовая статистика из graph-атрибутов
   if (!usedDb) {
     for (const channelId of ctx.graph.getEntitiesByType("channel")) {
       const attrs = ctx.graph.getChannel(channelId);
       const unread = attrs.unread ?? 0;
-      // ADR-124: 使用 effectiveObligation 替代 pending_directed
+      // ADR-124: используем effectiveObligation вместо pending_directed
       // @see docs/adr/126-obligation-field-decay.md §D6
       const directed = effectiveObligation(ctx.graph, channelId, ctx.nowMs);
       if (unread > 0) {
@@ -558,15 +558,15 @@ export function generateOvernightBriefingHints(ctx: ModContext<StrategyState>): 
   const totalDirected = channelSummaries.reduce((s, c) => s + c.directed, 0);
   if (totalMessages <= 5 && totalDirected === 0) return [];
 
-  // 分类：priority（有 directed 消息）vs background
+  // Классификация: priority (есть directed-сообщения) vs background
   const priority = channelSummaries.filter((c) => c.directed > 0);
   const background = channelSummaries.filter((c) => c.directed === 0);
 
-  // 排序：priority 按 directed 数量降序；background 按总数降序
+  // Сортировка: priority по количеству directed по убыванию; background по общему числу по убыванию
   priority.sort((a, b) => b.directed - a.directed);
   background.sort((a, b) => b.total - a.total);
 
-  // 构建结构化简报
+  // Формирование структурированной сводки
   const m = new PromptBuilder();
   m.line(
     `OVERNIGHT BRIEFING (silent for ${humanDuration(inactiveDurationS)}, ${msgCountLabel(totalMessages)} messages accumulated):`,
@@ -576,7 +576,7 @@ export function generateOvernightBriefingHints(ctx: ModContext<StrategyState>): 
     m.heading("Priority");
     m.list(
       priority.map((ch) => {
-        // 私聊 → "directed messages"；群聊 → "@mention/reply"；未知 → "directed"
+        // Личный чат → "directed messages"; групповой → "@mention/reply"; неизвестный → "directed"
         const label =
           ch.chatType === "private"
             ? "directed messages"
@@ -592,7 +592,7 @@ export function generateOvernightBriefingHints(ctx: ModContext<StrategyState>): 
     m.heading("Background");
     m.list(
       background.slice(0, 10).map((ch) => {
-        // 限制 background 最多 10 条，防止 context 膨胀
+        // Ограничение background — не более 10 записей, чтобы не раздувать контекст
         return `${ch.displayName}: ${msgCountLabel(ch.total)} messages, no directed`;
       }),
     );
@@ -614,7 +614,7 @@ export function generateOvernightBriefingHints(ctx: ModContext<StrategyState>): 
   ];
 }
 
-/** 10. 承诺到期提醒（场景 3）— 检查有 horizon 即将到期的 thread。 */
+/** 10. Напоминание о дедлайне обязательства (сценарий 3) — проверка thread с horizon, приближающимся к истечению. */
 export function generateCommitmentHints(ctx: ModContext<StrategyState>): StrategyHint[] {
   const hints: StrategyHint[] = [];
   try {
@@ -633,7 +633,7 @@ export function generateCommitmentHints(ctx: ModContext<StrategyState>): Strateg
 
     for (const t of urgentThreads) {
       if (!t.horizon) continue;
-      // horizon 单位为 tick，1 tick ≈ 60s
+      // horizon в единицах tick, 1 tick ≈ 60s
       const horizonS = t.horizon * 60;
       const createdMs = estimateEventMs(
         { createdAt: t.createdAt, tick: t.createdTick },
@@ -642,7 +642,7 @@ export function generateCommitmentHints(ctx: ModContext<StrategyState>): Strateg
       );
       const deadlineMs = createdMs + horizonS * 1000;
       const remainingS = (deadlineMs - ctx.nowMs) / 1000;
-      // 即将到期（剩余 < 20% horizon 或 < 600 秒）
+      // Дедлайн близко (осталось < 20% horizon или < 600 секунд)
       if (remainingS > 0 && (remainingS < horizonS * 0.2 || remainingS < 600)) {
         hints.push({
           type: "commitment_due",
@@ -651,17 +651,17 @@ export function generateCommitmentHints(ctx: ModContext<StrategyState>): Strateg
       }
     }
   } catch {
-    // DB 不可用时跳过
+    // Пропускаем, если БД недоступна
   }
   return hints;
 }
 
 /**
- * Bot 工具感知 — 扫描有 is_bot 标记的联系人。
+ * Осознание бот-инструментов — сканирование контактов с меткой is_bot.
  *
- * ADR-196 F5: 仅包含近 7 天活跃的 bot，最多 3 条。
- * 群聊场景由 ENTITY_SCOPED visibility filter 按实体名自然过滤；
- * 私聊场景通过活跃度 + cap 减少无关 bot 噪音。
+ * ADR-196 F5: включаем только ботов, активных за последние 7 дней, не более 3 записей.
+ * В групповых чатах фильтруется естественно через ENTITY_SCOPED visibility filter по имени сущности;
+ * в личных чатах активность + cap снижают шум от нерелевантных ботов.
  */
 export function generateBotToolHints(ctx: ModContext<StrategyState>): StrategyHint[] {
   const RECENCY_MS = 7 * 24 * 3600 * 1000;

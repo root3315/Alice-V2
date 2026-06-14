@@ -1,10 +1,10 @@
 /**
- * IRC 命令逻辑 — 纯函数版本（ADR-239 GitHub CLI 风格）。
+ * IRC команды — версия на чистых функциях (ADR-239, стиль GitHub CLI).
  *
- * ADR-239 变更：
- * - --json 接受逗号分隔字段列表（非 boolean）
- * - 命令返回 rawResult 供字段过滤
- * - 输出格式化由 makeRunner 统一处理
+ * Изменения ADR-239:
+ * - --json принимает список полей через запятую (не boolean)
+ * - команды возвращают rawResult для фильтрации полей
+ * - форматирование вывода централизовано в makeRunner
  *
  * @see docs/adr/239-gh-cli-style-output-pipeline.md
  */
@@ -192,19 +192,19 @@ function assertCurrentTransportTargetForSend(
 
 // ── Command Result Types ──
 
-/** 命令执行结果 — 包含所有待输出内容。 */
+/** Результат выполнения команды — содержит всё, что нужно вывести. */
 export interface CommandResult {
-  /** action trace 行（如 `__ALICE_ACTION__:sent:chatId=xxx:msgId=yyy`）。 */
+  /** строка трассировки action (например `__ALICE_ACTION__:sent:chatId=xxx:msgId=yyy`). */
   action?: string;
-  /** structured observation fact；控制流只读这个，不从 output 文本猜语义。 */
+  /** структурированный observation-факт; поток управления читает только его, не пытаясь разобрать семантику из текста output. */
   observation?: ExecutionObservation;
-  /** 主输出内容（人类可读文本）。 */
+  /** основное содержимое вывода (человекочитаемый текст). */
   output: string;
-  /** 原始结果对象（用于 JSON 字段过滤）。 */
+  /** сырой объект результата (для фильтрации JSON-полей). */
   rawResult?: unknown;
 }
 
-/** 命令处理器 — 接收上下文和参数，返回待输出结果。 */
+/** Обработчик команды — принимает контекст и аргументы, возвращает результат для вывода. */
 export type CommandHandler<T = Record<string, unknown>> = (
   ctx: CliContext,
   args: T,
@@ -231,7 +231,7 @@ export interface SayArgs {
   "resolve-thread"?: string; // thread ID to resolve after sending (CLI flag format)
 }
 
-/** say 命令逻辑。 */
+/** Логика команды say. */
 export async function sayCommand(ctx: CliContext, args: SayArgs): Promise<CommandResult> {
   const die = makeDie(ctx.output, "irc");
 
@@ -293,7 +293,7 @@ export interface ReplyArgs {
   text: string;
 }
 
-/** 解析消息 ID（纯函数）。 */
+/** Разбирает ID сообщения (чистая функция). */
 export function parseMsgId(raw: string): number {
   const normalized = raw.trim().replace(/^#/, "");
   if (/^(latest|last|recent)$/i.test(normalized)) {
@@ -318,7 +318,7 @@ export function parseMsgId(raw: string): number {
   return n;
 }
 
-/** reply 命令逻辑。 */
+/** Логика команды reply. */
 export async function replyCommand(ctx: CliContext, args: ReplyArgs): Promise<CommandResult> {
   const die = makeDie(ctx.output, "irc");
 
@@ -385,7 +385,7 @@ function allowedReactionList(): string {
   return Array.from(ALLOWED_REACTIONS).join(" ");
 }
 
-/** react 命令逻辑。 */
+/** Логика команды react. */
 export async function reactCommand(ctx: CliContext, args: ReactArgs): Promise<CommandResult> {
   const die = makeDie(ctx.output, "irc");
   const target = await resolveTransportTarget(ctx, args.in);
@@ -429,7 +429,7 @@ export interface StickerArgs {
   keyword: string;
 }
 
-/** sticker 命令逻辑。 */
+/** Логика команды sticker. */
 export async function stickerCommand(ctx: CliContext, args: StickerArgs): Promise<CommandResult> {
   const die = makeDie(ctx.output, "irc");
 
@@ -466,7 +466,7 @@ export interface VoiceArgs {
   text: string;
 }
 
-/** voice 命令逻辑。 */
+/** Логика команды voice. */
 export async function voiceCommand(ctx: CliContext, args: VoiceArgs): Promise<CommandResult> {
   const die = makeDie(ctx.output, "irc");
 
@@ -520,7 +520,7 @@ export interface ReadArgs {
   in?: string;
 }
 
-/** read 命令逻辑。 */
+/** Логика команды read. */
 export async function readCommand(ctx: CliContext, args: ReadArgs): Promise<CommandResult> {
   const target = await resolveTransportTarget(ctx, args.in);
   await ctx.engine.post("/transport/read", { target: target.ref.stableId });
@@ -551,7 +551,7 @@ export interface TailArgs {
   count: string;
 }
 
-/** tail 命令逻辑。 */
+/** Логика команды tail. */
 export async function tailCommand(ctx: CliContext, args: TailArgs): Promise<CommandResult> {
   const die = makeDie(ctx.output, "irc");
 
@@ -566,7 +566,7 @@ export async function tailCommand(ctx: CliContext, args: TailArgs): Promise<Comm
     `/chat/${encodeURIComponent(channelId)}/tail?limit=${count}`,
   )) as ChatTailResponse | null;
 
-  // 标注来源（用于远程聊天）
+  // Помечаем источник (для удалённых чатов)
   const isRemote = args.in != null;
   const header = isRemote ? `[tail ${label}]\n` : "";
 
@@ -627,27 +627,27 @@ export interface WhoisArgs {
   target?: string;
 }
 
-/** 从 graph 属性响应中提取 value（纯函数）。 */
+/** Извлекает value из ответа по атрибуту графа (чистая функция). */
 export function gval(res: unknown): unknown {
   return (res as { value?: unknown } | null)?.value ?? null;
 }
 
-/** whois 命令逻辑。 */
+/** Логика команды whois. */
 export async function whoisCommand(ctx: CliContext, args: WhoisArgs): Promise<CommandResult> {
   const target = args.target?.trim() || undefined;
 
   if (target) {
-    // whois NAME/@ID → 联系人画像
+    // whois NAME/@ID → профиль контакта
     const stripped = target.startsWith("@") || target.startsWith("~") ? target.slice(1) : target;
 
-    // 尝试解析为数字 ID
+    // Пробуем разобрать как числовой ID
     const n = Number(stripped);
     let contactId: string;
 
     if (Number.isFinite(n)) {
       contactId = telegramContactId(n);
     } else {
-      // 尝试名称解析
+      // Пробуем разрешить имя
       const resolveResult = (await ctx.engine.post("/resolve/name", { name: target })) as {
         result?: { telegramId: number | null } | null;
       };
@@ -672,7 +672,7 @@ export async function whoisCommand(ctx: CliContext, args: WhoisArgs): Promise<Co
     };
   }
 
-  // whois（无参数）→ 聊天室信息
+  // whois (без аргументов) → информация о чате
   const targetRef = await resolveTransportTarget(ctx, args.in);
   const chatId = targetRef.chatId ?? targetRef.ref.stableId;
   const channelId = transportChannelId(targetRef);
@@ -723,7 +723,7 @@ export interface MotdArgs {
   in?: string;
 }
 
-/** motd 命令逻辑。 */
+/** Логика команды motd. */
 export async function motdCommand(ctx: CliContext, args: MotdArgs): Promise<CommandResult> {
   const target = await resolveTransportTarget(ctx, args.in);
   const result = await ctx.engine.query("/query/chat_mood", { chatId: transportChannelId(target) });
@@ -747,7 +747,7 @@ export interface ThreadsArgs {
   json?: string;
 }
 
-/** threads 命令逻辑。 */
+/** Логика команды threads. */
 export async function threadsCommand(ctx: CliContext, _args: ThreadsArgs): Promise<CommandResult> {
   const result = await ctx.engine.query("/query/open_topics", {});
   const output = renderHuman(result);
@@ -771,7 +771,7 @@ export interface JoinArgs {
   target: string;
 }
 
-/** join 命令逻辑。 */
+/** Логика команды join. */
 export async function joinCommand(ctx: CliContext, args: JoinArgs): Promise<CommandResult> {
   const die = makeDie(ctx.output, "irc");
 
@@ -790,7 +790,7 @@ export interface LeaveArgs {
   in?: string;
 }
 
-/** leave 命令逻辑。 */
+/** Логика команды leave. */
 export async function leaveCommand(ctx: CliContext, args: LeaveArgs): Promise<CommandResult> {
   const chatId = await ctx.resolveTarget(args.in);
   const result = await ctx.engine.post("/telegram/leave", { chatId });

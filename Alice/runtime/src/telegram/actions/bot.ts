@@ -1,5 +1,5 @@
 /**
- * bot 类别动作：click_inline_button, inline_query, send_inline_result, get_bot_commands。
+ * Действия категории bot: click_inline_button, inline_query, send_inline_result, get_bot_commands.
  *
  * @see docs/adr/149-define-action-builder.md
  */

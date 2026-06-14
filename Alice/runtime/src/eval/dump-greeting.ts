@@ -1,6 +1,6 @@
 /**
- * 临时脚本：导出 branch.baseline.greeting 场景的 system/user prompt。
- * 用法：npx tsx --env-file=.env src/eval/dump-greeting.ts
+ * Временный скрипт: экспортирует system/user prompt для сценария branch.baseline.greeting.
+ * Использование: npx tsx --env-file=.env src/eval/dump-greeting.ts
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { loadConfig } from "../config.js";

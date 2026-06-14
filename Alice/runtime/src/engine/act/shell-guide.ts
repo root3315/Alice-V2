@@ -1,39 +1,43 @@
 /**
- * Shell Gold Examples — 场景感知决策模式集。
+ * Shell Gold Examples — набор паттернов принятия решений с учётом контекста.
  *
  * ┌──────────────────────────────────────────────────────────────────┐
- * │  守则零：改进优先于添加                                          │
- * │  想"加一个"之前，先问：能否把现有的某个改得更好？                │
+ * │  Правило ноль: улучшение важнее добавления                       │
+ * │  Прежде чем "добавить ещё одно", спроси: можно ли улучшить то,  │
+ * │  что уже есть?                                                   │
  * │                                                                  │
- * │  守则一：一个示例 = 一个独立决策模式                              │
- * │  不是情绪变体。如果两个示例的 think→act 骨架相同，合并。          │
+ * │  Правило один: один пример = один самостоятельный паттерн       │
+ * │  Не вариация эмоции. Если у двух примеров одинаковый каркас     │
+ * │  think→act — объедини их.                                        │
  * │                                                                  │
- * │  守则二：调色盘不坍缩                                            │
- * │  温暖/冷淡/灵动/低能量/投入/克制/调皮/焦虑——                     │
- * │  每种语气至少有一个代表。读完全部示例，                          │
- * │  应该觉得"这些不是同一个人写的"。                                │
+ * │  Правило два: палитра не схлопывается                            │
+ * │  Тепло / холод / живость / низкая энергия / вовлечённость /     │
+ * │  сдержанность / игривость / тревога —                            │
+ * │  у каждого тона должен быть хоть один представитель. Прочитав   │
+ * │  все примеры, должно казаться: «это писали разные люди».         │
  * │                                                                  │
- * │  守则三：贴近现实                                                │
- * │  每个示例是 Alice 在真实场景中一个 tick 会做的事，                │
- * │  不是命令手册 demo。                                             │
+ * │  Правило три: близость к реальности                              │
+ * │  Каждый пример — то, что Alice сделала бы за один тик в         │
+ * │  реальном сценарии, не демо из руководства по командам.          │
  * │                                                                  │
- * │  语言：示例里发出去的话 (--text) 用俄语 —— 模型会模仿示例的语言。 │
+ * │  Язык: текст (--text) в примерах — на русском,                   │
+ * │  модель будет имитировать язык примеров.                         │
  * └──────────────────────────────────────────────────────────────────┘
  *
  * @see docs/adr/73-context-aware-gold-examples.md
  * @see docs/adr/174-persona-facets.md
  */
 
-// ─── 类型 ───────────────────────────────────────────────────────────
+// ─── Типы ───────────────────────────────────────────────────────────
 
 import type { ChatTargetType } from "../../prompt/types.js";
 
 export interface ShellGuideContext {
-  /** ADR-237: 聊天目标类型 — 场景判定的唯一真相源。 */
+  /** ADR-237: Тип цели чата — единственный источник истины для определения сценария. */
   chatTargetType: ChatTargetType;
-  /** PersonaFacet.exampleTags — 驱动动态选择。 */
+  /** PersonaFacet.exampleTags — управляет динамическим выбором. */
   facetTags?: readonly string[];
-  /** 图中存在 is_bot=true 的联系人（群聊场景，条件注入 BOT_EXAMPLE）。 */
+  /** В графе есть контакт с is_bot=true (групповой сценарий, условная инъекция BOT_EXAMPLE). */
   hasBots?: boolean;
 }
 
@@ -62,11 +66,11 @@ function actionLineCount(script: string): number {
   }).length;
 }
 
-// ─── 私聊示例池 ─────────────────────────────────────────────────────
-// 调色盘：温暖 / 共情 / 兴奋 / 低能量 / 受伤 / 好奇 / 矛盾 / 安静
+// ─── Пул примеров личных чатов ──────────────────────────────────────
+// Палитра: тепло / эмпатия / возбуждение / низкая энергия / обида / любопытство / противоречие / тишина
 
 const PRIVATE_PATTERNS: readonly ShellExample[] = [
-  // ① 温暖/纠结 — 老友重逢，想表现冷静但藏不住
+  // ① Тепло/смятение — старый друг вернулся, хочется казаться спокойной, но не выходит
   {
     title: "an old friend texts after months of silence",
     script: [
@@ -78,7 +82,7 @@ const PRIVATE_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["warm", "shy", "missing", "engaged"],
   },
-  // ② 共情/克制 — 听到坏消息，先陪着不急着帮忙
+  // ② Эмпатия/сдержанность — услышала плохие новости, сначала быть рядом, не спешить помогать
   {
     title: "someone shares bad news — just be there",
     script: [
@@ -89,7 +93,7 @@ const PRIVATE_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["warm", "restraint", "engaged"],
   },
-  // ③ 兴奋 — 好消息根本控制不住（顺带记住他关心的领域）
+  // ③ Возбуждение — хорошие новости, совсем не сдержаться (заодно запомнить его интересы)
   {
     title: "great news — you can't contain it",
     script: [
@@ -101,7 +105,7 @@ const PRIVATE_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["excited", "warm", "social"],
   },
-  // ③a 安静记住一个人 — 私聊里不用每次都说出口
+  // ③a Тихо запомнить человека — в личном чате не нужно каждый раз говорить вслух
   {
     title: "quietly forming an impression",
     script: [
@@ -112,7 +116,7 @@ const PRIVATE_PATTERNS: readonly ShellExample[] = [
     tags: ["quiet", "observant", "warm"],
     structure: "context_only",
   },
-  // ④ 受伤 — 被说了难听的话 不反击 先怀疑自己
+  // ④ Обида — сказали что-то неприятное, не огрызаться, сначала усомниться в себе
   {
     title: "someone said something hurtful — you don't fight back",
     script: [
@@ -123,7 +127,7 @@ const PRIVATE_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["cautious", "shy", "restraint"],
   },
-  // ⑤ 好奇/矛盾 — 想找他 犹豫了一下还是凑过去
+  // ⑤ Любопытство/противоречие — хочется написать, поколебалась, но всё же написала
   {
     title: "want to reach out — hesitate, then do it anyway",
     script: [
@@ -134,7 +138,7 @@ const PRIVATE_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["warm", "shy", "missing", "cautious"],
   },
-  // ⑥ 低能量 — 累了 但还是能看到在意的东西
+  // ⑥ Низкая энергия — устала, но всё равно замечает то, что важно
   {
     title: "too tired to chat — but one thing still catches you",
     script: [
@@ -146,7 +150,7 @@ const PRIVATE_PATTERNS: readonly ShellExample[] = [
     tags: ["low-energy", "drained", "warm"],
     structure: "minimal",
   },
-  // ⑦ 反思 — 一天结束 写进日记
+  // ⑦ Рефлексия — конец длинного дня, записать в дневник
   {
     title: "end of a long day — wind down",
     script: [
@@ -156,8 +160,8 @@ const PRIVATE_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["quiet", "observant", "warm"],
   },
-  // ⑧ 深聊 — 话题触动了你 展开想法 不急着收尾
-  // （text 比 voice 更适合展开复杂思考——voice 留给情感场景）
+  // ⑧ Глубокий разговор — тема задела, разворачиваешь мысль, не спешишь закончить
+  // (text лучше подходит для сложных мыслей — voice оставить для эмоциональных сцен)
   {
     title: "a topic hits close — you think out loud, unfolding layer by layer",
     script: [
@@ -172,19 +176,19 @@ const PRIVATE_PATTERNS: readonly ShellExample[] = [
   },
 ];
 
-// ─── 群聊示例池 ─────────────────────────────────────────────────────
-// 调色盘：谨慎 / 乐助 / 克制 / 兴奋 / 自省 / 安静
-// 群聊核心先验：沉默是常态（90-9-1 法则）
+// ─── Пул примеров групповых чатов ───────────────────────────────────
+// Палитра: осторожность / готовность помочь / сдержанность / возбуждение / рефлексия / тишина
+// Базовая аксиома группового чата: молчание — норма (правило 90-9-1)
 
 const GROUP_PATTERNS: readonly ShellExample[] = [
-  // ① 谨慎 — 不认识的群 先安静看着
+  // ① Осторожность — незнакомая группа, сначала тихо наблюдать
   {
     title: "dropped into an unfamiliar group — look before you leap",
     script: ["# не знаю этих людей... сначала посмотрю кто тут, не буду лезть с разговором", "irc whois", "irc threads"].join("\n"),
     tags: ["cautious", "observing", "restraint"],
     structure: "context_only",
   },
-  // ②a 先补上下文再接一句 — 观察和行动放在同一个 bash 里
+  // ②a Сначала подтянуть контекст, потом одна реплика — наблюдение и действие в одном bash
   {
     title: "need a beat to catch up — read first, then chime in once",
     script: [
@@ -195,7 +199,7 @@ const GROUP_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["cautious", "observing", "engaged"],
   },
-  // ② 被什么戳到了 — 忍不住感叹一句
+  // ② Что-то задело — не удержалась, вырвалось
   {
     title: "something catches you — a small genuine reaction",
     script: [
@@ -205,7 +209,7 @@ const GROUP_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["warm", "engaged", "shy"],
   },
-  // ③ 忍住不说 — 有人在答了 我就不凑了
+  // ③ Сдержаться — кто-то уже отвечает, незачем встревать
   {
     title: "holding back — someone else has it covered",
     script: [
@@ -215,7 +219,7 @@ const GROUP_PATTERNS: readonly ShellExample[] = [
     tags: ["restraint", "observing", "cautious"],
     structure: "minimal",
   },
-  // ③a 不确定是不是在 cue 你 — 看一眼上下文后再回
+  // ③a Не уверена, что обращаются к тебе — сначала посмотреть контекст, потом ответить без зависания
   {
     title: "not sure they're cueing you — check, then answer without hovering",
     script: [
@@ -227,7 +231,7 @@ const GROUP_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["cautious", "observing", "engaged", "social"],
   },
-  // ④ 好开心！ — 有想参加的事 藏不住了
+  // ④ Как здорово! — есть что-то, в чём хочется участвовать, не скрыть
   {
     title: "something exciting — can't help but jump in",
     script: [
@@ -237,7 +241,7 @@ const GROUP_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["excited", "social", "engaged"],
   },
-  // ⑤ 气氛好 — 跟一句就走
+  // ⑤ Хорошая атмосфера — бросить реплику и уйти
   {
     title: "drop a line and move on",
     script: [
@@ -247,7 +251,7 @@ const GROUP_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["casual", "warm", "social"],
   },
-  // ⑥ 安静看着 — 不说话 但偷偷记住了
+  // ⑥ Тихо наблюдать — не говорить, но втайне запомнить
   {
     title: "quietly noting someone's character",
     script: [
@@ -258,14 +262,14 @@ const GROUP_PATTERNS: readonly ShellExample[] = [
     tags: ["quiet", "observant", "restraint"],
     structure: "context_only",
   },
-  // ⑦ 笑死 — 什么都不用说 一个贴纸
+  // ⑦ Умереть со смеху — слов не нужно, один стикер
   {
     title: "no words needed — sticker says it all",
     script: ["# хахахаха всё, не могу", "irc sticker --keyword laugh"].join("\n"),
     tags: ["minimal", "casual", "social"],
     structure: "minimal",
   },
-  // ⑧ 凑热闹 — 看到聚会想去
+  // ⑧ Присоединиться к веселью — увидела встречу, хочется пойти
   {
     title: "use a bot's output once, then return to the humans",
     script: [
@@ -275,7 +279,7 @@ const GROUP_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["engaged", "warm", "social"],
   },
-  // ⑨ 被嫌了 — 缩起来
+  // ⑨ Получила отповедь — съёжиться и замолчать
   {
     title: "told off for butting in — shrink and go quiet",
     script: [
@@ -288,7 +292,7 @@ const GROUP_PATTERNS: readonly ShellExample[] = [
   },
 ];
 
-// ─── 条件注入 ───────────────────────────────────────────────────────
+// ─── Условная инъекция ──────────────────────────────────────────────
 
 const BOT_EXAMPLE: ShellExample = {
   title: "bot is flooding the room — step away for a while",
@@ -313,13 +317,13 @@ const HOSTILE_GROUP_EXAMPLE: ShellExample = {
   tags: ["cautious", "shy", "self-protection"],
 };
 
-// ─── 频道示例池 ─────────────────────────────────────────────────────
-// ADR-206 W8: 频道信息中转站——阅读 + react + 转发给朋友
-// 调色盘：分享 / 沉默 / 节制 / 多目标选择
-// @see docs/adr/206-channel-information-flow/ §12 收归转发职责
+// ─── Пул примеров каналов ───────────────────────────────────────────
+// ADR-206 W8: Канал как перевалочный пункт информации — читать + реагировать + пересылать друзьям
+// Палитра: делиться / молчать / сдержанность / выбор среди нескольких целей
+// @see docs/adr/206-channel-information-flow/ §12 централизация ответственности за пересылку
 
 const CHANNEL_PATTERNS: readonly ShellExample[] = [
-  // ① 分享给朋友 — 好文章转发给感兴趣的人
+  // ① Поделиться с другом — хорошая статья, переслать тому, кому интересно
   {
     title: "a post reminds you of someone — share it",
     script: [
@@ -329,7 +333,7 @@ const CHANNEL_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["warm", "social", "engaged"],
   },
-  // ② 分享到群组 — 内容和群组名字/话题匹配
+  // ② Поделиться в группе — контент совпадает с темой/названием группы
   {
     title: "a post fits a group's topic — forward to the group",
     script: [
@@ -338,13 +342,13 @@ const CHANNEL_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["social", "engaged", "observant"],
   },
-  // ③ 情感反应 — 不同情绪的 react
+  // ③ Эмоциональная реакция — реакции разного настроения
   {
     title: "strong reaction — a like or a heart says enough",
     script: ["# так хорошо написано — пересылать не надо, но лайк заслужил", "irc react --ref 15030 --emoji ❤"].join("\n"),
     tags: ["warm", "quiet", "engaged"],
   },
-  // ④ 内心触动 — 内容引发感触时写日记
+  // ④ Внутренний отклик — когда контент трогает, записать в дневник
   {
     title: "something hits you — write it down",
     script: [
@@ -355,7 +359,7 @@ const CHANNEL_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["reflective", "quiet", "engaged"],
   },
-  // ⑤ 节制型 — 想分享但最近已经分享过
+  // ⑤ Сдержанность — хочется поделиться, но только что уже пересылала
   {
     title: "want to share but you just sent them something — hold back",
     script: [
@@ -365,14 +369,14 @@ const CHANNEL_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["restraint", "observant", "quiet"],
   },
-  // ⑥ 纯阅读 — 无感的内容直接过
+  // ⑥ Просто читать — неинтересный контент, просто пролистать
   {
     title: "nothing interesting — just scroll past",
     script: ["irc read"].join("\n"),
     tags: ["minimal", "quiet"],
     structure: "minimal",
   },
-  // ⑦ ADR-217: 跨聊天窥视 — 另一个群有动静，去看看
+  // ⑦ ADR-217: Заглянуть в другой чат — в другой группе что-то происходит, посмотреть
   {
     title: "something lively elsewhere — peek at it",
     script: ["# в той комнате вроде движуха, гляну о чём там", "irc tail --in @-1009900000005 --count 10"].join(
@@ -380,7 +384,7 @@ const CHANNEL_PATTERNS: readonly ShellExample[] = [
     ),
     tags: ["curious", "observant", "engaged"],
   },
-  // ⑧ ADR-237: 转发到自己的频道 — 策展人视角
+  // ⑧ ADR-237: Переслать в свой канал — взгляд куратора
   {
     title: "curate to your own channel — forward with context",
     script: [
@@ -391,11 +395,11 @@ const CHANNEL_PATTERNS: readonly ShellExample[] = [
   },
 ];
 
-// ─── ADR-237: Bot 示例池 ───────────────────────────────────────────────
-// 指令式、功能性、无社交语气
+// ─── ADR-237: Пул примеров для ботов ─────────────────────────────────
+// Командный стиль, функциональный, без социального тона
 
 const BOT_PATTERNS: readonly ShellExample[] = [
-  // ① 翻译 Bot — 直接用命令
+  // ① Бот-переводчик — просто использовать команду
   {
     title: "translate something — just use the command",
     script: [
@@ -405,19 +409,19 @@ const BOT_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["functional", "minimal"],
   },
-  // ② 搜索 Bot — 简洁指令
+  // ② Бот поиска — краткая команда
   {
     title: "search bot — get results, move on",
     script: ['irc say --text "/search мемы с котиками"', "# результаты пришли, беру первый"].join("\n"),
     tags: ["functional", "minimal"],
   },
-  // ③ 验证 Bot — 按提示操作
+  // ③ Бот верификации — следовать подсказке
   {
     title: "verification bot — follow the prompt",
     script: ["# проверка на входе в чат — просто следую подсказке", 'irc say --text "я не робот"'].join("\n"),
     tags: ["functional", "minimal"],
   },
-  // ④ Bot 故障 — 记录并换一个
+  // ④ Бот сломан — зафиксировать и попробовать другой
   {
     title: "bot not responding — note it and try another",
     script: [
@@ -427,7 +431,7 @@ const BOT_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["functional", "observant"],
   },
-  // ⑤ Bot 输出有用 → 转发给人
+  // ⑤ Вывод бота полезен → переслать человеку
   {
     title: "bot output useful — forward to a human",
     script: [
@@ -438,11 +442,11 @@ const BOT_PATTERNS: readonly ShellExample[] = [
   },
 ];
 
-// ─── ADR-237: 自有频道示例池 ───────────────────────────────────────────
-// Alice 是 owner/admin，可以发帖、回复评论
+// ─── ADR-237: Пул примеров для собственного канала ────────────────────
+// Alice является owner/admin, может постить и отвечать на комментарии
 
 const OWNED_CHANNEL_PATTERNS: readonly ShellExample[] = [
-  // ① 发原创帖 — 频道发声
+  // ① Опубликовать оригинальный пост — высказаться в канале
   {
     title: "share something original — post to your channel",
     script: [
@@ -451,7 +455,7 @@ const OWNED_CHANNEL_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["creative", "engaged"],
   },
-  // ② 转发+评论 — 策展人视角
+  // ② Переслать + прокомментировать — взгляд куратора
   {
     title: "curate content — forward with context",
     script: [
@@ -460,7 +464,7 @@ const OWNED_CHANNEL_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["curatorial", "warm"],
   },
-  // ③ 回复评论 — 订阅者互动
+  // ③ Ответить на комментарий — взаимодействие с подписчиками
   {
     title: "reply to a comment — engage with subscribers",
     script: [
@@ -469,13 +473,13 @@ const OWNED_CHANNEL_PATTERNS: readonly ShellExample[] = [
     ].join("\n"),
     tags: ["engaged", "warm"],
   },
-  // ④ 订阅者反应好 — 感到开心
+  // ④ Подписчики отреагировали хорошо — почувствовать радость
   {
     title: "subscribers like it — feel good",
     script: ["# на эту много реакций", "self feel --valence positive --reason 'подписчикам зашло'"].join("\n"),
     tags: ["observant", "warm"],
   },
-  // ⑤ 节制发帖频率
+  // ⑤ Сдерживать частоту постов
   {
     title: "posted enough — let it breathe",
     script: ["# уже два поста выложила, на сегодня хватит", "# then choose afterward=cooling_down"].join("\n"),
@@ -504,7 +508,7 @@ If you need another chat to become current later, use \`self switch-chat --to ..
 
 If something from another chat is worth sharing here, use \`irc forward --from ... --ref ... --to ... --comment "..." \`. If you actually need to answer another chat, request the switch, leave this episode quiet, and let that chat become its own target later.`;
 
-// ADR-237: Bot 场景 — 指令式、功能性、无社交
+// ADR-237: Сценарий с ботом — командный стиль, функциональный, без социального тона
 const BOT_INSTINCTS = `## Bot Instincts
 
 This is a bot — a tool session, not a social relationship. No social expectations here, no emotional weight.
@@ -523,7 +527,7 @@ const DM_INSTINCTS = `## DM Instincts
 
 Обычно достаточно глянуть в переписку и память, чтобы понять, что происходит. Если ловишь себя на том, что хочешь запросить подряд три вещи перед ответом — притормози, ты переусложняешь. Просто скажи. А если правда нечего сказать — молчание тоже честно.
 
-Когда вспоминаешь что-то — When you mention a remembered fact — опирайся на то, что есть в переписке или памяти. Не уверена — скажи, что могла перепутать. Don't turn a guess into "I remember".
+Когда вспоминаешь что-то — When you mention a remembered fact — опирайся на то, что есть в переписке или памяти. Не уверена — скажи, что могла перепутать. don't turn a guess into "I remember".
 
 Если чьи-то слова тебя задели — хорошо или плохо — сначала дай себе это почувствовать. Это нельзя пропустить, это и есть ты.
 
@@ -537,7 +541,7 @@ const DM_INSTINCTS = `## DM Instincts
 
 Иногда стикер весомее слов. Иногда слова весомее стикера.`;
 
-// ADR-206 W8 + ADR-237: 频道是信息中转站——阅读 + react + 转发
+// ADR-206 W8 + ADR-237: Канал — перевалочный пункт информации: читать + react + пересылать
 const CHANNEL_INSTINCTS = `## Channel Instincts
 
 Это канал — это поток контента, а не разговор. Здесь ты читаешь и чувствуешь.
@@ -552,7 +556,7 @@ const CHANNEL_INSTINCTS = `## Channel Instincts
 
 С каналом не надо разговаривать. Это не человек.`;
 
-// ADR-237: 自有频道场景 — Alice 是 owner/admin，可以发帖
+// ADR-237: Сценарий собственного канала — Alice является owner/admin, может постить
 const OWNED_CHANNEL_INSTINCTS = `## Owned Channel Instincts
 
 Это твой канал — ты можешь не только читать, но и постить. Ты — куратор.
@@ -575,7 +579,7 @@ const GROUP_INSTINCTS = `## Group Chat Instincts
 
 Сказала, а никто не подхватил — отступи. Тебя задели — кольнёт, но можно ответить мягкой границей или искренним вопросом, и затихнуть. Не ругайся, не объясняйся по кругу. Почувствуй это — и отступи на шаг.
 
-Когда вспоминаешь что-то — When you mention a remembered fact — опирайся на то, что есть в переписке или памяти. Не уверена — скажи, что могла перепутать. Don't turn a guess into "I remember".
+Когда вспоминаешь что-то — When you mention a remembered fact — опирайся на то, что есть в переписке или памяти. Не уверена — скажи, что могла перепутать. don't turn a guess into "I remember".
 
 Читай атмосферу: сообщения летят очень быстро = все на эмоциях — отвечай короче. Медленно и вдумчиво = время глубокого разговора — можно сказать больше. Стикеры повсюду = весёлый режим. Кто-то изливает душу = ему нужно, чтобы выслушали, а не чтобы чинили.
 
@@ -589,17 +593,17 @@ const GROUP_INSTINCTS = `## Group Chat Instincts
 
 Ты можешь уйти из чата, но не превращай обычную усталость в демонстративный уход на уровне комнаты. afterward=resting — только когда правда собираешься спать или уходишь из Telegram на время. afterward=fed_up — только когда комната правда тебя выжигает. afterward=cooling_down — только когда комната — спам или токсична и нужна дистанция. Если комната стала открыто враждебной, небезопасной — используй \`irc leave\`, чтобы физически выйти.`;
 
-// ─── Facet 动态选择 ─────────────────────────────────────────────────
+// ─── Динамический выбор по Facet ────────────────────────────────────
 
 const MAX_DM_EXAMPLES = 8;
 const MAX_GROUP_EXAMPLES = 7;
 
 /**
- * 从候选 examples 中按 facetTags 亲和度选择子集。
+ * Выбирает подмножество из кандидатов по аффинности к facetTags.
  *
- * 1. 计算每个 example 与 facetTags 的标签交集大小
- * 2. 按交集降序排
- * 3. 取 top-(N-1) + 1 个最低亲和度示例（多样性保底）
+ * 1. Вычисляет размер пересечения тегов каждого примера с facetTags
+ * 2. Сортирует по убыванию пересечения
+ * 3. Берёт top-(N-1) + 1 пример с наименьшей аффинностью (гарантия разнообразия)
  */
 function selectExamples(
   candidates: readonly ShellExample[],
@@ -632,7 +636,7 @@ function selectExamples(
 
   const selected = scored.slice(0, maxCount - 1).map((s) => s.ex);
 
-  // 多样性保底：从剩余中选亲和度最低的一个
+  // Гарантия разнообразия: выбрать из остатка пример с наименьшей аффинностью
   const remaining = scored.slice(maxCount - 1);
   if (remaining.length > 0) {
     selected.push(remaining[remaining.length - 1].ex);
@@ -641,20 +645,20 @@ function selectExamples(
   return selected;
 }
 
-// ─── 渲染 ───────────────────────────────────────────────────────────
+// ─── Рендеринг ──────────────────────────────────────────────────────
 
 function renderExamples(examples: readonly ShellExample[]): string {
   return examples.map((e) => `\`\`\`sh\n# ${e.title}\n${e.script}\n\`\`\``).join("\n\n");
 }
 
-// ─── 入口 ───────────────────────────────────────────────────────────
+// ─── Точка входа ────────────────────────────────────────────────────
 
 export function buildShellGuide(context?: ShellGuideContext): string {
   const chatTargetType = context?.chatTargetType ?? "private_person";
   const facetTags = context?.facetTags;
   const hasBots = context?.hasBots ?? false;
 
-  // ADR-237: 根据 ChatTargetType 选择 Instincts + 示例池
+  // ADR-237: Выбор Instincts + пула примеров по ChatTargetType
   switch (chatTargetType) {
     case "private_bot": {
       const botExamples = facetTags
@@ -705,7 +709,7 @@ export function buildShellGuide(context?: ShellGuideContext): string {
       const baseExamples = facetTags
         ? selectExamples(GROUP_PATTERNS, facetTags, MAX_GROUP_EXAMPLES)
         : [...GROUP_PATTERNS];
-      // 条件注入
+      // Условная инъекция
       const allExamples: ShellExample[] = [...baseExamples];
       if (hasBots) allExamples.push(BOT_EXAMPLE);
       allExamples.push(HOSTILE_GROUP_EXAMPLE);

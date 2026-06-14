@@ -1,23 +1,24 @@
 /**
- * Feeds Mod — ADR-167: Feed 感知通道。
+ * Feeds Mod — ADR-167: канал восприятия фидов.
  *
- * Alice 的互联网视觉：通过公开 API 拉取反映人设品味的内容源，
- * 定时拉取新条目，在适当时机注入 prompt 让 LLM 自行决定是否分享。
+ * Интернет-зрение Алисы: получает контент из публичных API, отражающий её вкусы,
+ * периодически подтягивает новые записи и в подходящий момент вставляет их в prompt,
+ * позволяя LLM самостоятельно решать, делиться ли ими.
  *
- * 架构要点：
- * - 后台异步轮询（setInterval）写入模块级缓存
- * - onTickStart/contribute 同步读取缓存（不阻塞 tick）
- * - 条目有保质期（shelfLifeHours）和最大曝光次数（maxExposures）
- * - 不创建线程——feed 内容是环境信息，不是事务
- * - 不新增 action——LLM 用现有 send_message 等能力分享
+ * Архитектурные ключевые моменты:
+ * - Фоновый асинхронный поллинг (setInterval) пишет в кэш уровня модуля
+ * - onTickStart/contribute синхронно читают кэш (не блокируют tick)
+ * - Записи имеют срок хранения (shelfLifeHours) и максимальное число показов (maxExposures)
+ * - Потоки не создаются — содержимое фида является фоновой информацией, а не транзакцией
+ * - Новые action не добавляются — LLM делится через существующие возможности (send_message и т. д.)
  *
- * 行为真实性（模拟真实刷手机行为）：
- * - 压力门控：忙着回消息时不刷手机（API > 0.5 → 跳过）
- * - 冷却期：刚看过手机不会马上又看（距上次注入 < 10 min → 跳过）
- * - 概率性注入：即使空闲也不是每个 tick 都刷（30% 概率跳过）
- * - 随机采样 + 来源多样性：从缓存中随机选 2-3 条，尽量覆盖不同来源
+ * Поведенческая аутентичность (имитация реального листания телефона):
+ * - Блокировка по давлению: при активной переписке телефон не листается (API > 0.5 → пропуск)
+ * - Период охлаждения: только что посмотрела телефон — сразу снова не смотрит (< 10 мин → пропуск)
+ * - Вероятностная инъекция: даже при простое не каждый tick листается (вероятность пропуска 30%)
+ * - Случайная выборка + разнообразие источников: из кэша случайно выбирается 2–3 записи разных источников
  *
- * 数据源：60s.viki.moe（聚合 API）+ Bangumi 官方 API。
+ * Источники данных: 60s.viki.moe (агрегирующий API) + официальный API Bangumi.
  *
  * @see docs/adr/167-rsshub-perception-channel.md
  */
@@ -30,46 +31,46 @@ import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("feeds");
 
-// ── 缓存条目 ─────────────────────────────────────────────────────────────────
+// ── Записи кэша ──────────────────────────────────────────────────────────────
 
-/** 缓存中的单条 feed 条目。 */
+/** Единственная запись фида в кэше. */
 interface CachedFeedItem {
-  /** 来源 feed 的 label（LLM 可见）。 */
+  /** Метка исходного фида (видна LLM). */
   feedLabel: string;
-  /** 条目标题。 */
+  /** Заголовок записи. */
   title: string;
-  /** 条目 URL。 */
+  /** URL записи. */
   url: string;
-  /** 摘要。 */
+  /** Краткое описание. */
   snippet: string;
-  /** 首次拉取时间（ms）。 */
+  /** Время первого получения (мс). */
   fetchedMs: number;
-  /** 已曝光次数（注入 prompt 的次数）。 */
+  /** Количество показов (сколько раз запись вставлялась в prompt). */
   exposures: number;
 }
 
-// ── 模块级缓存（后台轮询写入，Mod 同步读取）──────────────────────────────────
+// ── Кэш уровня модуля (запись — фоновый поллинг, чтение — Mod синхронно) ─────
 
-/** 全局 feed 条目缓存。key = `${label}::${title}` 去重。 */
+/** Глобальный кэш записей фида. key = `${label}::${title}` для дедупликации. */
 const feedCache = new Map<string, CachedFeedItem>();
 
-/** 每条 feed 的上次拉取时间。key = label。 */
+/** Время последнего получения для каждого фида. key = label. */
 const lastFetchMs = new Map<string, number>();
 
-/** 轮询定时器引用（用于清理）。 */
+/** Ссылка на таймер поллинга (для очистки). */
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-/** 配置快照。 */
+/** Снимок конфигурации. */
 let feedsConfig: FeedsConfig | null = null;
 
-/** 生成缓存 key。 */
+/** Генерирует ключ кэша. */
 function cacheKey(label: string, title: string): string {
   return `${label}::${title}`;
 }
 
 /**
- * ADR-220: 暴露可注入的 feed 条目给 snapshot 构建器。
- * 过滤已过期和已达最大曝光次数的条目。
+ * ADR-220: предоставляет инжектируемые записи фида для построителя снимков.
+ * Фильтрует просроченные записи и записи с превышенным числом показов.
  */
 export function getInjectableFeedItems(): Array<{ title: string; url: string; snippet: string }> {
   if (!feedsConfig) return [];
@@ -85,10 +86,10 @@ export function getInjectableFeedItems(): Array<{ title: string; url: string; sn
   return result;
 }
 
-// ── 后台轮询 ─────────────────────────────────────────────────────────────────
+// ── Фоновый поллинг ───────────────────────────────────────────────────────────
 
 /**
- * 拉取单个 feed（调用其 fetcher 函数）。
+ * Получает данные одного фида (вызывает его функцию fetcher).
  */
 async function fetchOneFeed(feed: FeedDef, now: number): Promise<void> {
   try {
@@ -120,8 +121,8 @@ async function fetchOneFeed(feed: FeedDef, now: number): Promise<void> {
 }
 
 /**
- * 检查并拉取到期的 feeds（单次调度周期）。
- * 被 setInterval 调用，异步执行，不阻塞任何 tick。
+ * Проверяет и получает фиды с истёкшим интервалом (один цикл планировщика).
+ * Вызывается setInterval, выполняется асинхронно, не блокирует ни один tick.
  */
 async function pollFeeds(): Promise<void> {
   if (!feedsConfig) return;
@@ -129,7 +130,7 @@ async function pollFeeds(): Promise<void> {
   const now = Date.now();
   const shelfLifeMs = feedsConfig.shelfLifeHours * 3600_000;
 
-  // 清理过期条目
+  // Очистка просроченных записей
   for (const [key, item] of feedCache) {
     if (now - item.fetchedMs > shelfLifeMs) {
       feedCache.delete(key);
@@ -140,15 +141,15 @@ async function pollFeeds(): Promise<void> {
     const last = lastFetchMs.get(feed.label) ?? 0;
     if (now - last < feed.intervalMin * 60_000) continue;
 
-    // 标记拉取时间（即使失败也不重试，等下一个周期）
+    // Фиксируем время получения (даже при ошибке не повторяем — ждём следующий цикл)
     lastFetchMs.set(feed.label, now);
     await fetchOneFeed(feed, now);
   }
 }
 
 /**
- * 启动后台轮询。首次立即拉取一次，之后每 60 秒检查一次。
- * 幂等——重复调用不会创建多个定时器。
+ * Запускает фоновый поллинг. При первом запуске сразу делает один запрос, затем проверяет каждые 60 секунд.
+ * Идемпотентен — повторный вызов не создаёт дополнительных таймеров.
  */
 export function startFeedPoller(): void {
   if (pollTimer) return;
@@ -157,14 +158,14 @@ export function startFeedPoller(): void {
 
   log.info("feeds: starting poller", { feeds: feedsConfig.feeds.length });
 
-  // 首次立即拉取（不 await，不阻塞启动）
+  // Первый запрос сразу (без await, не блокирует запуск)
   void pollFeeds();
 
-  // 每 60 秒检查一次（实际拉取频率由各 feed 的 intervalMin 控制）
+  // Проверка каждые 60 секунд (реальная частота получения управляется intervalMin каждого фида)
   pollTimer = setInterval(() => void pollFeeds(), 60_000);
 }
 
-/** 停止后台轮询（测试用）。 */
+/** Останавливает фоновый поллинг (для тестов). */
 export function stopFeedPoller(): void {
   if (pollTimer) {
     clearInterval(pollTimer);
@@ -172,44 +173,44 @@ export function stopFeedPoller(): void {
   }
 }
 
-/** 清空缓存（测试用）。 */
+/** Очищает кэш (для тестов). */
 export function _resetFeedCache(): void {
   feedCache.clear();
   lastFetchMs.clear();
   feedsConfig = null;
 }
 
-// ── 行为真实性参数 ───────────────────────────────────────────────────────────
+// ── Параметры поведенческой аутентичности ────────────────────────────────────
 
-/** 压力阈值：高于此值时 Alice 在"忙正事"，不刷手机。 */
+/** Порог давления: выше этого значения Алиса «занята делами» и телефон не листает. */
 const PRESSURE_GATE = 0.5;
 
-/** 注入冷却期（ms）：距上次注入不足此时间则跳过。 */
+/** Период охлаждения инъекции (мс): если с последней инъекции прошло меньше этого значения — пропуск. */
 const INJECT_COOLDOWN_MS = 10 * 60_000; // 10 min
 
-/** 概率性跳过：即使满足条件也有此概率不注入（模拟"这次没看手机"）。 */
+/** Вероятностный пропуск: даже при выполнении условий с этой вероятностью инъекция не происходит (имитация «в этот раз не посмотрела телефон»). */
 const SKIP_PROBABILITY = 0.3;
 
-/** 每次最多展示条目数。 */
+/** Максимальное число записей за одну инъекцию. */
 const MAX_ITEMS_PER_INJECT = 3;
 
-// ── Mod 状态 ─────────────────────────────────────────────────────────────────
+// ── Состояние Mod ─────────────────────────────────────────────────────────────
 
 interface FeedsState {
-  /** 标记：后台轮询是否已启动。 */
+  /** Флаг: запущен ли фоновый поллинг. */
   pollerStarted: boolean;
-  /** 上次成功注入 feed 的时间（ms）。 */
+  /** Время последней успешной инъекции фида (мс). */
   lastInjectMs: number;
 }
 
-// ── 采样辅助 ─────────────────────────────────────────────────────────────────
+// ── Вспомогательные функции выборки ──────────────────────────────────────────
 
 /**
- * 从候选列表中多样性采样：优先覆盖不同来源，每个来源最多 1 条，
- * 同来源内随机选。类似人刷手机看到的混合信息流。
+ * Разнообразная выборка из кандидатов: сначала покрывает разные источники, не более 1 записи с источника,
+ * внутри источника выбирает случайно. Похоже на смешанную ленту при листании телефона.
  */
 function diverseSample(items: CachedFeedItem[], n: number): CachedFeedItem[] {
-  // 按来源分组
+  // Группируем по источнику
   const byLabel = new Map<string, CachedFeedItem[]>();
   for (const item of items) {
     const group = byLabel.get(item.feedLabel) ?? [];
@@ -220,16 +221,16 @@ function diverseSample(items: CachedFeedItem[], n: number): CachedFeedItem[] {
   const result: CachedFeedItem[] = [];
   const labels = [...byLabel.keys()];
 
-  // 第一轮：每个来源随机选 1 条（覆盖多样性）
+  // Первый круг: случайно выбираем 1 запись с каждого источника (обеспечиваем разнообразие)
   for (const label of labels) {
     if (result.length >= n) break;
-    // biome-ignore lint/style/noNonNullAssertion: label 来自 byLabel.keys()
+    // biome-ignore lint/style/noNonNullAssertion: label взят из byLabel.keys()
     const group = byLabel.get(label)!;
     const idx = Math.floor(Math.random() * group.length);
     result.push(group.splice(idx, 1)[0]);
   }
 
-  // 第二轮：如果还不够，从剩余中随机补
+  // Второй круг: если ещё не хватает, добираем случайно из оставшихся
   if (result.length < n) {
     const remaining = [...byLabel.values()].flat();
     while (result.length < n && remaining.length > 0) {
@@ -241,7 +242,7 @@ function diverseSample(items: CachedFeedItem[], n: number): CachedFeedItem[] {
   return result;
 }
 
-// ── Mod 定义 ─────────────────────────────────────────────────────────────────
+// ── Определение Mod ───────────────────────────────────────────────────────────
 
 export const feedsMod = createMod<FeedsState>("feeds", {
   category: "mechanic",
@@ -249,7 +250,7 @@ export const feedsMod = createMod<FeedsState>("feeds", {
   initialState: { pollerStarted: false, lastInjectMs: 0 },
 })
   .onTickStart((ctx) => {
-    // 首次 tick 时启动后台轮询（确保只启动一次）
+    // При первом tick запускаем фоновый поллинг (гарантируем единственный запуск)
     if (!ctx.state.pollerStarted) {
       startFeedPoller();
       ctx.state.pollerStarted = true;
@@ -258,22 +259,22 @@ export const feedsMod = createMod<FeedsState>("feeds", {
   .contribute((ctx): ContributionItem[] => {
     if (!feedsConfig || feedCache.size === 0) return [];
 
-    // ── 行为门控：模拟真实"刷手机"条件 ──
+    // ── Поведенческие блокировки: имитация реального «листания телефона» ──
 
-    // 1. 压力门控：忙着处理消息时不刷手机
+    // 1. Блокировка по давлению: при активной обработке сообщений телефон не листается
     const pressure = readPressureApi(ctx);
     if (pressure > PRESSURE_GATE) return [];
 
-    // 2. 冷却期：刚看过手机不会马上又看
+    // 2. Период охлаждения: только что посмотрела телефон — сразу снова не смотрит
     const now = ctx.nowMs;
     if (ctx.state.lastInjectMs > 0 && now - ctx.state.lastInjectMs < INJECT_COOLDOWN_MS) {
       return [];
     }
 
-    // 3. 概率性跳过：人不是每时每刻都在看手机
+    // 3. Вероятностный пропуск: человек смотрит в телефон не каждую минуту
     if (Math.random() < SKIP_PROBABILITY) return [];
 
-    // ── 筛选 + 采样 ──
+    // ── Фильтрация + выборка ──
 
     const shelfLifeMs = feedsConfig.shelfLifeHours * 3600_000;
     const maxExp = feedsConfig.maxExposures;
@@ -287,16 +288,16 @@ export const feedsMod = createMod<FeedsState>("feeds", {
 
     if (eligible.length === 0) return [];
 
-    // 多样性采样：随机选 2-3 条，尽量覆盖不同来源
+    // Разнообразная выборка: случайно выбираем 2–3 записи, стараемся охватить разные источники
     const toShow = diverseSample(eligible, MAX_ITEMS_PER_INJECT);
 
-    // 递增曝光计数 + 记录注入时间
+    // Увеличиваем счётчик показов + фиксируем время инъекции
     for (const item of toShow) {
       item.exposures += 1;
     }
     ctx.state.lastInjectMs = now;
 
-    // 渲染为 prompt section
+    // Рендерим в секцию prompt
     const lines = toShow.map((item) => {
       let line = `${item.feedLabel} «${item.title}»`;
       if (item.url) line += ` ${item.url}`;
@@ -308,8 +309,8 @@ export const feedsMod = createMod<FeedsState>("feeds", {
         "feed-items",
         lines,
         "Ты только что увидела в телефоне",
-        40, // order: 中后（不挤占核心上下文）
-        30, // priority: 低（可被 token 预算裁剪）
+        40, // order: ближе к концу (не вытесняет основной контекст)
+        30, // priority: низкий (может быть урезан бюджетом токенов)
       ),
     ];
   })

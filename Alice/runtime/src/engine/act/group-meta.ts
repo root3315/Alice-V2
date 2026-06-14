@@ -1,6 +1,6 @@
 /**
- * 群组元信息 — 管理员角色 + 成员数 + 媒体限制。
- * 持久化到 group-cache.db（SQLite），重启不丢失。
+ * Метаданные группы — роли администраторов + число участников + ограничения медиа.
+ * Сохраняется в group-cache.db (SQLite), переживает перезапуск.
  */
 import type { TelegramClient } from "@mtcute/node";
 
@@ -14,8 +14,8 @@ import {
 } from "../../llm/group-cache.js";
 
 /**
- * 获取群聊管理员映射（SQLite 持久缓存 + API fallback）。
- * 私聊（chatId > 0）直接返回空 Map。
+ * Получает карту администраторов группы (постоянный кэш SQLite + API fallback).
+ * Для личных чатов (chatId > 0) сразу возвращает пустой Map.
  */
 export async function getAdminMap(
   client: TelegramClient,
@@ -23,7 +23,7 @@ export async function getAdminMap(
 ): Promise<Map<number, AdminInfo>> {
   if (chatId > 0) return new Map();
 
-  // 持久缓存命中
+  // Попадание в постоянный кэш
   const cached = getCachedAdmins(chatId);
   if (cached) return cached;
 
@@ -43,8 +43,8 @@ export async function getAdminMap(
 }
 
 /**
- * 获取群聊元信息（成员数 + 媒体限制，SQLite 持久缓存 + API fallback）。
- * 使用轻量 getChat（batched API），不需要 getFullChat。
+ * Получает метаданные группы (число участников + ограничения медиа, постоянный кэш SQLite + API fallback).
+ * Использует лёгкий getChat (batched API) без необходимости getFullChat.
  */
 export async function fetchChatInfo(
   client: TelegramClient,
@@ -52,7 +52,7 @@ export async function fetchChatInfo(
 ): Promise<ChatInfo | null> {
   if (chatId > 0) return null;
 
-  // 持久缓存命中
+  // Попадание в постоянный кэш
   const cached = getCachedChatInfo(chatId);
   if (cached) return cached;
 

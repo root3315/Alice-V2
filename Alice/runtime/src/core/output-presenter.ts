@@ -1,42 +1,42 @@
 /**
- * Layer 2 呈现层 — 将 shell 执行结果转为 LLM 友好的 tool result 文本。
+ * Layer 2 Слой представления — преобразует результат выполнения shell в текст tool result, удобный для LLM.
  *
- * 四个机制：
- * 1. 二进制守卫：检测 null bytes / 高比例控制字符
- * 2. 输出截断：超长输出保留尾部（错误通常在末尾）
- * 3. 元数据尾行：exit code + 耗时
- * 4. stderr 附加：命令失败时附加 stderr
+ * Четыре механизма:
+ * 1. Бинарный защитник: обнаруживает null bytes / высокую долю управляющих символов
+ * 2. Усечение вывода: при слишком длинном выводе сохраняет хвост (ошибки обычно в конце)
+ * 3. Строка метаданных в конце: exit code + время выполнения
+ * 4. Добавление stderr: при ошибке команды добавляет stderr
  *
  * @see docs/adr/213-tool-calling-act-thread.md
- * @see ~/.claude/refs/pi-mono/packages/coding-agent/src/core/tools/truncate.ts — truncateTail 参考
+ * @see ~/.claude/refs/pi-mono/packages/coding-agent/src/core/tools/truncate.ts — справочная реализация truncateTail
  */
 
 import type { ScriptExecutionResult } from "./script-execution.js";
 
-/** 截断阈值 */
+/** Порог усечения */
 const MAX_LINES = 200;
 const MAX_BYTES = 50 * 1024; // 50KB
 
-/** 控制字符占比超过此值视为二进制输出 */
+/** Если доля управляющих символов превышает это значение, вывод считается бинарным */
 const BINARY_THRESHOLD = 0.1;
 
 export interface PresentOptions {
-  /** 覆盖 exit code（默认从 errors 推断：有 errors → 1，否则 0） */
+  /** Переопределить exit code (по умолчанию выводится из errors: есть errors → 1, иначе 0) */
   exitCode?: number;
 }
 
 /**
- * 检测内容是否为二进制（含 null bytes 或高比例控制字符）。
+ * Определяет, является ли содержимое бинарным (содержит null bytes или высокую долю управляющих символов).
  */
 function isBinary(text: string): boolean {
   if (text.length === 0) return false;
   if (text.includes("\0")) return true;
 
   let controlCount = 0;
-  const len = Math.min(text.length, 4096); // 只检查前 4KB
+  const len = Math.min(text.length, 4096); // проверяем только первые 4KB
   for (let i = 0; i < len; i++) {
     const code = text.charCodeAt(i);
-    // 控制字符（排除 \t \n \r）
+    // управляющие символы (кроме \t \n \r)
     if (code < 32 && code !== 9 && code !== 10 && code !== 13) {
       controlCount++;
     }
@@ -45,8 +45,8 @@ function isBinary(text: string): boolean {
 }
 
 /**
- * 尾部截断：保留最后 N 行 / N 字节（错误在末尾）。
- * 简化版 truncateTail — 不需要溢出文件。
+ * Усечение с хвоста: сохраняет последние N строк / N байт (ошибки в конце).
+ * Упрощённая версия truncateTail — без файла переполнения.
  */
 function truncateTail(text: string): { content: string; truncated: boolean; totalLines: number } {
   const lines = text.split("\n");
@@ -57,7 +57,7 @@ function truncateTail(text: string): { content: string; truncated: boolean; tota
     return { content: text, truncated: false, totalLines };
   }
 
-  // 从尾部倒序收集行
+  // Собираем строки с хвоста в обратном порядке
   const kept: string[] = [];
   let bytes = 0;
   for (let i = lines.length - 1; i >= 0 && kept.length < MAX_LINES; i--) {
@@ -73,37 +73,37 @@ function truncateTail(text: string): { content: string; truncated: boolean; tota
 }
 
 /**
- * 将 ScriptExecutionResult 呈现为 LLM 友好的 tool result 文本。
+ * Преобразует ScriptExecutionResult в текст tool result, удобный для LLM.
  *
- * 输入：ScriptExecutionResult 的 logs[]、errors[]、duration。
- * 输出：单个字符串，可直接作为 tool result 传回 LLM。
+ * Вход: logs[], errors[], duration из ScriptExecutionResult.
+ * Выход: единая строка, готовая для передачи обратно LLM как tool result.
  */
 export function presentToolResult(result: ScriptExecutionResult, opts?: PresentOptions): string {
-  // ANSI 转义码已在 shell-executor.ts 入口处中心化剥离
+  // ANSI escape-коды централизованно удаляются на входе в shell-executor.ts
   const stdout = result.logs.join("\n");
   const errors = result.errors;
   const exitCode = opts?.exitCode ?? (errors.length > 0 ? 1 : 0);
   const durationMs = result.duration;
 
-  // 二进制守卫
+  // Бинарный защитник
   if (isBinary(stdout)) {
     const size = Buffer.byteLength(stdout, "utf-8");
     return `[binary output, ${size} bytes]\n[exit:${exitCode} | ${durationMs}ms]`;
   }
 
-  // 截断
+  // Усечение
   const { content } = truncateTail(stdout);
 
-  // 组装
+  // Сборка
   const parts: string[] = [];
   if (content) parts.push(content);
 
-  // stderr 始终附加（Manus 教训：stderr 是 agent 最需要的信息，不只是失败时）
+  // stderr добавляется всегда (урок Manus: stderr — самая важная информация для агента, не только при ошибке)
   if (errors.length > 0) {
     parts.push(`[stderr] ${errors.join("\n")}`);
   }
 
-  // 元数据尾行
+  // Строка метаданных в конце
   parts.push(`[exit:${exitCode} | ${durationMs}ms]`);
 
   return parts.join("\n");

@@ -1,8 +1,8 @@
 /**
- * Episode Mod — ADR-215 Cognitive Episode Graph 的 LLM 可见层。
+ * Episode Mod — LLM-видимый слой Cognitive Episode Graph (ADR-215).
  *
- * 1. query: episodeContext — 查看指定 episode 的上下文
- * 2. query: recentEpisodes — 最近 N 个 episode 的摘要
+ * 1. query: episodeContext — просмотр контекста указанного episode
+ * 2. query: recentEpisodes — сводка по последним N episode
  *
  * @see docs/adr/215-cognitive-episode-graph.md
  */
@@ -29,7 +29,7 @@ interface EpisodeContinuityResidue {
   createdMs?: number;
 }
 
-// biome-ignore lint/complexity/noBannedTypes: 无状态 Mod
+// biome-ignore lint/complexity/noBannedTypes: Mod без состояния
 export const episodeMod = createMod<{}>("episode", {
   category: "mechanic",
   description: "Причинно-следственный граф когнитивных эпизодов — запросы episode",
@@ -52,7 +52,7 @@ export const episodeMod = createMod<{}>("episode", {
       const row = getDb().select().from(episodes).where(eq(episodes.id, args.id)).get();
       if (!row) return { error: "Episode not found" };
 
-      // 记录 consults 边——获取当前 episode ID
+      // записываем ребро consults — получаем ID текущего episode
       try {
         const current = getDb()
           .select({ id: episodes.id })

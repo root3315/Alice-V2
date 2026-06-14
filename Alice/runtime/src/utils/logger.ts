@@ -1,8 +1,8 @@
 /**
- * 统一日志模块。基于 consola，彩色美化输出。
+ * Единый модуль логирования. На основе consola, с цветным выводом.
  *
- * ADR-54: error/warn/fatal 同时写入 alice-errors.log 独立文件，
- * 方便 `tail -f alice-errors.log` 或 `grep` 快速定位异常。
+ * ADR-54: error/warn/fatal также пишутся в отдельный файл alice-errors.log,
+ * для быстрого поиска аномалий через `tail -f alice-errors.log` или `grep`.
  */
 import { createWriteStream, type WriteStream } from "node:fs";
 import { createConsola } from "consola";
@@ -12,8 +12,8 @@ const root = createConsola({
   level: process.env.LOG_LEVEL === "debug" ? 4 : 3,
 });
 
-// ADR-54: 错误独立文件 — error/warn/fatal → alice-errors.log
-// 测试环境不写文件（避免污染 CI 输出目录）
+// ADR-54: Ошибки в отдельный файл — error/warn/fatal → alice-errors.log
+// В тестовой среде файл не пишется (во избежание замусоривания директории вывода CI)
 let _errorStream: WriteStream | null = null;
 
 if (!process.env.VITEST && process.env.NODE_ENV !== "test") {
@@ -49,7 +49,7 @@ if (!process.env.VITEST && process.env.NODE_ENV !== "test") {
   });
 }
 
-/** 创建带 tag 的子 logger。 */
+/** Создаёт дочерний logger с тегом. */
 export function createLogger(tag: string) {
   return root.withTag(tag);
 }

@@ -100,9 +100,9 @@ function isMessagePost(payload: unknown): boolean {
 }
 
 /**
- * OneBot v11 事件 WebSocket 接收器。
+ * Приёмник событий OneBot v11 по WebSocket.
  *
- * 这里只负责外部连接、重连和 JSON 边界；QQ 事实映射仍由 onebot-ingress 统一处理。
+ * Отвечает только за внешнее соединение, переподключение и границы JSON; маппинг фактов QQ по-прежнему выполняется централизованно через onebot-ingress.
  *
  * @see docs/adr/264-qq-platform-support/README.md
  * @see docs/reference/AstrBot/astrbot/core/platform/sources/aiocqhttp/aiocqhttp_platform_adapter.py

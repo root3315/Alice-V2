@@ -24,8 +24,8 @@ export interface OneBotIngressResult {
 }
 
 /**
- * OneBot 入站接线层：payload 先变成 canonical fact，再写 canonical_events，
- * 最后投影为当前 EventBuffer 使用的 GraphPerturbation。
+ * Входной слой OneBot: payload сначала превращается в canonical fact, затем записывается в canonical_events,
+ * после чего проецируется в GraphPerturbation, используемый текущим EventBuffer.
  *
  * @see docs/adr/264-qq-platform-support/README.md
  */

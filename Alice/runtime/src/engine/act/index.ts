@@ -1,23 +1,23 @@
 /**
- * ACT 线程：从 ActionQueue 取行动 → LLM 生成 shell script → shell-native executor 执行。
+ * Поток ACT: берёт действие из ActionQueue → LLM генерирует shell-скрипт → shell-native executor выполняет.
  *
- * ADR-142: 核心循环已迁移到 engine/tick/（Blackboard Tick + SAA）。
- * 此文件保留为导出聚合层。
+ * ADR-142: основной цикл перенесён в engine/tick/ (Blackboard Tick + SAA).
+ * Данный файл сохранён как агрегирующий слой экспортов.
  *
  * @see docs/adr/142-action-space-architecture/README.md
  * @see docs/adr/140-react-efficiency-architecture.md
  */
 
-// ── 核心入口 ──────────────────────────────────────────────────────────────
+// ── Основная точка входа ──────────────────────────────────────────────────────────────
 
 export { type ActContext, startReActLoop as startActLoop } from "../react/orchestrator.js";
 
-// ── Tick 管线（ADR-142 新增）─────────────────────────────────────────────
+// ── Tick-конвейер (добавлен в ADR-142) ─────────────────────────────────────────────
 
 export { runTickSubcycle } from "../tick/bridge.js";
 export type { TickResult } from "../tick/types.js";
 
-// ── 共享模块 ──────────────────────────────────────────────────────────────
+// ── Общие модули ──────────────────────────────────────────────────────────────
 
 export { formatQueryObservations } from "../../telegram/query-observations.js";
 export {
@@ -33,7 +33,7 @@ export {
 } from "../react/feedback-arc.js";
 export { extractRuntimeConfig } from "./runtime-config.js";
 
-// ── act/ 叶子模块 ────────────────────────────────────────────────────────
+// ── Листовые модули act/ ────────────────────────────────────────────────────────
 
 export { buildActionFooter } from "../tick/prompt-builder.js";
 export { EngagementSession } from "./engagement.js";

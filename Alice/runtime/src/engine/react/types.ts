@@ -1,10 +1,10 @@
 /**
- * ReAct Pipeline 类型定义 — 所有模块的共享类型。
+ * Определения типов ReAct Pipeline — общие типы для всех модулей.
  *
  * @see docs/adr/140-react-efficiency-architecture.md
  */
 
-// ── 从旧代码导入 + re-export 的类型（保持单一真相来源）──────────────────
+// ── Типы, импортированные из старого кода + re-export (единственный источник истины) ──────────────────
 
 export type { ScriptExecutionResult } from "../../core/script-execution.js";
 
@@ -13,15 +13,15 @@ import type { ScriptExecutionResult } from "../../core/script-execution.js";
 export type { VoiceAction } from "../../voices/personality.js";
 export type { ActionQueueItem } from "../action-queue.js";
 
-// ── SubcycleResult: ReAct 子周期输出 ────────────────────────────────────
+// ── SubcycleResult: выходные данные подцикла ReAct ────────────────────────────────────
 
 /**
- * ReAct 子周期的输出。outcome 字段决定 engagement 循环的分支。
+ * Выходные данные подцикла ReAct. Поле outcome определяет ветку цикла engagement.
  *
- * ADR-214 Wave B: 删除 ExecutableResult/RecordedAction re-export。
+ * ADR-214 Wave B: удалён re-export ExecutableResult/RecordedAction.
  */
 export interface SubcycleResult {
-  /** 子周期退出原因——决定 orchestrator 的后续分支。 */
+  /** Причина выхода из подцикла — определяет следующую ветку в orchestrator. */
   outcome:
     | "waiting_reply"
     | "watching"
@@ -31,16 +31,16 @@ export interface SubcycleResult {
     | "fed_up"
     | "cooling_down"
     | "tc_budget_exhausted";
-  /** 子周期内累积的脚本执行事实。 */
+  /** Накопленные факты выполнения скриптов в рамках подцикла. */
   execution: ScriptExecutionResult;
-  /** 脚本执行总耗时（毫秒）。 */
+  /** Общее время выполнения скриптов (миллисекунды). */
   duration: number;
-  /** D5: 实际使用的 ReAct 轮次数（0-based count）。 */
+  /** D5: фактически использованное количество раундов ReAct (счёт от 0). */
   roundsUsed: number;
-  /** ADR-232: episode 内 TC 续轮次数（host 触发的额外 LLM 调用轮数）。 */
+  /** ADR-232: количество возобновлений TC внутри episode (дополнительные раунды вызовов LLM, инициированные host). */
   episodeRounds: number;
-  /** ADR-235: TC 循环可观测性元数据。 */
+  /** ADR-235: метаданные наблюдаемости цикла TC. */
   tcMeta?: import("../tick/types.js").TickTcMeta;
-  /** LLM 调用失败分类。 */
+  /** Классификация сбоя вызова LLM. */
   failureKind?: import("../tick/callLLM.js").TickFailureKind;
 }

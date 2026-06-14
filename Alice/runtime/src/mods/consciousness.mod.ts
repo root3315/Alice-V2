@@ -1,8 +1,8 @@
 /**
- * Consciousness Mod — ADR-204 意识流浮现层。
+ * Consciousness Mod — ADR-204 слой всплытия потока сознания.
  *
- * 无状态 Mod。contribute() 调用 surface() 拉取最近意识流事件，
- * 注入 Awareness section（situation 之后、strategy-hints 之前）。
+ * Mod без состояния. contribute() вызывает surface() для получения недавних событий потока сознания,
+ * инжектирует секцию Awareness (после situation, перед strategy-hints).
  *
  * @see docs/adr/204-consciousness-stream/
  */
@@ -14,14 +14,14 @@ import { getDb } from "../db/connection.js";
 import { surface } from "../engine/consciousness.js";
 import { humanDuration } from "../utils/time-format.js";
 
-// biome-ignore lint/complexity/noBannedTypes: 无状态 Mod
+// biome-ignore lint/complexity/noBannedTypes: Mod без состояния
 export const consciousnessMod = createMod<{}>("consciousness", {
   category: "mechanic",
   description: "Всплытие потока сознания — недавние следы выполнения внедряются в prompt",
   initialState: {},
 })
   .contribute((ctx): ContributionItem[] => {
-    // 收集 seed entity IDs（当前目标 + self）
+    // собираем seed entity IDs (текущая цель + self)
     const seedEntityIds: string[] = [];
     const relState = readModState(ctx, "relationships");
     if (relState?.targetNodeId) seedEntityIds.push(relState.targetNodeId);
@@ -38,7 +38,7 @@ export const consciousnessMod = createMod<{}>("consciousness", {
     const pb = new PromptBuilder();
     for (const p of pointers) {
       const ago = humanDuration(p.ageMs / 1000);
-      // ADR-210: raw graph ID → display name 替换
+      // ADR-210: замена raw graph ID → display name
       const summary = p.summary.replace(/\b(channel|contact):[-\d]+/g, (match) => {
         if (ctx.graph.has(match)) {
           return String(
@@ -55,7 +55,7 @@ export const consciousnessMod = createMod<{}>("consciousness", {
     const lines = pb.build();
     if (lines.length === 0) return [];
 
-    // order=6 → situation(5,95) 之后、strategy-hints(12,88) 之前
+    // order=6 → после situation(5,95), перед strategy-hints(12,88)
     return [section("awareness", lines, "Awareness", 6, 82)];
   })
   .build();

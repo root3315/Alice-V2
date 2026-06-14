@@ -1,9 +1,9 @@
 /**
- * 声部响度计算 (ADR-26 v5)。
+ * Вычисление громкости голоса (ADR-26 v5).
  *
  * v5: L_v = π_v × mean(R_v(T(e)) for e in focal_set_v) + ε_v
  *
- * 替代 v4 的全局 tanh(Pi/κi) + 激活函数映射。
+ * Заменяет глобальное tanh(Pi/κi) + маппинг функции активации из v4.
  */
 
 import { readEmotionControlPatch } from "../emotion/graph.js";
@@ -13,24 +13,24 @@ import type { WorldModel } from "../graph/world-model.js";
 import { computeFocalSets, type FocalSet, readSelfMood } from "./focus.js";
 import { type PersonalityVector, VOICES, type VoiceAction } from "./personality.js";
 
-// -- 类型 -------------------------------------------------------------------
+// -- Типы -------------------------------------------------------------------
 
 export interface LoudnessResult {
-  /** 各声部的响度 [L_D, L_C, L_S, L_X]。ADR-81: 4 声部。 */
+  /** Громкость каждого голоса [L_D, L_C, L_S, L_X]. ADR-81: 4 голоса. */
   loudness: number[];
-  /** 各声部的焦点集。 */
+  /** Фокусное множество каждого голоса. */
   focalSets: Record<VoiceAction, FocalSet>;
 }
 
 // -- Uncertainty ------------------------------------------------------------
 
 /**
- * ADR-112 D3: 环境新颖度 — 新加入的群组触发高 Caution。
+ * ADR-112 D3: новизна окружения — недавно добавленные группы повышают Caution.
  *
  * novelty(ch) = exp(-interaction_count(ch) / κ_novelty)
- * κ_novelty = 10（10 次交互后 novelty 衰减到 ~37%）
+ * κ_novelty = 10 (после 10 взаимодействий novelty затухает до ~37%)
  *
- * 环境不确定性 = mean(novelty(ch) for ch in channels)
+ * Неопределённость окружения = mean(novelty(ch) for ch in channels)
  */
 const KAPPA_NOVELTY = 10;
 
@@ -41,7 +41,7 @@ function computeEnvUncertainty(G: WorldModel): number {
   let totalNovelty = 0;
   for (const chId of channels) {
     const attrs = G.getChannel(chId);
-    // 用 join_ms 判断是否是新加入的群——无 join_ms 用 interaction count 估计
+    // join_ms используется для определения новизны группы — при отсутствии используем счётчик взаимодействий
     const interactionCount = attrs.contact_recv_window ?? 0;
     const novelty = Math.exp(-interactionCount / KAPPA_NOVELTY);
     totalNovelty += novelty;
@@ -50,14 +50,14 @@ function computeEnvUncertainty(G: WorldModel): number {
 }
 
 /**
- * 计算 Uncertainty（驱动 Caution 声部的正向激活）。
+ * Вычисляет Uncertainty (положительная активация голоса Caution).
  *
  * ADR-112 D3: uncertainty = max(info_uncertainty, env_uncertainty)
  *
- * info_uncertainty: 近期事件少于期望时上升。
- * env_uncertainty: 新群组的环境不确定性（Bowlby 安全基地理论）。
+ * info_uncertainty: растёт, когда недавних событий меньше ожидаемого.
+ * env_uncertainty: неопределённость окружения для новых групп (теория безопасной базы Боулби).
  *
- * @param G - 伴侣图（环境不确定性计算需要）。
+ * @param G - граф WorldModel (нужен для вычисления неопределённости окружения).
  */
 export function computeUncertainty(
   recentEventCounts: number[] | null,
@@ -65,10 +65,10 @@ export function computeUncertainty(
   expectedRate: number,
   G: WorldModel,
 ): number {
-  // 信息不确定性
+  // Информационная неопределённость
   let infoUncertainty: number;
   if (!recentEventCounts || recentEventCounts.length === 0) {
-    infoUncertainty = 0.5; // 无历史时中等不确定
+    infoUncertainty = 0.5; // при отсутствии истории — умеренная неопределённость
   } else {
     const recent = recentEventCounts.slice(-k);
     const actualRate = recent.reduce((a, b) => a + b, 0) / recent.length;
@@ -76,21 +76,21 @@ export function computeUncertainty(
     infoUncertainty = Math.max(0.0, 1.0 - ratio);
   }
 
-  // ADR-112 D3: 环境不确定性
+  // ADR-112 D3: неопределённость окружения
   const envUncertainty = computeEnvUncertainty(G);
 
   return Math.max(infoUncertainty, envUncertainty);
 }
 
-// -- 声部响度 ---------------------------------------------------------------
+// -- Громкость голоса -------------------------------------------------------
 
-/** 声部 ID 顺序（从 VOICES 注册表派生）。 */
+/** Порядок ID голосов (выводится из реестра VOICES). */
 const VOICE_ORDER = VOICES.map((v) => v.id);
 
 /**
- * 计算各声部的响度。
+ * Вычисляет громкость каждого голоса.
  *
- * v5 公式: L_v = π_v × mean(R_v over focal set) + ε_v
+ * Формула v5: L_v = π_v × mean(R_v over focal set) + ε_v
  *
  * @see paper-five-dim/ Def 3.6 eq 13: L_v = π_v × mean(R_v(τ(e))) + ε_v
  */
@@ -102,19 +102,19 @@ export function computeLoudness(
   options: {
     recentEventCounts?: number[] | null;
     epsilonScale?: number;
-    /** 传入确定性噪声用于测试，长度 = VOICES.length。 */
+    /** Детерминированный шум для тестов, длина = VOICES.length. */
     noiseOverride?: number[] | null;
     /**
-     * ADR-110: 声部上次获胜的墙钟时间（voiceId → ms）。
-     * 启用声部疲劳因子 φ_v。未提供时所有声部 φ_v = 1（无疲劳）。
+     * ADR-110: настенное время последней победы голоса (voiceId → ms).
+     * Включает фактор усталости голоса φ_v. Если не задано — φ_v = 1 для всех (нет усталости).
      * @see paper-five-dim/ Eq. voice-fatigue
      */
     voiceLastWon?: Record<VoiceAction, number> | null;
-    /** ADR-110: 声部冷却窗口 K_v（秒）。默认 DEFAULT_VOICE_COOLDOWN。 */
+    /** ADR-110: окно охлаждения голоса K_v (секунды). По умолчанию DEFAULT_VOICE_COOLDOWN. */
     voiceCooldown?: number;
-    /** ADR-110: 当前墙钟时间（ms）。未提供时使用 Date.now()。 */
+    /** ADR-110: текущее настенное время (ms). Если не задано — используется Date.now(). */
     nowMs?: number;
-    /** 候选目标白名单。设置后仅这些 target 可进入焦点集。 */
+    /** Белый список допустимых целей. Если задан — в фокусное множество входят только они. */
     targetWhitelist?: ReadonlySet<string> | null;
   } = {},
 ): LoudnessResult {
@@ -128,10 +128,10 @@ export function computeLoudness(
     targetWhitelist = null,
   } = options;
 
-  // 全局不确定性（R_Caution 基线）— ADR-112 D3: 含环境不确定性
+  // Глобальная неопределённость (базовый уровень R_Caution) — ADR-112 D3: включает неопределённость окружения
   const uncertainty = computeUncertainty(recentEventCounts, 10, 2.0, G);
 
-  // 焦点集计算
+  // Вычисление фокусных множеств
   const focalSets = computeFocalSets(tensionMap, G, tick, {
     uncertainty,
     nowMs,
@@ -140,12 +140,12 @@ export function computeLoudness(
 
   // ADR-181: L_v = π_v × mean(R_v) × φ_v × ψ_v(m) + ε_v
   // φ_v = voice fatigue factor (ADR-75, paper Eq. voice-fatigue)
-  // ψ_v(m) = mood modulation (ADR-30 → ADR-181: 从焦点集迁移到此)
+  // ψ_v(m) = mood modulation (ADR-30 → ADR-181: перенесено из фокусных множеств сюда)
   const pi = personality.weights;
   const epsilon =
     noiseOverride ?? Array.from({ length: VOICES.length }, () => gaussianRandom() * epsilonScale);
 
-  // ADR-181: mood ±30% 调制——mood>0 利好 Sociability、抑制 Caution；反向亦然
+  // ADR-181: модуляция настроением ±30% — mood>0 усиливает Sociability, ослабляет Caution; и наоборот
   const MOOD_DELTA = 0.3;
   const selfMood = readSelfMood(G, nowMs);
   const emotionControl = readEmotionControlPatch(G, nowMs);
@@ -164,9 +164,9 @@ export function computeLoudness(
   return { loudness, focalSets };
 }
 
-/** Box-Muller 标准正态随机数。 */
+/** Стандартное нормальное случайное число методом Бокса-Мюллера. */
 function gaussianRandom(): number {
-  // 防止 Math.random() 返回 0 导致 Math.log(0) = -Infinity
+  // защита от Math.random() == 0, что даёт Math.log(0) = -Infinity
   const u1 = Math.max(1e-10, Math.random());
   const u2 = Math.random();
   return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);

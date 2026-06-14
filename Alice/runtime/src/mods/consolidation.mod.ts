@@ -31,16 +31,16 @@ const CONSOLIDATED_STABILITY = 2.0;
 /** Порог угасания (согласован с relationships.mod). */
 const FORGET_THRESHOLD = 0.2;
 
-// -- Mod 状态 ----------------------------------------------------------------
+// -- Состояние Mod -----------------------------------------------------------
 
 interface ConsolidationState {
-  /** 上次检查压缩的 tick。 */
+  /** Тик последней проверки сжатия. */
   lastCheckTick: number;
-  /** 已执行的压缩次数。 */
+  /** Количество выполненных сжатий. */
   consolidationCount: number;
 }
 
-// -- 辅助 --------------------------------------------------------------------
+// -- Вспомогательное ---------------------------------------------------------
 
 /** Fading fact entry with node ID and attributes. */
 interface FadingFact {
@@ -49,21 +49,21 @@ interface FadingFact {
 }
 
 /**
- * 从图中收集可压缩事实（R < FORGET_THRESHOLD 的 fact 节点）。
- * 遍历所有 contact 的 knows 邻居，返回 { contactId → fadingFacts[] } 映射。
+ * Собирает из графа факты, пригодные для сжатия (узлы fact с R < FORGET_THRESHOLD).
+ * Обходит всех knows-соседей контактов, возвращает маппинг { contactId → fadingFacts[] }.
  */
 function collectFadingFactsFromGraph(
   graph: Parameters<typeof getContactFacts>[0],
   nowMs: number,
 ): Record<string, FadingFact[]> {
   const result: Record<string, FadingFact[]> = {};
-  // 遍历 fact 节点的入边来源（即 contact/agent → fact 的 knows 边）
+  // обходим источники входящих рёбер узлов fact (то есть knows-рёбра contact/agent → fact)
   for (const iid of graph.getEntitiesByType("fact")) {
     const attrs = graph.getFact(iid);
-    // 连续稳定性频谱：所有 facts 统一走 SM-2，高稳定性 facts（preference S=40）
-    // 自然需要很长时间才会 fade（~3年半衰期），无需特殊跳过。
+    // непрерывный спектр стабильности: все факты идут по SM-2, высокостабильные факты (preference S=40)
+    // естественно будут угасать очень долго (~3 года полураспада), особых исключений не нужно.
     if (factRetrievabilityFromNode(attrs, nowMs) < FORGET_THRESHOLD) {
-      // 找到 knows 边的来源节点（contact/agent）
+      // находим исходный узел knows-ребра (contact/agent)
       const sources = graph.getPredecessors(iid, "knows");
       for (const src of sources) {
         if (!result[src]) result[src] = [];
@@ -71,7 +71,7 @@ function collectFadingFactsFromGraph(
       }
     }
   }
-  // 过滤：至少 MIN_FADING_FACTS 条才标记
+  // фильтрация: помечать только если не менее MIN_FADING_FACTS
   for (const key of Object.keys(result)) {
     if (result[key].length < MIN_FADING_FACTS) {
       delete result[key];
@@ -80,7 +80,7 @@ function collectFadingFactsFromGraph(
   return result;
 }
 
-// -- Mod 定义 ----------------------------------------------------------------
+// -- Определение Mod ---------------------------------------------------------
 
 export const consolidationMod = createMod<ConsolidationState>("consolidation", {
   category: "mechanic",
@@ -90,11 +90,11 @@ export const consolidationMod = createMod<ConsolidationState>("consolidation", {
   initialState: { lastCheckTick: 0, consolidationCount: 0 },
 })
   /**
-   * LLM 生成摘要后调用此指令，原子替换衰减事实。
+   * Вызывается после генерации сводки LLM, атомарно заменяет угасающие факты.
    *
-   * 流程：
-   * 1. 从图中删除指定的 fact 节点
-   * 2. 创建新的摘要 fact 节点（stability = CONSOLIDATED_STABILITY）
+   * Процесс:
+   * 1. Удаляет указанные узлы fact из графа
+   * 2. Создаёт новый узел сводного факта (stability = CONSOLIDATED_STABILITY)
    */
   .instruction("consolidate_facts", {
     params: z.object({
@@ -114,12 +114,12 @@ export const consolidationMod = createMod<ConsolidationState>("consolidation", {
     },
     impl(ctx, args) {
       const contactId = String(args.contactId);
-      // Zod z.string().trim().min(1).max(2000) 已保证非空已 trim
+      // Zod z.string().trim().min(1).max(2000) гарантирует непустую trimmed строку
       const summary = String(args.summary);
-      // Zod z.array(z.string().min(1)).min(1) 已保证非空 string[]
+      // Zod z.array(z.string().min(1)).min(1) гарантирует непустой string[]
       const originalFacts = z.array(z.string()).parse(args.original_facts);
 
-      // 从图中获取联系人的 facts
+      // получаем факты контакта из графа
       const facts = getContactFacts(ctx.graph, contactId);
       if (facts.length === 0) return { success: false, error: "no facts for contact" };
 
@@ -143,7 +143,7 @@ export const consolidationMod = createMod<ConsolidationState>("consolidation", {
         return { success: false, error: "none of the specified facts found" };
       }
 
-      // ADR-104: 从被合并的原始 facts 中继承 source_channel
+      // ADR-104: наследуем source_channel от исходных фактов, участвующих в слиянии
       const inheritedSourceChannel = facts
         .filter((f) =>
           originalFacts.some(
@@ -153,7 +153,7 @@ export const consolidationMod = createMod<ConsolidationState>("consolidation", {
         .map((f) => f.attrs.source_channel)
         .find((ch) => ch != null);
 
-      // 创建摘要 fact 节点
+      // создаём узел сводного факта
       const iid = `info_${contactId}_consolidated_${ctx.nowMs}`;
       ctx.graph.addFact(iid, {
         content: summary,
@@ -185,8 +185,8 @@ export const consolidationMod = createMod<ConsolidationState>("consolidation", {
     },
   })
   .contribute((ctx): ContributionItem[] => {
-    // ADR-81: 压力门控——有紧急 directed 消息时不注入簿记提示
-    // ADR-124: 使用 hasObligation 替代 pending_directed > 0
+    // ADR-81: gate по давлению — не инжектировать housekeeping-подсказки при срочных directed-сообщениях
+    // ADR-124: используем hasObligation вместо pending_directed > 0
     // @see docs/adr/126-obligation-field-decay.md §D6
     const hasUrgentDirected = ctx.graph
       .getEntitiesByType("channel")
@@ -195,11 +195,11 @@ export const consolidationMod = createMod<ConsolidationState>("consolidation", {
 
     const items: ContributionItem[] = [];
 
-    // 1. 衰减事实压缩引导
-    // ADR-110: 使用 nowMs 替代 tick
+    // 1. направление к сжатию угасающих фактов
+    // ADR-110: используем nowMs вместо tick
     const fadingByContact = collectFadingFactsFromGraph(ctx.graph, ctx.nowMs);
     if (Object.keys(fadingByContact).length > 0) {
-      // ADR-66: 移除 R 值暴露，改为自然语言。不重复函数名（已在手册中）。
+      // ADR-66: убрать раскрытие значений R, заменить естественным языком. Не дублировать имена функций (уже в справочнике).
       const m = new PromptBuilder();
       m.line("Some older memories are getting fuzzy:");
       for (const [contactId, facts] of Object.entries(fadingByContact)) {
@@ -214,10 +214,10 @@ export const consolidationMod = createMod<ConsolidationState>("consolidation", {
       items.push(section("memory-housekeeping", m.build(), "Memory maintenance", 35, 50));
     }
 
-    // 2. ADR-94: 策略反思——从近期 rate_outcome 中提取可复用策略
-    // 展示 observer 的 outcomeHistory，引导 LLM 用 self note 记录有效策略。
-    // 独立于 fading facts——即使无衰减事实，也可在低压力时反思。
-    // @see docs/adr/94-skill-packaging-convergence.md §实施方案
+    // 2. ADR-94: стратегическая рефлексия — извлечение повторно используемых стратегий из недавних rate_outcome
+    // Показываем outcomeHistory наблюдателя, направляем LLM записывать эффективные стратегии через self note.
+    // Независимо от угасающих фактов — можно рефлексировать при низком давлении даже без угасающих фактов.
+    // @see docs/adr/94-skill-packaging-convergence.md §план-реализации
     const observerState = readModState(ctx, "observer");
     if (observerState?.outcomeHistory && observerState.outcomeHistory.length >= 3) {
       const recent = observerState.outcomeHistory.slice(-5);

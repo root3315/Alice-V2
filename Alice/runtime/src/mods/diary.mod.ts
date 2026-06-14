@@ -1,25 +1,25 @@
 /**
- * Diary Mod — Alice 的工作记忆（内在世界）。
+ * Diary Mod — рабочая память Алисы (внутренний мир).
  *
- * ADR-82 → ADR-225: 从 append-only log 回归 working memory buffer。
+ * ADR-82 → ADR-225: возврат от append-only лога к буферу рабочей памяти.
  *
- * 核心模型：diary 是固定容量的思维槽位池（7 slots），不是无限增长的日志。
- * 每个槽位是一个"活着的想法"——写入同主题内容时合并演化（consolidate-on-write），
- * 而非追加新行。显著性（salience）随时间衰减，淡出的想法让出槽位给新想法。
+ * Базовая модель: diary — это пул слотов мыслей фиксированной ёмкости (7 слотов), а не бесконечно растущий лог.
+ * Каждый слот — «живая мысль»: при записи схожего содержания по той же теме происходит слияние-эволюция (consolidate-on-write),
+ * а не добавление новой строки. Значимость (salience) затухает со временем, угасшие мысли освобождают слоты новым.
  *
- * 理论基础：
- * - Baddeley (2000) Working Memory: 有限容量 + 主动维持 + 干扰替换
- * - Cowan (2001): 工作记忆容量 4±1 项
- * - MemGPT (Packer et al. 2023): Core Memory — 小容量、始终可见、可自编辑
- * - Park et al. (2023) Generative Agents: 合并写入 ≈ 隐式反思（无额外 LLM 调用）
+ * Теоретическая база:
+ * - Baddeley (2000) Working Memory: ограниченная ёмкость + активное удержание + замещение при интерференции
+ * - Cowan (2001): объём рабочей памяти 4±1 элемента
+ * - MemGPT (Packer et al. 2023): Core Memory — малая ёмкость, всегда видима, самостоятельно редактируема
+ * - Park et al. (2023) Generative Agents: слияние при записи ≈ неявная рефлексия (без дополнительных вызовов LLM)
  * - ACT-R activation decay: salience × 2^(-age/halfLife)
  *
- * 设计原则：LLM 可以修改 Alice 的主观世界，但不能修改客观世界。
- * 日记是主观的——Alice 觉得 David 在躲她，也许 David 只是忙。
- * 这种"不可靠叙述者"恰恰是人格深度的来源。
+ * Принцип дизайна: LLM может изменять субъективный мир Алисы, но не объективный.
+ * Дневник субъективен — Алиса думает, что Дэвид её избегает, хотя Дэвид просто занят.
+ * Именно этот «ненадёжный рассказчик» и является источником глубины личности.
  *
- * @see docs/adr/82-diary-inner-world.md — 原始设计
- * @see docs/adr/225-diary-working-memory.md — 本次重构
+ * @see docs/adr/82-diary-inner-world.md — исходный дизайн
+ * @see docs/adr/225-diary-working-memory.md — текущий рефакторинг
  */
 
 import { z } from "zod";
@@ -34,73 +34,73 @@ import { createLogger } from "../utils/logger.js";
 const log = createLogger("diary");
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 常量
+// Константы
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 工作记忆容量（Cowan's 4±1 + 慷慨余量）。 */
+/** Ёмкость рабочей памяти (Cowan's 4±1 + запас). */
 const CAPACITY = 7;
 
-/** 每轮脚本最多写入 2 条日记（防 LLM 滥用）。 */
+/** Максимум 2 записи в дневник за ход (защита от злоупотребления LLM). */
 const DIARY_CAP_PER_TURN = 2;
 
-/** 每条日记最长字符数。 */
+/** Максимальная длина одной записи в символах. */
 const MAX_ENTRY_LENGTH = 200;
 
-/** contribute() 注入时最多渲染的思维数。 */
+/** Максимальное число мыслей, отображаемых при инжекте в contribute(). */
 const INJECT_LIMIT = 5;
 
-/** 合并判定阈值（字符双字母组 Jaccard similarity）。
- * 实测：同主题中文改写 ≈ 0.35-0.45，不同话题 ≈ 0.0-0.15。 */
+/** Порог слияния (Jaccard similarity по символьным биграммам).
+ * Опытно: перефразировка на ту же тему ≈ 0.35-0.45, разные темы ≈ 0.0-0.15. */
 const SIMILARITY_THRESHOLD = 0.35;
 
-/** 显著性半衰期（6 小时）。一个想法 6 小时不被触及，显著性减半。 */
+/** Период полураспада значимости (6 часов). Мысль, не обновлённая 6 часов, теряет половину значимости. */
 const SALIENCE_HALF_LIFE_MS = 6 * 3600 * 1000;
 
-/** 初始显著性。 */
+/** Начальная значимость. */
 const INITIAL_SALIENCE = 1.0;
 
-/** 每次合并演化时的显著性提升。 */
+/** Прирост значимости при каждом слиянии-эволюции. */
 const SALIENCE_BUMP = 0.15;
 
-/** 显著性上限。 */
+/** Максимальная значимость. */
 const MAX_SALIENCE = 2.0;
 
-/** 有效显著性低于此值的想法不注入 prompt，并在清理时释放槽位。 */
+/** Мысли с эффективной значимостью ниже этого порога не инжектируются в prompt и освобождают слот при очистке. */
 const INJECT_FLOOR = 0.05;
 
-/** 合并回溯窗口（24 小时）。超出此窗口的想法不与新写入合并。 */
+/** Окно консолидации (24 часа). Мысли старше этого окна не сливаются с новой записью. */
 const CONSOLIDATION_WINDOW_MS = 24 * 3600 * 1000;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 数据模型
+// Модель данных
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 一个活着的想法。 */
+/** Живая мысль. */
 interface Thought {
-  /** 最新版本的叙事内容。 */
+  /** Текущая версия нарратива. */
   content: string;
-  /** 关联实体 ID（null = 全局想法）。 */
+  /** ID связанной сущности (null = глобальная мысль). */
   about: string | null;
-  /** 显著性 [0, MAX_SALIENCE]。写入时 bump，随时间衰减。 */
+  /** Значимость [0, MAX_SALIENCE]. Повышается при записи, затухает со временем. */
   salience: number;
-  /** 首次产生时间（epoch ms）。 */
+  /** Время первого возникновения (epoch ms). */
   createdAt: number;
-  /** 最后演化时间（epoch ms）。 */
+  /** Время последней эволюции (epoch ms). */
   updatedAt: number;
 }
 
 interface DiaryState {
-  /** 当前 turn 写入计数（每次 ACT 重置）。 */
+  /** Счётчик записей за текущий ход (сбрасывается при каждом ACT). */
   turnWriteCount: number;
-  /** 工作记忆槽位。固定容量，每个槽是一个"活着的想法"。 */
+  /** Слоты рабочей памяти. Фиксированная ёмкость, каждый слот — «живая мысль». */
   thoughts: Thought[];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 相似度计算
+// Вычисление схожести
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** CJK-native 字符双字母组（bigram）集合。 */
+/** Множество символьных биграмм с поддержкой CJK. */
 function charBigrams(text: string): Set<string> {
   const chars = [...text]; // Unicode-aware spread
   const bg = new Set<string>();
@@ -111,10 +111,10 @@ function charBigrams(text: string): Set<string> {
 }
 
 /**
- * Jaccard similarity ∈ [0, 1]。
+ * Jaccard similarity ∈ [0, 1].
  *
- * 使用字符双字母组——CJK 天然适配（每个汉字是一个 Unicode char）。
- * O(n) 复杂度，无外部依赖，是近似重复检测的成熟技术。
+ * Использует символьные биграммы — нативно подходит для CJK (каждый иероглиф — один Unicode char).
+ * Сложность O(n), без внешних зависимостей — проверенный метод приближённого обнаружения дублей.
  */
 function jaccardSimilarity(a: string, b: string): number {
   const sa = charBigrams(a);
@@ -128,13 +128,13 @@ function jaccardSimilarity(a: string, b: string): number {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 显著性衰减
+// Затухание значимости
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 即时计算有效显著性（lazy evaluation，无需批量 DB 更新）。
+ * Вычисляет актуальную значимость на лету (lazy evaluation, без массовых обновлений БД).
  *
- * 模型：ACT-R base-level activation 的指数近似。
+ * Модель: экспоненциальное приближение ACT-R base-level activation.
  * effectiveSalience = salience × 2^(-age / halfLife)
  */
 function effectiveSalience(t: Thought, nowMs: number): number {
@@ -144,14 +144,14 @@ function effectiveSalience(t: Thought, nowMs: number): number {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 写入路径：合并-或-分配
+// Путь записи: слияние или выделение слота
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 在现有想法中查找可合并的目标。
+ * Ищет среди существующих мыслей подходящую для слияния.
  *
- * 条件：same about + 在合并窗口内 + 内容相似度超过阈值。
- * 返回槽位索引，-1 = 未找到。
+ * Условия: тот же about + в пределах окна консолидации + схожесть содержания выше порога.
+ * Возвращает индекс слота, -1 = не найдено.
  */
 function findSimilarThought(
   thoughts: Thought[],
@@ -162,11 +162,11 @@ function findSimilarThought(
   const cutoff = nowMs - CONSOLIDATION_WINDOW_MS;
   for (let i = 0; i < thoughts.length; i++) {
     const t = thoughts[i];
-    // about 维度必须匹配
+    // about должен совпадать
     if (t.about !== about) continue;
-    // 超出合并窗口的不合并
+    // Мысли за пределами окна консолидации не сливаем
     if (t.updatedAt < cutoff) continue;
-    // 内容相似度检测
+    // Проверка схожести содержания
     if (jaccardSimilarity(content, t.content) >= SIMILARITY_THRESHOLD) {
       return i;
     }
@@ -175,7 +175,7 @@ function findSimilarThought(
 }
 
 /**
- * 写入一条想法：合并到已有槽 / 分配新槽 / 替换最低显著性槽。
+ * Записывает мысль: сливает с существующим слотом / выделяет новый / заменяет слот с наименьшей значимостью.
  */
 function writeThought(
   state: DiaryState,
@@ -183,10 +183,10 @@ function writeThought(
   about: string | null,
   nowMs: number,
 ): { evolved: boolean } {
-  // 1. 查找可合并的想法
+  // 1. Ищем мысль для слияния
   const idx = findSimilarThought(state.thoughts, content, about, nowMs);
   if (idx >= 0) {
-    // 合并（evolve）：内容替换为最新版本，显著性提升
+    // Слияние (evolve): заменяем содержание новой версией, повышаем значимость
     const t = state.thoughts[idx];
     t.content = content;
     t.salience = Math.min(t.salience + SALIENCE_BUMP, MAX_SALIENCE);
@@ -195,7 +195,7 @@ function writeThought(
     return { evolved: true };
   }
 
-  // 2. 有空槽 → 分配
+  // 2. Есть свободный слот → выделяем
   if (state.thoughts.length < CAPACITY) {
     state.thoughts.push({
       content,
@@ -208,7 +208,7 @@ function writeThought(
     return { evolved: false };
   }
 
-  // 3. 满 → 替换有效显著性最低的槽
+  // 3. Слоты заполнены → заменяем слот с наименьшей эффективной значимостью
   let minIdx = 0;
   let minSal = effectiveSalience(state.thoughts[0], nowMs);
   for (let i = 1; i < state.thoughts.length; i++) {
@@ -234,13 +234,13 @@ function writeThought(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// about 字段规范化（复用 ADR-102 逻辑）
+// Нормализация поля about (переиспользует логику ADR-102)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 将 diary about 字段规范化为图节点 ID 格式。
+ * Нормализует поле about записи дневника до формата ID узла графа.
  *
- * 标准 ID 格式 → 保持 | ~ID/纯数字 → contact:X | 其他 → null（进 global pool）。
+ * Стандартный формат ID → оставить | ~ID/чистое число → contact:X | остальное → null (в глобальный пул).
  * @see ADR-102
  */
 function normalizeAbout(about: string): string | null {
@@ -263,10 +263,10 @@ function currentDiaryTarget(ctx: ModContext<DiaryState>): string | null {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 时间格式化
+// Форматирование времени
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** ADR-110: 将毫秒差值格式化为人类可读的时间标签。 */
+/** ADR-110: форматирует разницу в миллисекундах в человекочитаемую временную метку. */
 function formatTimeAgo(ageMs: number): string {
   const seconds = ageMs / 1000;
   if (seconds <= 300) return "только что";
@@ -276,7 +276,7 @@ function formatTimeAgo(ageMs: number): string {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Mod 定义
+// Определение мода
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const diaryMod = createMod<DiaryState>("diary", {
@@ -310,7 +310,7 @@ export const diaryMod = createMod<DiaryState>("diary", {
       const trimmed =
         content.length > MAX_ENTRY_LENGTH ? content.slice(0, MAX_ENTRY_LENGTH) : content;
 
-      // 规范化 about 字段
+      // Нормализация поля about
       let about = args.about != null ? String(args.about) : null;
       if (about) {
         const resolved = normalizeAbout(about);
@@ -326,23 +326,23 @@ export const diaryMod = createMod<DiaryState>("diary", {
       } else {
         about = currentDiaryTarget(ctx);
       }
-      // ADR-91 Layer 1: diary about Bot → 清除 about
+      // ADR-91 Layer 1: diary about Bot → очищаем about
       if (about && ctx.graph.has(about) && ctx.graph.getDynamic(about, "is_bot") === true) {
         about = null;
       }
 
-      // 合并-或-分配写入
+      // Запись: слияние или выделение слота
       const { evolved } = writeThought(ctx.state, trimmed, about, ctx.nowMs);
       ctx.state.turnWriteCount++;
 
       return { success: true, evolved };
     },
   })
-  // 每个 tick 开始时重置 per-turn 计数
+  // Сбрасываем счётчик per-turn в начале каждого тика
   .onTickStart((ctx) => {
     ctx.state.turnWriteCount = 0;
   })
-  // 每个 tick 结束时清除已淡出的想法（释放槽位）
+  // В конце каждого тика удаляем угасшие мысли (освобождаем слоты)
   .onTickEnd((ctx) => {
     const nowMs = ctx.nowMs;
     const before = ctx.state.thoughts.length;
@@ -354,18 +354,18 @@ export const diaryMod = createMod<DiaryState>("diary", {
       log.info("Faded thoughts pruned", { removed, remaining: ctx.state.thoughts.length });
     }
   })
-  // 唯一注入路径：system prompt "你最近的想法" section
+  // Единственный путь инжекта: секция "твои недавние мысли" в system prompt
   .contribute((ctx): ContributionItem[] => {
     const { thoughts } = ctx.state;
     if (thoughts.length === 0) return [];
 
     const nowMs = ctx.nowMs;
 
-    // 读取当前对话目标（用于 target-aware 排序）
+    // Читаем текущую цель диалога (для target-aware сортировки)
     const relState = readModState(ctx, "relationships");
     const currentTarget = relState?.targetNodeId ?? null;
 
-    // 计算有效显著性，只保留当前 target 相关想法。
+    // Вычисляем эффективную значимость, оставляем только мысли, связанные с текущей целью.
     const active = thoughts
       .map((t) => ({ ...t, eSal: effectiveSalience(t, nowMs) }))
       .filter((t) => t.eSal >= INJECT_FLOOR)
@@ -379,7 +379,7 @@ export const diaryMod = createMod<DiaryState>("diary", {
     const toInject = active.slice(0, INJECT_LIMIT);
     if (toInject.length === 0) return [];
 
-    // 按时间排序（最旧在前，阅读顺序）
+    // Сортируем по времени (сначала старые — порядок чтения)
     toInject.sort((a, b) => a.updatedAt - b.updatedAt);
 
     const m = new PromptBuilder();
@@ -398,12 +398,12 @@ export const diaryMod = createMod<DiaryState>("diary", {
     }
     m.list(items);
 
-    // priority 75: 低于 SOUL_CORE (100) 和 voice-guidance (90)，
-    // 高于 Instincts (80)。日记是人格的延伸，应优先于规则。
+    // priority 75: ниже SOUL_CORE (100) и voice-guidance (90),
+    // выше Instincts (80). Дневник — продолжение личности, должен иметь приоритет над правилами.
     return [header(m.build(), 75)];
   })
   .build();
 
-// 导出工具函数供测试使用
+// Экспортируем вспомогательные функции для тестов
 export { charBigrams, effectiveSalience, jaccardSimilarity };
 export type { DiaryState, Thought };

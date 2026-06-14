@@ -14,22 +14,22 @@ import { ChatTarget } from "../../prompt/types.js";
 import { ALICE_GROUP_RECEPTION_SHADOW_LOG_PATH, ensureParentDir } from "../../runtime-paths.js";
 import { createLogger } from "../../utils/logger.js";
 
-// ── ADR-156: 群组社交接收度更新 ─────────────────────────────────────
-// 每个 tick 检查 Alice 最近在群组中发言后的接收情况。
-// 信号存储在 graph channel node 的 social_reception 动态属性上。
+// ── ADR-156: обновление социального восприятия группы ───────────────
+// При каждом tick проверяем, как группа отреагировала на недавние высказывания Алисы.
+// Сигнал хранится в динамическом атрибуте social_reception узла channel графа.
 //
-// 检测逻辑：
-// - 从 message_log 查 Alice 最近在群组中的发言事实
-// - 检查该发言之后的群消息中是否有人回复 Alice
-// - 检查是否有拒绝关键词
-// - 先写 per-intervention evidence，再用 EMA 更新 social_reception
+// Логика обнаружения:
+// - Из message_log берём факты недавних высказываний Алисы в группе
+// - Проверяем, отвечал ли кто-то на её высказывания в последующих групповых сообщениях
+// - Проверяем наличие ключевых слов отвержения
+// - Сначала записываем per-intervention evidence, затем обновляем social_reception через EMA
 //
 // @see docs/adr/156-social-reception-feedback/README.md
 // @see docs/adr/255-intervention-outcome-truth-model/README.md
 
 const log = createLogger("observer/reception");
 
-/** 拒绝/敌意关键词。 */
+/** Ключевые слова отвержения/враждебности. */
 const HOSTILE_KEYWORDS = [
   "谁问你了",
   "闭嘴",
@@ -55,7 +55,7 @@ const HOSTILE_KEYWORDS = [
   "иди ты",
 ];
 
-/** 高置信正向接纳短语。只覆盖很窄的 deterministic positive guard。 */
+/** Высококонфидентные фразы тёплого принятия. Покрывают только узкий детерминистический positive guard. */
 const WARM_ACCEPT_KEYWORDS = [
   "谢谢",
   "感谢",
@@ -84,21 +84,21 @@ const WARM_ACCEPT_KEYWORDS = [
   "точно подмечено",
 ];
 
-/** EMA 系数：新信号占 30%。 */
+/** Коэффициент EMA: новый сигнал занимает 30%. */
 const RECEPTION_ALPHA = 0.3;
-/** 无新信号时，每小时自然衰减率。 */
+/** Естественная скорость затухания в час при отсутствии новых сигналов. */
 const RECEPTION_HOURLY_DECAY = 0.95;
-/** 回溯窗口：检查 Alice 最近 10 分钟的发言。 */
+/** Окно ретроспективного просмотра: проверяем высказывания Алисы за последние 10 минут. */
 const RECEPTION_LOOKBACK_MS = 10 * 60 * 1000;
-/** 候选扫描窗口：给刚过期的发言一次落 unknown_timeout 的机会。 */
+/** Окно сканирования кандидатов: даём только что истёкшим высказываниям один шанс получить unknown_timeout. */
 const RECEPTION_SCAN_MS = RECEPTION_LOOKBACK_MS * 2;
-/** 冷场判定：Alice 发言后 N 条消息无人理。 */
+/** Порог «холодного» игнорирования: N сообщений без ответа после высказывания Алисы. */
 const COLD_THRESHOLD_MSGS = 5;
-/** 单 tick 最多评估的 Alice 发言数，防止历史 DB 首次升级时回扫过量。 */
+/** Максимум оцениваемых высказываний Алисы за один tick, чтобы не перегружать обратное сканирование при первом обновлении БД. */
 const MAX_ALICE_CANDIDATES = 100;
-/** 单条 Alice 发言后最多读取的后续消息数。 */
+/** Максимум последующих сообщений, читаемых после одного высказывания Алисы. */
 const MAX_AFTER_MESSAGES = 10;
-/** Shadow judge 只做旁路诊断，避免单 tick 大量启动 LLM 请求。 */
+/** Shadow judge работает только в режиме диагностики, чтобы не запускать массово LLM-запросы за один tick. */
 const MAX_SHADOW_JUDGE_PER_TICK = 3;
 const SHADOW_JUDGE_TIMEOUT_MS = 15_000;
 
@@ -216,10 +216,10 @@ type ReceptionClassification =
 export function updateGroupReception(ctx: { graph: WorldModel; nowMs: number }): void {
   const db = getDb();
   const nowMs = ctx.nowMs;
-  // Drizzle mode:"timestamp" 自动处理 Date ↔ epoch 秒转换，无需手动
+  // Drizzle mode:"timestamp" автоматически обрабатывает конвертацию Date ↔ epoch секунды, ручная обработка не нужна
   const scanCutoff = new Date(nowMs - RECEPTION_SCAN_MS);
 
-  // 查 Alice 最近的群聊发言候选。逐行读取，避免 MAX(created_at) 和 msgId 错行。
+  // Ищем кандидатов из недавних групповых высказываний Алисы. Читаем построчно, чтобы избежать рассинхронизации MAX(created_at) и msgId.
   let aliceGroupMsgs: AliceOutboundMessage[];
   let shadowJudgeScheduled = 0;
   try {
@@ -258,7 +258,7 @@ export function updateGroupReception(ctx: { graph: WorldModel; nowMs: number }):
     }
     if (alreadyEvaluated.length > 0) continue;
 
-    // 查 Alice 发言之后在该群的消息（Drizzle ORM）
+    // Ищем сообщения в этой группе после высказывания Алисы (Drizzle ORM)
     let afterMsgs: LaterGroupMessage[];
     try {
       afterMsgs = db
@@ -367,14 +367,14 @@ export function updateGroupReception(ctx: { graph: WorldModel; nowMs: number }):
 }
 
 /**
- * 初始化群聊 reception Ax shadow judge。
+ * Инициализирует Ax shadow judge для оценки восприятия в групповом чате.
  *
- * 这个 judge 只记录旁路诊断，不写 evidence、不改 social_reception。
+ * Этот judge записывает только диагностику в обход основного пути, не пишет evidence и не изменяет social_reception.
  * @see docs/adr/263-ax-llm-program-optimization/README.md
  */
 export function initGroupReceptionShadowJudge(config: Config): void {
   if (!config.llmReflectApiKey) {
-    log.debug("Reflect Provider API key 为空，group reception shadow judge 将被跳过");
+    log.debug("Reflect Provider API key пуст, group reception shadow judge будет пропущен");
     return;
   }
   _receptionShadowAI = AxAI.create({
@@ -384,10 +384,10 @@ export function initGroupReceptionShadowJudge(config: Config): void {
     config: { model: config.llmReflectModel as never, stream: false, temperature: 0 },
   } as never);
   _receptionShadowModel = config.llmReflectModel;
-  log.info("Group reception Ax shadow judge 初始化完成", { model: _receptionShadowModel });
+  log.info("Group reception Ax shadow judge инициализирован", { model: _receptionShadowModel });
 }
 
-/** 测试用重置。 */
+/** Сброс для тестов. */
 export function resetGroupReceptionShadowJudge(): void {
   _receptionShadowAI = null;
   _receptionShadowModel = "";

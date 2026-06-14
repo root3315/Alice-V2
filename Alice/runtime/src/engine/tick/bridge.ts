@@ -1,11 +1,11 @@
 /**
- * Tick Bridge — 将 Blackboard Tick 管线适配到现有 orchestrator 接口。
+ * Tick Bridge — адаптирует конвейер Blackboard Tick к существующему интерфейсу orchestrator.
  *
- * 职责：
- * 1. 从 ActContext + ActionQueueItem 派生 FeatureFlags + Blackboard
- * 2. 组装 TickDeps（从现有模块函数包装）
- * 3. 调用 tick() 核心循环
- * 4. 将 TickResult 转换为 SubcycleResult（供现有 orchestrator 消费）
+ * Обязанности:
+ * 1. Получение FeatureFlags + Blackboard из ActContext + ActionQueueItem
+ * 2. Сборка TickDeps (обёртка над существующими функциями модулей)
+ * 3. Вызов основного цикла tick()
+ * 4. Конвертация TickResult в SubcycleResult (для потребления существующим orchestrator)
  *
  * @see docs/adr/142-action-space-architecture/README.md
  */
@@ -40,21 +40,21 @@ const log = createLogger("tick/bridge");
 const OPS_CHANNEL_ID = process.env.OPS_CHANNEL_ID;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// FeatureFlags 派生
+// Вычисление FeatureFlags
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 从 ActContext 派生运行时 FeatureFlags。
+ * Вычисляет runtime FeatureFlags из ActContext.
  *
- * 每个 flag 对应一个硬门禁条件：
- * - 配置型（hasMusic, hasBrowser, hasTTS, hasVideo）：取决于 API key / URL 是否配置
- * - 图型（hasStickers, hasBots, hasSystemThreads）：取决于 WorldModel 实体状态
- * - 永真型（hasWeather）：天气 API (wttr.in) 免费无 key
+ * Каждый флаг соответствует жёсткому условию-шлюзу:
+ * - Конфигурационные (hasMusic, hasBrowser, hasTTS, hasVideo): зависят от наличия API key / URL
+ * - Графовые (hasStickers, hasBots, hasSystemThreads): зависят от состояния сущностей WorldModel
+ * - Всегда истинные (hasWeather): погодный API (wttr.in) бесплатный, без ключа
  */
 function deriveFeatureFlags(ctx: ActContext): FeatureFlags {
   const { config, G } = ctx;
   return {
-    hasWeather: true, // wttr.in 免费，始终可用
+    hasWeather: true, // wttr.in бесплатный, всегда доступен
     hasMusic: !!config.musicApiBaseUrl,
     hasBrowser: !!config.exaApiKey,
     hasTTS: !!config.ttsBaseUrl && !!config.ttsApiKey,
@@ -70,15 +70,15 @@ function deriveFeatureFlags(ctx: ActContext): FeatureFlags {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TickResult → SubcycleResult 类型转换
+// Преобразование TickResult → SubcycleResult
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 将 TickResult 转换为 SubcycleResult。
+ * Конвертирует TickResult в SubcycleResult.
  *
- * 映射规则：
- * - stepsUsed → roundsUsed（语义等价，名称不同）
- * - observations/preparedCategories 仅存在于 TickResult，不映射
+ * Правила маппинга:
+ * - stepsUsed → roundsUsed (семантически эквивалентны, разные названия)
+ * - observations/preparedCategories существуют только в TickResult, не маппируются
  */
 function toSubcycleResult(result: TickResult): SubcycleResult {
   return {
@@ -93,7 +93,7 @@ function toSubcycleResult(result: TickResult): SubcycleResult {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TickDeps 组装
+// Сборка TickDeps
 // ═══════════════════════════════════════════════════════════════════════════
 
 function buildTickDeps(): TickDeps {
@@ -102,25 +102,25 @@ function buildTickDeps(): TickDeps {
       return callTickLLM(system, user, tick, target, voice, contextVars, selectedProvider);
     },
 
-    // ADR-214 Wave A: resolveQueries 已删除。
-    // shell-native 架构下 scriptResult.actions 始终为空，
-    // resolveQueries 从未执行有意义的工作。
-    // Query 动作通过容器内 Engine API HTTP 直接执行。
+    // ADR-214 Wave A: resolveQueries удалён.
+    // В shell-native архитектуре scriptResult.actions всегда пуст,
+    // resolveQueries никогда не выполнял никакой значимой работы.
+    // Действия Query выполняются напрямую через Engine API HTTP внутри контейнера.
   };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 共享 tick 运行上下文
+// Общий контекст выполнения tick
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** tick() 的完整上下文类型 — TickPromptContext + 运行时依赖。 */
+/** Полный тип контекста для tick() — TickPromptContext + runtime-зависимости. */
 type TickRunContext = TickPromptContext & {
   client: unknown;
   runtimeConfig: ActionRuntimeConfig;
   llmProvider: AvailableProvider;
 };
 
-/** tick() 运行所需的全部预备产物。 */
+/** Все предварительно подготовленные артефакты, необходимые для запуска tick(). */
 interface TickRunKit {
   board: ReturnType<typeof createBlackboard>;
   allTools: readonly UnifiedTool[];
@@ -128,8 +128,8 @@ interface TickRunKit {
 }
 
 /**
- * 构建 tick() 运行所需的 Blackboard + 工具列表 + 依赖。
- * 提取共享逻辑供 runTickSubcycle 使用。
+ * Строит Blackboard + список инструментов + зависимости для запуска tick().
+ * Выделяет общую логику для использования в runTickSubcycle.
  */
 function prepareTickRun(
   ctx: ActContext,
@@ -155,7 +155,7 @@ function prepareTickRun(
   return { board, allTools, deps };
 }
 
-/** 从 ActContext 组装 tick() 所需的 TickRunContext。 */
+/** Собирает TickRunContext, необходимый для tick(), из ActContext. */
 function buildTickRunContext(
   ctx: ActContext,
   item: ActionQueueItem,
@@ -181,14 +181,15 @@ function buildTickRunContext(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 公共 API — 替代 runReActSubcycle 的直接替换函数
+// Публичный API — прямая замена runReActSubcycle
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 运行 Blackboard Tick 子周期 — orchestrator.ts 的 drop-in 替换。
+ * Запускает подцикл Blackboard Tick — замена drop-in для orchestrator.ts.
  *
- * ADR-169 结构性重构：查询解析和错误驱动续轮已内化到 tick() 循环中。
- * bridge 层只负责组装 Blackboard + deps + context，不做续轮逻辑。
+ * ADR-169 структурный рефакторинг: разрешение запросов и продолжение по ошибкам
+ * инкапсулированы в цикл tick(). Слой bridge только собирает Blackboard + deps + context,
+ * логика продолжения циклов в нём отсутствует.
  *
  * @see docs/adr/169-fire-query-auto-continuation.md
  */
@@ -227,11 +228,11 @@ export async function runTickSubcycle(
     llmProvider,
   );
   const result = await tick(board, allTools, deps, tickCtx);
-  // ADR-215: 将 LLM residue 透传到 ActionQueueItem → processResult 消费
+  // ADR-215: пробросить LLM residue в ActionQueueItem → потребляется processResult
   if (result.llmResidue) item.llmResidue = result.llmResidue;
   return toSubcycleResult(result);
 }
 
-// ADR-214 Wave B: runCorrectionTick 已删除。
-// shell-native 架构下 Telegram 动作通过容器内 Engine API HTTP 直接执行，
-// correction tick 的机械重试和 LLM 修正均为死代码。
+// ADR-214 Wave B: runCorrectionTick удалён.
+// В shell-native архитектуре Telegram-действия выполняются напрямую через Engine API HTTP внутри контейнера;
+// механические повторы и LLM-коррекции correction tick являются мёртвым кодом.

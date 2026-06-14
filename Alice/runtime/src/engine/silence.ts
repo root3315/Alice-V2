@@ -1,15 +1,15 @@
 /**
- * D5 沉默四级谱 + 工程安全阀 — 论文 Def 10。
+ * D5 четырёхуровневый спектр молчания + инженерный предохранитель — Definition 10 статьи.
  *
- * 沉默不是简单的"不行动"，而是一个有四个理论层级的决策谱：
+ * Молчание — не просто "бездействие", а спектр решений с четырьмя теоретическими уровнями:
  *
- * L1: LOW_PRESSURE    — API < floor，无事需做
- * L2: ACTIVE_COOLING  — 行动密度抑制，最近行动过多
- * L3: STRATEGIC       — V(a,n) <= 0，行动预期收益为负
- * L4: DEFERRED        — VoI(null) > max NSV，观望比行动好
+ * L1: LOW_PRESSURE    — API < floor, делать нечего
+ * L2: ACTIVE_COOLING  — подавление плотности действий, слишком много недавних действий
+ * L3: STRATEGIC       — V(a,n) <= 0, ожидаемая отдача действия отрицательна
+ * L4: DEFERRED        — VoI(null) > max NSV, выжидание лучше действия
  *
- * ADR-84: 论文 L5 是 Degraded Action（降级行动），由 V-maximizer 降级回退实现，
- * 不属于沉默谱。CRISIS_OVERRIDE 是工程安全阀，在 gate chain 中由 gateCrisisMode 处理。
+ * ADR-84: L5 в статье — это Degraded Action (деградированное действие), реализуется через V-maximizer fallback,
+ * не входит в спектр молчания. CRISIS_OVERRIDE — инженерный предохранитель, обрабатывается gateCrisisMode в gate chain.
  *
  * @see paper-five-dim/ Definition 10: Silence Spectrum
  * @see paper-pomdp/ Def 5.3: Value of Information
@@ -18,28 +18,28 @@
 import type { BeliefStore } from "../belief/store.js";
 import type { SilenceLevel } from "./gates.js";
 
-// 从 gates.ts 重导出，使消费者无需同时导入两个文件
+// Реэкспорт из gates.ts, чтобы потребителям не нужно было импортировать оба файла одновременно
 export type { SilenceLevel } from "./gates.js";
 
 /**
- * VoI-based silence (Paper 3, Def 5.3) — Kalman 增益代理。
+ * VoI-based silence (Paper 3, Def 5.3) — прокси через усиление Калмана.
  *
- * 论文原始定义：VoI(a_probe, bel) = E_o[V*(τ(bel, a_probe, o))] - V*(bel)
- * 完整实现需要 V* 近似（计算量大）。
+ * Исходное определение статьи: VoI(a_probe, bel) = E_o[V*(τ(bel, a_probe, o))] - V*(bel)
+ * Полная реализация требует аппроксимации V* (вычислительно затратно).
  *
- * 简化：使用 Kalman 增益 K = σ² / (σ² + σ²_obs) 作为 VoI 代理。
- * K 代表"下一次观测能减少多少不确定性"——K 越大（σ² >> σ²_obs），
- * 等待观测的信息收益越高。乘以 NSV_SCALE 使 VoI 与 NSV 在同一量级竞争。
+ * Упрощение: используем усиление Калмана K = σ² / (σ² + σ²_obs) как прокси VoI.
+ * K означает "насколько следующее наблюдение снизит неопределённость" — чем больше K (σ² >> σ²_obs),
+ * тем выше информационная ценность ожидания. Умножается на NSV_SCALE, чтобы VoI конкурировал с NSV в одном масштабе.
  *
- * 旧实现用 sigma2 * 0.001，量纲比 NSV 低两个数量级，
- * 导致 L4 延迟沉默数学上不可能触发。
+ * Старая реализация использовала sigma2 * 0.001, что на два порядка ниже NSV,
+ * делая математически невозможным срабатывание L4 отложенного молчания.
  *
- * @param focalEntities 当前焦点实体集合
+ * @param focalEntities текущее множество фокальных сущностей
  * @param beliefs BeliefStore
- * @param _tick 当前 tick 序数（预留）
- * @param sigma2Obs 观测噪声方差（paper-pomdp Remark 4.3，默认 0.1）
- * @param nsvScale NSV 典型量级缩放因子（使 VoI 与 NSV 可比）
- * @returns VoI(null) 值
+ * @param _tick порядковый номер текущего tick (зарезервировано)
+ * @param sigma2Obs дисперсия шума наблюдения (paper-pomdp Remark 4.3, по умолчанию 0.1)
+ * @param nsvScale масштабирующий коэффициент типичного уровня NSV (делает VoI сопоставимым с NSV)
+ * @returns значение VoI(null)
  *
  * @see paper-pomdp/ Def 5.3: Value of Information
  * @see paper-pomdp/ Proposition 5: Kalman gain simplification
@@ -55,31 +55,31 @@ export function computeVoINull(
   let voiSum = 0;
   for (const eid of focalEntities) {
     // Kalman gain proxy: K = σ² / (σ² + σ²_obs)
-    // 高 σ² → K ≈ 1（观测能大幅降低不确定性）→ 等待价值高
-    // 低 σ² → K ≈ 0（已经很确定，等不等差不多）→ 等待价值低
+    // высокий σ² → K ≈ 1 (наблюдение существенно снизит неопределённость) → ценность ожидания высока
+    // низкий σ² → K ≈ 0 (уже очень уверены, ожидание почти не помогает) → ценность ожидания низка
     const bTier = beliefs.getOrDefault(eid, "tier");
     voiSum += bTier.sigma2 / (bTier.sigma2 + sigma2Obs);
     const bMood = beliefs.getOrDefault(eid, "mood");
     voiSum += bMood.sigma2 / (bMood.sigma2 + sigma2Obs);
   }
-  // 归一化到焦点实体数量，乘以 NSV_SCALE 使量级与 NSV 对齐
+  // нормализуем по количеству фокальных сущностей, умножаем на NSV_SCALE для выравнивания масштаба с NSV
   return (voiSum / focalEntities.length) * nsvScale;
 }
 
 /**
- * 判定沉默层级。
+ * Определение уровня молчания.
  *
- * 入参是已经过 gate 链后的最终状态。
- * 这是一个总结性函数，将 gates.ts 中各 gate 的判定归类到四级谱。
+ * Входные параметры — финальное состояние после прохождения цепочки gate.
+ * Это сводная функция, классифицирующая решения отдельных gate из gates.ts по четырёхуровневому спектру.
  *
- * ADR-84: isCrisis 参数已移除——crisis 由 gateCrisisMode 在 gate chain 中处理，
- * 返回 CRISIS_OVERRIDE，不经过 classifySilence。
+ * ADR-84: параметр isCrisis удалён — crisis обрабатывается gateCrisisMode в gate chain,
+ * возвращает CRISIS_OVERRIDE, не проходит через classifySilence.
  *
- * 判定优先级（从高到低）：
- * 1. L4_DEFERRED      — VoI(null) > bestNSV 且 bestNSV > 0（观望优于行动）
- * 2. L3_STRATEGIC     — bestNSV <= 0（所有行动收益为负）
- * 3. L2_ACTIVE_COOLING — 行动密度抑制（近期行动过多）
- * 4. L1_LOW_PRESSURE  — 压力不足（默认兜底）
+ * Приоритет определения (от высокого к низкому):
+ * 1. L4_DEFERRED      — VoI(null) > bestNSV и bestNSV > 0 (выжидание лучше действия)
+ * 2. L3_STRATEGIC     — bestNSV <= 0 (ожидаемая отдача всех действий отрицательна)
+ * 3. L2_ACTIVE_COOLING — подавление плотности действий (слишком много недавних)
+ * 4. L1_LOW_PRESSURE  — недостаточное давление (запасной вариант по умолчанию)
  *
  * @see paper-five-dim/ Definition 10
  * @see docs/adr/84-theory-code-final-alignment.md
@@ -91,12 +91,12 @@ export function classifySilence(
   voiNull: number,
   isActiveCooling: boolean,
 ): SilenceLevel {
-  // L4: 延迟行动——观望的信息价值超过最佳行动的净社会价值
+  // L4: отложенное действие — информационная ценность выжидания превышает чистую социальную ценность лучшего действия
   if (voiNull > bestNSV && bestNSV > 0) return "L4_DEFERRED";
-  // L3: 策略性沉默——所有行动的预期收益为负
+  // L3: стратегическое молчание — ожидаемая отдача всех действий отрицательна
   if (bestNSV <= 0) return "L3_STRATEGIC";
-  // L2: 主动冷却——行动密度过高，指数衰减抑制
+  // L2: активное охлаждение — плотность действий слишком высока, подавляется экспоненциальным затуханием
   if (isActiveCooling) return "L2_ACTIVE_COOLING";
-  // L1: 低压力——系统整体压力不足，无需行动
+  // L1: низкое давление — общее давление системы недостаточно для действия
   return "L1_LOW_PRESSURE";
 }

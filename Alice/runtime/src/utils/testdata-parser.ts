@@ -1,8 +1,8 @@
 /**
- * Telegram Desktop 导出 JSON 解析器（TS 版）。
+ * JSON-парсер экспорта Telegram Desktop (версия TS).
  *
- * 将 result.json 转为标准化 TelegramEvent 序列，用于回放集成测试。
- * 对应 Python simulation/telegram_parser.py 的核心解析逻辑。
+ * Преобразует result.json в нормализованную последовательность TelegramEvent для воспроизводящих интеграционных тестов.
+ * Соответствует основной логике разбора Python simulation/telegram_parser.py.
  *
  * @see simulation/telegram_parser.py
  */
@@ -12,7 +12,7 @@ import type { ChatType } from "../graph/entities.js";
 import { WorldModel } from "../graph/world-model.js";
 
 // ---------------------------------------------------------------------------
-// 类型定义
+// Определения типов
 // ---------------------------------------------------------------------------
 
 export interface TelegramEvent {
@@ -35,12 +35,12 @@ export interface ParsedChat {
 }
 
 // ---------------------------------------------------------------------------
-// text 字段提取
+// Извлечение поля text
 // ---------------------------------------------------------------------------
 
 /**
- * 从 Telegram 的 text 字段提取文本长度。
- * text 可能是纯 string，也可能是 (string | {text: string})[]。
+ * Извлекает длину текста из поля text в Telegram.
+ * text может быть чистой строкой или массивом (string | {text: string})[].
  */
 function extractTextLength(textField: unknown): number {
   if (typeof textField === "string") {
@@ -61,10 +61,10 @@ function extractTextLength(textField: unknown): number {
 }
 
 // ---------------------------------------------------------------------------
-// chat_type 映射
+// Маппинг chat_type
 // ---------------------------------------------------------------------------
 
-/** 将 Telegram Desktop 导出的 type 字段映射到 WorldModel 的 ChatType。 */
+/** Отображает поле type из экспорта Telegram Desktop в ChatType WorldModel. */
 function mapChatType(exportType: string): ChatType {
   switch (exportType) {
     case "personal_chat":
@@ -81,7 +81,7 @@ function mapChatType(exportType: string): ChatType {
 }
 
 // ---------------------------------------------------------------------------
-// 主解析函数
+// Основная функция разбора
 // ---------------------------------------------------------------------------
 
 export function parseTelegramExport(jsonPath: string): ParsedChat {
@@ -101,7 +101,7 @@ export function parseTelegramExport(jsonPath: string): ParsedChat {
     let senderId = msg.from_id ?? "";
     let senderName = msg.from ?? "";
 
-    // 处理缺失的 sender 信息
+    // обрабатываем отсутствующую информацию об отправителе
     if (!senderId) {
       senderId = `unknown_${msg.id ?? 0}`;
     }
@@ -141,7 +141,7 @@ export function parseTelegramExport(jsonPath: string): ParsedChat {
     }
   }
 
-  // 按 timestamp 排序
+  // сортируем по timestamp
   events.sort((a, b) => a.timestamp - b.timestamp);
 
   return {
@@ -154,24 +154,24 @@ export function parseTelegramExport(jsonPath: string): ParsedChat {
 }
 
 // ---------------------------------------------------------------------------
-// 图构建
+// Построение графа
 // ---------------------------------------------------------------------------
 
 /**
- * 从 ParsedChat 构建 WorldModel。
+ * Строит WorldModel из ParsedChat.
  *
- * - 为每个 participant 创建 contact 节点（tier=150 初始值）
- * - 创建 channel 节点
- * - 为每个 contact 创建到 channel 的 "joined" 关系边
- * - 添加 "self" agent 节点
+ * - Создаёт узел contact для каждого участника (начальное значение tier=150)
+ * - Создаёт узел channel
+ * - Создаёт рёбра отношения "joined" от каждого contact к channel
+ * - Добавляет узел агента "self"
  */
 export function buildGraphFromParsedChat(parsed: ParsedChat): WorldModel {
   const G = new WorldModel();
 
-  // agent 节点
+  // узел агента
   G.addAgent("self");
 
-  // channel 节点
+  // узел channel
   const chatType = mapChatType(parsed.chatType);
   G.addChannel(parsed.chatId, {
     unread: 0,
@@ -182,7 +182,7 @@ export function buildGraphFromParsedChat(parsed: ParsedChat): WorldModel {
     display_name: parsed.chatName,
   });
 
-  // contact 节点 + 关系边
+  // узлы contact + рёбра отношений
   for (const [senderId, senderName] of parsed.participants) {
     G.addContact(senderId, {
       tier: 150,
@@ -190,9 +190,9 @@ export function buildGraphFromParsedChat(parsed: ParsedChat): WorldModel {
       display_name: senderName,
       interaction_count: 0,
     });
-    // contact → channel 关系
+    // отношение contact → channel
     G.addRelation(senderId, "joined", parsed.chatId);
-    // m5: self → contact 社交关系边（确保图连通性，Laplacian 传播正常工作）
+    // m5: ребро социального отношения self → contact (обеспечивает связность графа, корректную работу Laplacian-распространения)
     G.addRelation("self", "stranger", senderId);
   }
 

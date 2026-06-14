@@ -1,14 +1,14 @@
 /**
- * D3 工具面完整性检查 — Paper 2, Axiom 3: Σ = (I, Q, L, R)。
+ * D3 Проверка полноты инструментальной поверхности — Paper 2, Axiom 3: Σ = (I, Q, L, R).
  *
- * 四类工具面必须非空：
- *   I (Information)  — 获取信息的查询（read-only）
- *   Q (Question)     — 向外部提问
- *   L (Locomotion)   — 改变自身状态/位置
- *   R (Relation)     — 改变社交关系
+ * Все четыре категории инструментальной поверхности должны быть непустыми:
+ *   I (Information)  — запросы на получение информации (read-only)
+ *   Q (Question)     — обращения к внешним источникам
+ *   L (Locomotion)   — изменение собственного состояния/позиции
+ *   R (Relation)     — изменение социальных связей
  *
- * 启动时运行一次，缺失类别发出警告日志。
- * 不阻塞启动——只是诊断。
+ * Выполняется один раз при запуске; при отсутствии категорий выдаёт предупреждение в лог.
+ * Не блокирует запуск — только диагностика.
  *
  * @see paper/ §Axiom 3 "Tool Surface Completeness"
  */
@@ -18,24 +18,24 @@ import type { Dispatcher } from "./dispatcher.js";
 
 const log = createLogger("d3");
 
-/** 工具面类别定义。 */
+/** Определение категории инструментальной поверхности. */
 interface ToolCategory {
-  /** 类别名称（人类可读）。 */
+  /** Название категории (для человека). */
   name: string;
-  /** 类别说明。 */
+  /** Описание категории. */
   description: string;
-  /** 指令/查询名匹配模式（小写子串匹配）。 */
+  /** Паттерны совпадения имён инструкций/запросов (совпадение подстроки в нижнем регистре). */
   patterns: string[];
 }
 
 /**
- * 四类工具面 — 对应 Axiom 3 的 Σ = (I, Q, L, R)。
+ * Четыре категории инструментальной поверхности — соответствуют Σ = (I, Q, L, R) из Axiom 3.
  *
- * patterns 基于 Alice 已注册的指令/查询命名约定：
- * - I: 读取类查询（GET_*, QUERY_*, SEARCH_*, LIST_*, FETCH_*, READ_*）
- * - Q: 外部交互类（ASK_*, REQUEST_*, INVITE_*）
- * - L: 状态变更类（SET_*, UPDATE_*, MOVE_*, JOIN_*, LEAVE_*, MARK_*）
- * - R: 社交关系类（SEND_*, REPLY_*, FORWARD_*, REACT_*, MEMORIZE_*, RECALL_*）
+ * patterns основаны на соглашениях об именовании зарегистрированных инструкций/запросов Alice:
+ * - I: запросы на чтение (GET_*, QUERY_*, SEARCH_*, LIST_*, FETCH_*, READ_*)
+ * - Q: внешнее взаимодействие (ASK_*, REQUEST_*, INVITE_*)
+ * - L: изменение состояния (SET_*, UPDATE_*, MOVE_*, JOIN_*, LEAVE_*, MARK_*)
+ * - R: социальные связи (SEND_*, REPLY_*, FORWARD_*, REACT_*, MEMORIZE_*, RECALL_*)
  */
 const REQUIRED_CATEGORIES: ToolCategory[] = [
   {
@@ -60,25 +60,25 @@ const REQUIRED_CATEGORIES: ToolCategory[] = [
   },
 ];
 
-/** 检查结果——每个类别是否被覆盖。 */
+/** Результат проверки — охвачена ли каждая категория. */
 export interface ToolSurfaceReport {
-  /** 已注册的工具总数。 */
+  /** Общее количество зарегистрированных инструментов. */
   totalTools: number;
-  /** 每个类别的覆盖情况。 */
+  /** Охват по каждой категории. */
   categories: Array<{
     name: string;
     covered: boolean;
     matchedTools: string[];
   }>;
-  /** 是否所有类别都被覆盖。 */
+  /** Все ли категории охвачены. */
   complete: boolean;
 }
 
 /**
- * 检查 Dispatcher 的指令/查询是否覆盖四类工具面。
+ * Проверяет, покрывают ли инструкции/запросы Dispatcher все четыре категории инструментальной поверхности.
  *
- * 启动时调用一次。缺失类别发出 warn 日志。
- * 返回结构化报告供测试和诊断使用。
+ * Вызывается один раз при запуске. При отсутствии категорий выдаёт warn в лог.
+ * Возвращает структурированный отчёт для тестов и диагностики.
  *
  * @see paper/ §Axiom 3 "Tool Surface Completeness"
  */

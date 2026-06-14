@@ -1,19 +1,19 @@
 /**
- * ADR-233: 原生 Tool Use 工具定义。
+ * ADR-233: определения инструментов для нативного Tool Use.
  *
- * 单 `bash` 工具（执行 POSIX sh 脚本）+ `signal` 工具（afterward 语义）。
+ * Один инструмент `bash` (выполнение POSIX sh скриптов) + инструмент `signal` (семантика afterward).
  *
- * TC 循环下 Flow 信号的新定义：
- * - 旧架构下 `watching` = "等中间结果"（intra-episode，被 TC 消解）
- * - TC 下 `watching` = "这一轮结束后我还想继续关注这个聊天"（inter-episode 行为状态）
- * - 同一 tick 内是否继续执行，由 host 根据本地 observations / 错误反馈决定
+ * Новое определение Flow-сигналов в цикле TC:
+ * - В старой архитектуре `watching` = "жду промежуточного результата" (intra-episode, поглощается TC)
+ * - В TC `watching` = "после этого хода я хочу продолжать следить за этим чатом" (inter-episode состояние поведения)
+ * - Продолжать ли выполнение внутри одного тика — решает хост на основе локальных observations / обратной связи по ошибкам
  *
  * @see docs/adr/233-native-toolcall-bt-hybrid.md
  * @see nanoclaw (Bash tool), pi-mono (BashOperations)
  */
 import type OpenAI from "openai";
 
-/** Signal 工具的 afterward 值 — 单一来源，其他模块 import 此类型。 */
+/** Значения afterward для инструмента Signal — единый источник, другие модули импортируют этот тип. */
 export const AFTERWARD_VALUES = [
   "done",
   "waiting_reply",
@@ -30,12 +30,12 @@ export function isAfterward(value: unknown): value is Afterward {
 }
 
 /**
- * `bash` 工具 — 执行 POSIX sh 脚本（在 Docker 容器中）。
+ * Инструмент `bash` — выполняет POSIX sh скрипты (в Docker-контейнере).
  *
- * 单工具设计：Alice 的所有能力通过 CLI 命令暴露（irc/self/engine/app），
- * LLM 写纯 bash 脚本，容器中执行。
+ * Дизайн с одним инструментом: все возможности Алисы открыты через CLI-команды (irc/self/engine/app),
+ * LLM пишет чистый bash-скрипт, который выполняется в контейнере.
  *
- * 与 NanoClaw/pi-mono 对齐：工具命名 `bash` 准确反映技术本质。
+ * Согласовано с NanoClaw/pi-mono: название инструмента `bash` точно отражает техническую суть.
  */
 export const TOOL_BASH: OpenAI.Chat.Completions.ChatCompletionTool = {
   type: "function" as const,
@@ -68,10 +68,10 @@ export const TOOL_BASH: OpenAI.Chat.Completions.ChatCompletionTool = {
 };
 
 /**
- * `signal` 工具 — 表达 episode 结束后 orchestrator 的行为指令。
+ * Инструмент `signal` — выражает поведенческую инструкцию оркестратора после завершения episode.
  *
- * Flow 信号只管 inter-episode 语义（episode 结束后做什么）。
- * Intra-episode 的工具链由 TC 循环自由控制，不需要 flow 信号。
+ * Flow-сигналы управляют только inter-episode семантикой (что делать после завершения episode).
+ * Цепочка инструментов intra-episode свободно контролируется циклом TC без flow-сигналов.
  */
 export const TOOL_SIGNAL: OpenAI.Chat.Completions.ChatCompletionTool = {
   type: "function" as const,
@@ -103,17 +103,17 @@ export const TOOL_SIGNAL: OpenAI.Chat.Completions.ChatCompletionTool = {
   },
 };
 
-/** ADR-233 工具列表 — 导出供 TC 循环使用。 */
+/** ADR-233 список инструментов — экспортируется для использования в цикле TC. */
 export const ADR233_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [TOOL_BASH, TOOL_SIGNAL];
 
 /**
- * 从 LLM 响应中提取 tool_use 参数。
+ * Извлекает параметры tool_use из ответа LLM.
  */
 export function extractToolUseParams(
   toolCall: OpenAI.Chat.Completions.ChatCompletionMessageToolCall,
 ): { name: string; args: Record<string, unknown> } {
   // ChatCompletionMessageToolCall = FunctionToolCall | CustomToolCall
-  // 我们只处理 function 类型（LLM 标准 tool_use）
+  // обрабатываем только тип function (стандартный LLM tool_use)
   if (toolCall.type !== "function") {
     return { name: "unknown", args: {} };
   }

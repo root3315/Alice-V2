@@ -1,13 +1,13 @@
 /**
- * ADR-110: 墙钟时间 → 人类可读时长。
+ * ADR-110: реальное время → человекочитаемая длительность.
  *
- * 论文 Remark 8: Signal S 不得包含计算域量（raw tick counts / raw seconds）。
- * 接受秒数，返回人类可读时长。
+ * Замечание 8 статьи: Signal S не должен содержать вычислительные величины (raw tick counts / raw seconds).
+ * Принимает секунды, возвращает человекочитаемую длительность.
  *
  * @see docs/adr/62-d5-social-cost-paper-alignment.md
  */
 
-/** 将秒数转换为人类可读时长。 */
+/** Преобразует секунды в человекочитаемую длительность. */
 export function humanDuration(seconds: number): string {
   if (seconds < 60) return "just now";
   if (seconds < 3600) return `about ${Math.round(seconds / 60)} minutes`;
@@ -16,9 +16,9 @@ export function humanDuration(seconds: number): string {
 }
 
 /**
- * humanDuration + "ago" 的组合。
- * "just now" 不追加 "ago"（避免 "just now ago"）。
- * 其他时长自动追加 "ago"。
+ * Комбинация humanDuration + "ago".
+ * К "just now" не добавляется "ago" (чтобы избежать "just now ago").
+ * К остальным длительностям "ago" добавляется автоматически.
  */
 export function humanDurationAgo(seconds: number): string {
   const d = humanDuration(seconds);

@@ -1,7 +1,7 @@
 /**
- * app 类别动作 — 全部已迁移为 Skill CLI 脚本。
+ * Действия категории app — все перенесены в скрипты Skill CLI.
  *
- * 迁移清单：
+ * Список миграций:
  * - use_calendar_app → runtime/skills/calendar/
  * - use_countdown_app → runtime/skills/countdown/
  * - use_selfcheck_app → runtime/skills/selfcheck/

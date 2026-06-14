@@ -1,9 +1,9 @@
 /**
- * action 定义共享件。
+ * Общие компоненты для определений action.
  *
- * - ALLOWED_REACTIONS + TelegramReactionSchema（reaction.ts 消费）
- * - ExplorationGuard 全局实例（group.ts 消费）
- * - usageHint helpers（strategy.mod + 测试消费）
+ * - ALLOWED_REACTIONS + TelegramReactionSchema (потребляет reaction.ts)
+ * - Глобальный экземпляр ExplorationGuard (потребляет group.ts)
+ * - Вспомогательные функции usageHint (потребляют strategy.mod + тесты)
  */
 
 import { z } from "zod";
@@ -11,11 +11,11 @@ import type { ActionCategory, TelegramActionDef } from "../action-types.js";
 import { ExplorationGuard } from "../exploration-guard.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Telegram Reaction 白名单
+// Белый список реакций Telegram
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Telegram 允许的 reaction emoji 白名单（2024 版，含 Telegram Premium 常用子集）。
-// 不在此列表中的 emoji 会被 API 拒绝（"The specified reaction is invalid."）。
+// Белый список emoji-реакций, разрешённых в Telegram (версия 2024, включает часто используемое подмножество Telegram Premium).
+// Emoji вне этого списка будут отклонены API ("The specified reaction is invalid.").
 // @see https://core.telegram.org/api/reactions
 export const ALLOWED_REACTIONS = new Set([
   "👍",
@@ -93,12 +93,12 @@ export const ALLOWED_REACTIONS = new Set([
   "😡",
 ]);
 
-/** Telegram reaction 比较前的 Unicode 归一化。 */
+/** Unicode-нормализация реакции Telegram перед сравнением. */
 export function normalizeReactionEmoji(emoji: string): string {
   return emoji.trim().replace(/\uFE0F/g, "");
 }
 
-/** Zod schema：coerce + 白名单验证。沙箱录入阶段即拦截非法 emoji。 */
+/** Zod schema: coerce + валидация по белому списку. Недопустимые emoji перехватываются на этапе записи в песочницу. */
 export const TelegramReactionSchema = z.preprocess(
   (v) => (v == null ? "" : normalizeReactionEmoji(String(v))),
   z.string().refine((s) => ALLOWED_REACTIONS.has(s), {
@@ -107,18 +107,18 @@ export const TelegramReactionSchema = z.preprocess(
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 全局 ExplorationGuard 实例
+// Глобальный экземпляр ExplorationGuard
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 全局探索保护守卫。由 initExplorationGuard() 初始化。
- * 默认创建一个使用默认配置的实例（测试和生产均可用）。
+ * Глобальный охранник исследования. Инициализируется через initExplorationGuard().
+ * По умолчанию создаётся экземпляр с настройками по умолчанию (пригоден для тестов и продакшена).
  */
 let explorationGuard = new ExplorationGuard();
 
 /**
- * 用外部配置初始化全局 ExplorationGuard。
- * 由 bootstrap / index.ts 在加载 config 后调用。
+ * Инициализирует глобальный ExplorationGuard внешней конфигурацией.
+ * Вызывается из bootstrap / index.ts после загрузки config.
  */
 export function initExplorationGuard(
   config?: Partial<import("../exploration-guard.js").ExplorationConfig>,
@@ -126,32 +126,32 @@ export function initExplorationGuard(
   explorationGuard = new ExplorationGuard(config);
 }
 
-/** 用完整 ExplorationGuard 实例替换全局守卫（测试专用）。 */
+/** Заменяет глобальный охранник полным экземпляром ExplorationGuard (только для тестов). */
 export function setExplorationGuard(guard: ExplorationGuard): void {
   explorationGuard = guard;
 }
 
-/** 获取当前全局 ExplorationGuard 实例。 */
+/** Возвращает текущий глобальный экземпляр ExplorationGuard. */
 export function getExplorationGuard(): ExplorationGuard {
   return explorationGuard;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// usageHint 工具函数（供 strategy.mod 消费）
+// Вспомогательные функции usageHint (для потребления strategy.mod)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 按类别返回 usageHint 列表。
- * strategy.mod 用此函数自动生成 capability hints，
- * 而非硬编码函数名字符串（QUERY_* 幻觉的根因）。
+ * Возвращает список usageHint по категории.
+ * strategy.mod использует эту функцию для автоматической генерации capability hints
+ * вместо жёстко закодированных строк с именами функций (первопричина галлюцинаций QUERY_*).
  *
- * 注意：此函数引用 TELEGRAM_ACTIONS，由 index.ts 在模块加载后可用（循环安全）。
+ * Примечание: функция ссылается на TELEGRAM_ACTIONS, доступный из index.ts после загрузки модуля (безопасно для циклических зависимостей).
  *
- * @see docs/adr/51-m5-interaction-primitives-implementation.md — QUERY_* 教训
+ * @see docs/adr/51-m5-interaction-primitives-implementation.md — QUERY_* урок
  */
 let _actions: TelegramActionDef[] = [];
 
-/** 由 index.ts 调用，注入全量 action 数组（避免循环导入）。 */
+/** Вызывается из index.ts, внедряет полный массив action (во избежание циклического импорта). */
 export function _setActions(actions: TelegramActionDef[]): void {
   _actions = actions;
 }
@@ -168,8 +168,8 @@ export function getUsageHintsByCategory(
 }
 
 /**
- * 生成指定类别的合并 hint 文本。
- * 格式：每个动作一行，`name — hint`。
+ * Генерирует объединённый текст hint для указанной категории.
+ * Формат: одна строка на action, `name — hint`.
  */
 export function renderCategoryHints(category: ActionCategory): string {
   const hints = getUsageHintsByCategory(category);
@@ -178,8 +178,8 @@ export function renderCategoryHints(category: ActionCategory): string {
 }
 
 /**
- * 生成全量 capability hints（按类别分组）。
- * 只包含有 usageHint 的动作。
+ * Генерирует полные capability hints (сгруппированные по категориям).
+ * Включает только действия, у которых есть usageHint.
  */
 export function renderAllUsageHints(): string {
   const categories: ActionCategory[] = [

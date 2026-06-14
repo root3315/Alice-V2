@@ -1,16 +1,16 @@
 /**
- * 内源性线程生成器 — P4 Endogenous Thread Generation。
+ * Эндогенные генераторы потоков — P4 Endogenous Thread Generation.
  *
- * 在 evolve 管线的 perceive 和 pressure 之间运行，
- * 创建系统自发线程，通过已有的 P4 → 声部竞争 → 门控 → 行动管线处理。
- * 零新压力维度，零新管线。
+ * Запускаются между perceive и pressure в конвейере evolve,
+ * создают системные самозарождающиеся потоки, обрабатываемые существующим путём P4 → конкуренция голосов → gate → действие.
+ * Ноль новых измерений давления, ноль новых конвейеров.
  *
- * - Clock ρ：周期性线程（晨间简报、周度反思）
- * - Deferred δ：延迟评估（新群组试用期到期）
+ * - Clock ρ: периодические потоки (утренний дайджест, еженедельная рефлексия)
+ * - Deferred δ: отложенные оценки (истечение испытательного срока для новых групп)
  *
- * ADR-191: Anomaly α 已移除。速率尖峰信号通过 tauSpike → rCaution 直接结构路径处理。
+ * ADR-191: Anomaly α удалён. Сигнал всплеска скорости обрабатывается напрямую через tauSpike → rCaution.
  *
- * @see docs/adr/115-evolve-observability/ — ADR-115 审计发现的行为缺口
+ * @see docs/adr/115-evolve-observability/ — поведенческие пробелы, выявленные аудитом ADR-115
  * @see paper/ §7.X Endogenous Thread Generation
  */
 
@@ -28,16 +28,16 @@ import type { ThreadWeight } from "../graph/entities.js";
 import type { WorldModel } from "../graph/world-model.js";
 import { createLogger } from "../utils/logger.js";
 
-/** Drizzle DB 实例类型（与 getDb() 返回值对齐）。 */
+/** Тип экземпляра Drizzle DB (согласован с возвращаемым значением getDb()). */
 type DrizzleDb = ReturnType<typeof getDb>;
 
 const log = createLogger("generators");
 
 // ═══════════════════════════════════════════════════════════════════════════
-// createThreadInGraph — 线程创建共享函数
+// createThreadInGraph — общая функция создания потока
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Weight → numeric mapping。单一真相来源，threads.mod.ts 导入此常量。 */
+/** Weight → числовое значение. Единственный источник истины; threads.mod.ts импортирует эту константу. */
 export const WEIGHT_MAP: Record<string, number> = {
   trivial: 0.2,
   subtle: 0.2,
@@ -46,7 +46,7 @@ export const WEIGHT_MAP: Record<string, number> = {
   critical: 4.0,
 };
 
-/** DB weight string → ThreadWeight 映射。DB 保留旧字符串，图层使用新类型。 */
+/** Маппинг строки weight из DB → ThreadWeight. DB хранит старые строки, граф-слой использует новый тип. */
 const GRAPH_WEIGHT: Record<string, ThreadWeight> = {
   trivial: "subtle",
   subtle: "subtle",
@@ -56,10 +56,10 @@ const GRAPH_WEIGHT: Record<string, ThreadWeight> = {
 };
 
 /**
- * 在 DB + 图上创建一个叙事线程。
- * 从 threads.mod self_topic_begin 提取的共享逻辑。
+ * Создаёт нарративный поток в DB + графе.
+ * Общая логика, вынесенная из threads.mod self_topic_begin.
  *
- * @returns DB 中新线程的 ID
+ * @returns ID нового потока в DB
  */
 export function createThreadInGraph(
   db: DrizzleDb,
@@ -78,7 +78,7 @@ export function createThreadInGraph(
 ): number {
   const { title, weight, deadlineMs, involves, source, frame, sourceChannel } = params;
 
-  // FTS 同步由 SQLite 触发器自动完成。
+  // Синхронизация FTS выполняется автоматически триггерами SQLite.
   // @see runtime/drizzle/0017_fts5_triggers.sql
   const horizon =
     deadlineMs != null ? Math.max(1, Math.round((deadlineMs - nowMs) / 60_000)) : null;
@@ -100,7 +100,7 @@ export function createThreadInGraph(
     .returning({ id: narrativeThreads.id })
     .all();
 
-  // 图节点（内存操作，不需要 DB 事务保护）
+  // Узел графа (операция в памяти, не требует защиты транзакцией DB)
   const threadNodeId = `thread_${row.id}`;
   const w = WEIGHT_MAP[weight] ?? 0.5;
   G.addThread(threadNodeId, {
@@ -116,7 +116,7 @@ export function createThreadInGraph(
     deadline_ms: deadlineMs ?? undefined,
   });
 
-  // 关联涉及的实体
+  // Связываем задействованные сущности
   if (involves) {
     for (const inv of involves) {
       if (G.has(inv.nodeId)) {
@@ -130,12 +130,12 @@ export function createThreadInGraph(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// resolveThreadInGraph — 线程 resolve 共享函数
+// resolveThreadInGraph — общая функция разрешения потока
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 在 DB + 图上 resolve 一个叙事线程。
- * 与 createThreadInGraph 对称 — resolve 路径的单一真相来源。
+ * Разрешает нарративный поток в DB + графе.
+ * Симметрична createThreadInGraph — единственный источник истины для пути resolve.
  *
  * @see docs/adr/190-behavioral-audit-performative-trap.md
  */
@@ -172,36 +172,36 @@ export function resolveThreadInGraph(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 生成器框架
+// Фреймворк генераторов
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 生成器执行上下文。 */
+/** Контекст выполнения генератора. */
 export interface GeneratorContext {
   G: WorldModel;
   db: DrizzleDb;
   tick: number;
   nowMs: number;
   config: Config;
-  /** perceive 返回的 per-channel 消息计数。 */
+  /** Per-channel счётчик сообщений, возвращённый perceive. */
   channelCounts: Map<string, number>;
-  /** 跨 tick 维护的 per-channel EMA 统计。 */
+  /** Per-channel статистика EMA, поддерживаемая между tick. */
   channelRateEma: Map<string, { ema: number; variance: number }>;
-  /** ADR-225: 当前 agent mode — dormant 时跳过周期性线程生成。 */
+  /** ADR-225: текущий режим агента — в dormant периодические потоки не создаются. */
   mode?: import("../utils/time.js").AgentMode;
 }
 
 /**
- * 运行所有内源性线程生成器。
- * 在 evolve 管线的 perceive 之后、pressure 之前调用。
+ * Запускает все эндогенные генераторы потоков.
+ * Вызывается после perceive и до pressure в конвейере evolve.
  *
- * 防御性监控：单 tick 创建多线程时发出警告。
- * 生成器本身已有幂等保护（hasOpenThread / hasDeferredThreadFor），
- * 此监控是可观测性补充——异常日志可触发运维告警。
+ * Защитный мониторинг: предупреждение при создании нескольких потоков за один tick.
+ * Генераторы сами имеют идемпотентную защиту (hasOpenThread / hasDeferredThreadFor),
+ * этот мониторинг — дополнение для наблюдаемости; аномальные логи могут триггерить оперативные алерты.
  */
 export function runGenerators(ctx: GeneratorContext): void {
   const threadsBefore = ctx.G.getEntitiesByType("thread").length;
   clockGenerator(ctx);
-  // ADR-191: anomalyGenerator 已移除——速率尖峰信号通过 tauSpike → rCaution 直接结构路径处理
+  // ADR-191: anomalyGenerator удалён — сигнал всплеска скорости обрабатывается напрямую через tauSpike → rCaution
   deferredGenerator(ctx);
   const created = ctx.G.getEntitiesByType("thread").length - threadsBefore;
   if (created > 2) {
@@ -213,10 +213,10 @@ export function runGenerators(ctx: GeneratorContext): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 共享辅助
+// Общие вспомогательные функции
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** 幂等检查：图中是否已有同名 open thread。 */
+/** Идемпотентная проверка: есть ли в графе открытый поток с таким же именем. */
 function hasOpenThread(G: WorldModel, title: string): boolean {
   for (const tid of G.getEntitiesByType("thread")) {
     const attrs = G.getThread(tid);
@@ -226,25 +226,25 @@ function hasOpenThread(G: WorldModel, title: string): boolean {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Clock Generator (ρ) — 周期性线程
+// Clock Generator (ρ) — периодические потоки
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * 周期性线程生成器。
- * - 每天 digestHour 点创建 morning_digest 线程
- * - 每周 reflectionDay 的 reflectionHour 创建 weekly_reflection 线程
+ * Генератор периодических потоков.
+ * - Каждый день в digestHour создаёт поток morning_digest
+ * - Каждую неделю в reflectionDay в reflectionHour создаёт поток weekly_reflection
  */
 function clockGenerator(ctx: GeneratorContext): void {
-  // ADR-225: dormant 模式下不创建周期性线程（醒来后由自然 tick 触发）
+  // ADR-225: в dormant-режиме периодические потоки не создаются (создадутся при пробуждении обычным tick)
   if (ctx.mode === "dormant") return;
 
   const localHour = new Date(ctx.nowMs).getHours();
-  const localDay = new Date(ctx.nowMs).getDay(); // 0=Sunday
+  const localDay = new Date(ctx.nowMs).getDay(); // 0=воскресенье
 
-  // ADR-172: 系统线程路由到 operator 私聊
+  // ADR-172: системные потоки маршрутизируются в личку оператора
   const operatorChannel = ctx.config.operatorChannelId || undefined;
 
-  // 晨间 Digest：每天 digestHour 点，无同名 open thread
+  // Утренний дайджест: каждый день в digestHour, если нет открытого потока с тем же именем
   if (localHour === ctx.config.generators.digestHour && !hasOpenThread(ctx.G, "morning_digest")) {
     createThreadInGraph(ctx.db, ctx.G, ctx.tick, ctx.nowMs, {
       title: "morning_digest",
@@ -252,7 +252,7 @@ function clockGenerator(ctx: GeneratorContext): void {
       deadlineMs: ctx.nowMs + 4 * 3600_000,
       source: "system",
       sourceChannel: operatorChannel,
-      // ADR-172: frame 不再提 "for the operator"——路由约束由 sourceChannel 保证
+      // ADR-172: frame больше не упоминает "for the operator" — маршрутизация обеспечивается sourceChannel
       frame:
         "Summarize overnight events. Include any pending promises or commitments approaching their deadline.",
       involves: operatorChannel ? [{ nodeId: operatorChannel, role: "recipient" }] : undefined,
@@ -260,7 +260,7 @@ function clockGenerator(ctx: GeneratorContext): void {
     log.info("Clock ρ: morning_digest created", { sourceChannel: operatorChannel });
   }
 
-  // 周度反思：每周 reflectionDay 的 reflectionHour 点
+  // Еженедельная рефлексия: каждую неделю в reflectionDay в reflectionHour
   if (
     localDay === ctx.config.generators.reflectionDay &&
     localHour === ctx.config.generators.reflectionHour &&
@@ -280,10 +280,10 @@ function clockGenerator(ctx: GeneratorContext): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Deferred Generator (δ) — 延迟评估
+// Deferred Generator (δ) — отложенные оценки
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** ADR-190: 幂等检查——指定频道是否已有 open evaluate thread（通过 involves 边判断）。 */
+/** ADR-190: идемпотентная проверка — есть ли открытый evaluate-поток для указанного канала (по рёбрам involves). */
 function hasDeferredThreadFor(G: WorldModel, channelId: string): boolean {
   for (const tid of G.getEntitiesByType("thread")) {
     const attrs = G.getThread(tid);
@@ -296,18 +296,18 @@ function hasDeferredThreadFor(G: WorldModel, channelId: string): boolean {
 }
 
 /**
- * 延迟评估生成器。
- * 检查 channel 节点上的 deferred_eval_ms 属性，到期后创建 evaluate 线程。
+ * Генератор отложенных оценок.
+ * Проверяет атрибут deferred_eval_ms на узлах channel и создаёт evaluate-поток по истечении срока.
  */
 function deferredGenerator(ctx: GeneratorContext): void {
   for (const chId of ctx.G.getEntitiesByType("channel")) {
     const attrs = ctx.G.getChannel(chId);
     const evalMs = attrs.deferred_eval_ms;
     if (!evalMs || ctx.nowMs < evalMs) continue;
-    // ADR-190: 幂等改用 involves 边判断
+    // ADR-190: идемпотентность теперь определяется по рёбрам involves
     if (hasDeferredThreadFor(ctx.G, chId)) continue;
 
-    // ADR-190: 标题用 safeDisplayName 替代 raw channelId
+    // ADR-190: в названии safeDisplayName вместо raw channelId
     const chName = safeDisplayName(ctx.G, chId);
     createThreadInGraph(ctx.db, ctx.G, ctx.tick, ctx.nowMs, {
       title: `evaluate_${chName}`,
@@ -318,53 +318,53 @@ function deferredGenerator(ctx: GeneratorContext): void {
       involves: [{ nodeId: chId, role: "evaluation_target" }],
     });
 
-    // 清除标记（避免重复触发）
+    // Сбрасываем метку (чтобы не повторять)
     ctx.G.updateChannel(chId, { deferred_eval_ms: null });
     log.info("Deferred δ: evaluation thread created", { chId });
   }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Channel Rate EMA — per-channel 消息速率指数移动平均（连续时间）
+// Channel Rate EMA — per-channel экспоненциальное скользящее среднее скорости сообщений (непрерывное время)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * ADR-166: 连续时间 EMA 时间常数（秒）。
+ * ADR-166: временная константа EMA непрерывного времени (секунды).
  *
- * 离散 EMA `x[n] = α·s + (1-α)·x[n-1]` 假设均匀时间步。
- * 连续时间等价: `α(dt) = 1 - exp(-dt / τ)`
- * 由标称参数反推: τ = -dt_base / ln(1 - α_base)
+ * Дискретный EMA `x[n] = α·s + (1-α)·x[n-1]` предполагает равномерный шаг.
+ * Непрерывный эквивалент: `α(dt) = 1 - exp(-dt / τ)`
+ * Из номинальных параметров: τ = -dt_base / ln(1 - α_base)
  *
  * α_base = 0.1, dt_base = 60s → τ = -60 / ln(0.9) ≈ 569.6s
  *
- * 验证:
- * - dt=60s:  α(60)  = 0.100 (退化为旧行为 ✓)
- * - dt=3s:   α(3)   = 0.005 (conversation: 低灵敏度)
- * - dt=300s: α(300) = 0.410 (patrol idle: 高灵敏度)
+ * Проверка:
+ * - dt=60s:  α(60)  = 0.100 (деградация к старому поведению ✓)
+ * - dt=3s:   α(3)   = 0.005 (conversation: низкая чувствительность)
+ * - dt=300s: α(300) = 0.410 (patrol idle: высокая чувствительность)
  *
  * @see docs/adr/166-wallclock-purification.md §8
  */
 const EMA_TAU_S = -60 / Math.log(1 - 0.1); // ≈ 569.6
 
 /**
- * 更新 per-channel 消息速率 EMA。
- * 使用 Welford 在线算法跟踪均值和方差。
+ * Обновляет per-channel EMA скорости сообщений.
+ * Использует онлайн-алгоритм Уэлфорда для отслеживания среднего и дисперсии.
  *
- * ADR-166: α 按实际 tick 墙钟时长自适应，保持恒定的时间半衰期。
+ * ADR-166: α адаптируется по реальной длительности tick (в реальном времени), поддерживая постоянный период полураспада.
  *
- * @param dtS 本次 tick 的实际墙钟秒数。
- *            dt=60s 时退化为旧行为（α=0.1）；dt=3s 时 α≈0.005。
+ * @param dtS Реальные секунды реального времени текущего tick.
+ *            При dt=60s деградирует к старому поведению (α=0.1); при dt=3s α≈0.005.
  */
 export function updateChannelRateEma(
   emaMap: Map<string, { ema: number; variance: number }>,
   channelCounts: Map<string, number>,
   dtS: number,
 ): void {
-  // 连续时间自适应 α：半衰期恒定 ≈ 395s，无论 tick 间隔如何
+  // Адаптивный α непрерывного времени: период полураспада постоянен ≈ 395s, независимо от интервала tick
   const clampedDt = Math.max(1, Math.min(dtS, 600));
   const alpha = 1 - Math.exp(-clampedDt / EMA_TAU_S);
 
-  // 更新有消息的频道
+  // Обновляем каналы с сообщениями
   for (const [chId, count] of channelCounts) {
     const prev = emaMap.get(chId);
     if (!prev) {
@@ -372,19 +372,19 @@ export function updateChannelRateEma(
     } else {
       const diff = count - prev.ema;
       const newEma = prev.ema + alpha * diff;
-      // EMA 方差：exponential moving variance（使用相同 α(dt)）
+      // EMA дисперсии: exponential moving variance (с тем же α(dt))
       const newVariance = (1 - alpha) * (prev.variance + alpha * diff * diff);
       emaMap.set(chId, { ema: newEma, variance: newVariance });
     }
   }
 
-  // 未出现在本 tick 的频道：count=0 衰减 + 清理死条目
+  // Каналы, не появившиеся в этом tick: затухание count=0 + очистка мёртвых записей
   for (const [chId, prev] of emaMap) {
     if (!channelCounts.has(chId)) {
       const diff = 0 - prev.ema;
       const newEma = prev.ema + alpha * diff;
       const newVariance = (1 - alpha) * (prev.variance + alpha * diff * diff);
-      // 均值和方差均接近零 → 清除条目（防止已 GC 频道的无限积累）
+      // Среднее и дисперсия оба близки к нулю → удаляем запись (предотвращаем бесконечное накопление для каналов, прошедших GC)
       if (Math.abs(newEma) < 0.01 && newVariance < 0.01) {
         emaMap.delete(chId);
       } else {
