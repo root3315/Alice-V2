@@ -24,6 +24,7 @@ import { PromptBuilder } from "../core/prompt-style.js";
 import { header } from "../core/types.js";
 import type { ContributionItem } from "../core/types.js";
 import { telegramChannelId } from "../graph/constants.js";
+import { syncWorkiActive } from "../engine/act/worki-active.js";
 import type { WorldModel } from "../graph/world-model.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -513,5 +514,12 @@ export const workiMod = createMod<WorkiState>("worki", {
       if ((p.status === "done" || p.status === "error") && !p.delivered) saved[id] = p;
     }
     ctx.state.saved = saved;
+    // Отметить чаты с активным worki-ревью → там анти-монолог ослаблен (timeline/presence),
+    // чтобы Алиса нарратила прогресс не упираясь в «четыре подряд → молчать».
+    const activeChats = new Set<string>();
+    for (const p of pending.values()) {
+      if (p.askGraphId && !p.delivered) activeChats.add(p.askGraphId);
+    }
+    syncWorkiActive(activeChats);
   })
   .build();

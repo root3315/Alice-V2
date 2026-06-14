@@ -9,6 +9,7 @@
 import { getPeripheralMessages, getRecentActionsByChat } from "../../db/queries.js";
 import type { MessageRecord } from "./messages.js";
 import { computeChannelPresence, renderPresenceHint } from "./presence.js";
+import { isWorkiActive } from "./worki-active.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Типы
@@ -97,7 +98,7 @@ export class MessageTimelineSource implements TimelineSource {
     private readonly forwardRegistry?: ForwardRegistry,
   ) {}
 
-  entries(_target: string, _sinceMs: number, _nowMs: number): TimelineEntry[] {
+  entries(target: string, _sinceMs: number, _nowMs: number): TimelineEntry[] {
     const result: TimelineEntry[] = [];
     const repliesByYou = new Map<number, number[]>();
     for (const msg of this.messages) {
@@ -180,7 +181,8 @@ export class MessageTimelineSource implements TimelineSource {
     // ADR-118: Подсказка о присутствии (ADR-159: расширено на личные чаты — там серийные ответы особенно проблематичны)
     if (this.messages.length > 0) {
       const presence = computeChannelPresence(this.messages);
-      const hint = renderPresenceHint(presence);
+      // Во время worki-ревью анти-монолог ослаблен — Алиса свободно нарратит прогресс своим голосом.
+      const hint = isWorkiActive(target) ? null : renderPresenceHint(presence);
       if (hint) {
         const lastTs = this.messages[this.messages.length - 1].date.getTime();
         result.push({ ts: lastTs + 1, kind: "context", rendered: hint });
