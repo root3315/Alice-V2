@@ -121,6 +121,10 @@ export function setWorkiStatusSender(
 /** Живые лид-фразы для статус-строк — чтобы читалось как её реплики, не робо-лог. */
 const STATUS_LEADS = ["ага, ", "так, ", "сейчас ", "о, ", "угу, ", ""];
 
+/** Троттл статус-строк прогресса: в ЛС живой темп (18с), в группе медленнее (60с) — меньше спама. */
+const STATUS_THROTTLE_DM_MS = 18_000;
+const STATUS_THROTTLE_GROUP_MS = 60_000;
+
 /** Канал-источник из авто-параметра _reply_chat (deriveParams ← TARGET_CHAT, числовой ID). */
 function askGraphFromArgs(args: Record<string, unknown>): string | undefined {
   const n = Number(args._reply_chat);
@@ -494,7 +498,11 @@ export const workiMod = createMod<WorkiState>("worki", {
           _statusSender &&
           latest &&
           latest !== p.lastStatusText &&
-          now - (p.lastStatusMs ?? 0) > 18_000
+          // ЛС — живой темп; группа (отрицательный chat_id) — реже, чтобы не спамить.
+          now - (p.lastStatusMs ?? 0) >
+            (Number(p.askGraphId.split(":").pop()) < 0
+              ? STATUS_THROTTLE_GROUP_MS
+              : STATUS_THROTTLE_DM_MS)
         ) {
           const numeric = Number(p.askGraphId.split(":").pop());
           if (Number.isFinite(numeric)) {
