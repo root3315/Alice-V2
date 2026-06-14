@@ -34,6 +34,8 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
+import time
 import tempfile
 import time
 import uuid
@@ -285,6 +287,101 @@ def _run_claude_streamjson(argv: list[str], message: dict, timeout_s: int = CALL
     return result
 
 
+# ─────────────────────── worki прогресс-стриминг ─────────────────────
+# Живой лог действий агента (code-analyze/code-fix): Alice не молчит 5 минут, а показывает
+# «читаю X, запускаю тесты». Склад по task_id; читается эндпоинтом /v1/code-progress/{id}.
+_worki_progress: dict[str, dict] = {}
+_worki_progress_lock = threading.Lock()
+
+
+def _progress_line(name: str, inp: dict) -> str | None:
+    """tool-use агента → короткая человеческая строка для чата."""
+    n = (name or "").lower()
+
+    def _base(k: str) -> str:
+        return os.path.basename(str(inp.get(k, ""))).strip()
+
+    if n == "read":
+        return f"читаю {_base('file_path')}" if _base("file_path") else "читаю файлы"
+    if n == "grep":
+        return f"ищу «{str(inp.get('pattern', ''))[:40]}»"
+    if n == "glob":
+        return f"ищу файлы {str(inp.get('pattern', ''))[:40]}"
+    if n in ("edit", "write", "multiedit"):
+        return f"правлю {_base('file_path')}" if _base("file_path") else "правлю код"
+    if n == "bash":
+        return f"запускаю: {str(inp.get('command', ''))[:50]}"
+    if n == "task":
+        return "разбираюсь…"
+    return None
+
+
+def _set_progress(task_id: str, line: str) -> None:
+    if not task_id or not line:
+        return
+    with _worki_progress_lock:
+        e = _worki_progress.get(task_id) or {"recent": [], "updated": 0.0}
+        e["latest"] = line
+        e["recent"] = (e["recent"] + [line])[-8:]
+        e["updated"] = time.time()
+        _worki_progress[task_id] = e
+
+
+def _clear_progress(task_id: str) -> None:
+    with _worki_progress_lock:
+        _worki_progress.pop(task_id, None)
+
+
+def _run_claude_streaming_progress(
+    argv: list[str], stdin_text: str, timeout_s: int, cwd: str, task_id: str
+) -> dict:
+    """Как _run_claude_sync, но stream-json: по ходу складывает tool-use агента в прогресс.
+    argv ДОЛЖЕН включать --output-format stream-json --verbose. Возвращает финальный result-event."""
+    proc = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        env=_CHILD_ENV,
+        cwd=cwd,
+    )
+    timer = threading.Timer(timeout_s, proc.kill)
+    timer.start()
+    result = None
+    try:
+        if proc.stdin:
+            proc.stdin.write(stdin_text)
+            proc.stdin.close()
+        for line in proc.stdout or []:
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            etype = ev.get("type")
+            if etype == "assistant":
+                for block in ev.get("message", {}).get("content") or []:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        pl = _progress_line(block.get("name", ""), block.get("input") or {})
+                        if pl:
+                            _set_progress(task_id, pl)
+            elif etype == "result":
+                result = ev
+        proc.wait(timeout=10)
+    finally:
+        timer.cancel()
+        if proc.poll() is None:
+            proc.kill()
+    if result is None:
+        err = proc.stderr.read() if proc.stderr else ""
+        raise RuntimeError(f"streaming: нет result-event (rc={proc.returncode}): {(err or '')[:500]}")
+    return result
+
+
 async def call_claude(
     *,
     model: str,
@@ -510,17 +607,28 @@ async def code_analyze(request: Request):
     # persona (краткая «душа» от Alice) — чтобы ответ был в её голосе. Без неё — нейтрально.
     system = f"{persona}\n\n{analyst}" if persona else analyst
     prompt = f"{system}\n\nЗАДАЧА: {task}"
+    task_id = (body.get("task_id") or "").strip()
+    out_fmt = (
+        ["--output-format", "stream-json", "--verbose"]
+        if task_id
+        else ["--output-format", "json"]
+    )
     argv = [
         CLAUDE_CLI, "-p",
         "--model", model,
         "--allowedTools", "Read", "Grep", "Glob",
-        "--output-format", "json",
+        *out_fmt,
     ]
     try:
         async with _worki_sem:
-            envelope = await asyncio.to_thread(
-                _run_claude_sync, argv, prompt, timeout_s, WORKI_CLONE
-            )
+            if task_id:
+                envelope = await asyncio.to_thread(
+                    _run_claude_streaming_progress, argv, prompt, timeout_s, WORKI_CLONE, task_id
+                )
+            else:
+                envelope = await asyncio.to_thread(
+                    _run_claude_sync, argv, prompt, timeout_s, WORKI_CLONE
+                )
     except subprocess.TimeoutExpired:
         return JSONResponse(status_code=504, content={"error": {"message": "code-analyze timeout"}})
     except Exception as e:  # noqa: BLE001
@@ -531,6 +639,14 @@ async def code_analyze(request: Request):
         msg = envelope.get("result") or envelope.get("subtype") or "claude error"
         return JSONResponse(status_code=502, content={"error": {"message": str(msg)}})
     return JSONResponse(content={"analysis": envelope.get("result") or "", "usage": envelope.get("usage")})
+
+
+@app.get("/v1/code-progress/{task_id}")
+async def code_progress(task_id: str) -> dict:
+    """Живой прогресс worki-агента по task_id (для Alice: «читаю X…»)."""
+    with _worki_progress_lock:
+        e = _worki_progress.get(task_id)
+        return dict(e) if e else {"latest": None, "recent": [], "updated": 0.0}
 
 
 @app.post("/v1/code-fix")
@@ -582,15 +698,26 @@ async def code_fix(request: Request):
     )
     system = f"{persona}\n\n{fix}" if persona else fix
     prompt = f"{system}\n\nБАГ/ЗАДАЧА: {task}"
+    task_id = (body.get("task_id") or "").strip()
+    out_fmt = (
+        ["--output-format", "stream-json", "--verbose"]
+        if task_id
+        else ["--output-format", "json"]
+    )
     argv = [
         CLAUDE_CLI, "-p",
         "--model", model,
         "--allowedTools", "Read", "Grep", "Glob", "Edit", "Write", "Bash",
-        "--output-format", "json",
+        *out_fmt,
     ]
     try:
         async with _worki_sem:
-            envelope = await asyncio.to_thread(_run_claude_sync, argv, prompt, timeout_s, WORKI_DEV_CLONE)
+            if task_id:
+                envelope = await asyncio.to_thread(
+                    _run_claude_streaming_progress, argv, prompt, timeout_s, WORKI_DEV_CLONE, task_id
+                )
+            else:
+                envelope = await asyncio.to_thread(_run_claude_sync, argv, prompt, timeout_s, WORKI_DEV_CLONE)
     except subprocess.TimeoutExpired:
         return JSONResponse(status_code=504, content={"error": {"message": "code-fix timeout"}})
     except Exception as e:  # noqa: BLE001

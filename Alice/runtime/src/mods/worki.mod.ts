@@ -33,6 +33,7 @@ const execFileP = promisify(execFile);
 const PROXY = process.env.PROXY_BASE_URL ?? "http://127.0.0.1:8787";
 const CODE_ANALYZE_URL = process.env.PROXY_CODE_ANALYZE_URL ?? `${PROXY}/v1/code-analyze`;
 const CODE_FIX_URL = process.env.PROXY_CODE_FIX_URL ?? `${PROXY}/v1/code-fix`;
+const CODE_PROGRESS_BASE = process.env.PROXY_CODE_PROGRESS_URL ?? `${PROXY}/v1/code-progress/`;
 const DEFAULT_TIMEOUT_MIN = 5;
 const MAX_TIMEOUT_MIN = 20;
 // Готовый-но-недоставленный результат держим по WALL-CLOCK (а не по счётчику тиков —
@@ -86,6 +87,14 @@ interface Pending {
   directed?: boolean;
   /** Подтверждена отправка сообщения в askGraphId (listener SEND_MESSAGE). */
   delivered?: boolean;
+  /** Прогресс-стриминг во время running (опрашивается с прокси /v1/code-progress). */
+  progress?: { latest?: string; recent?: string[]; updated?: number };
+  /** Сказала «секунду, гляну» при старте (один раз). */
+  acked?: boolean;
+  /** Троттл опроса прогресса (мс). */
+  lastPollMs?: number;
+  /** Троттл нарратива прогресса в чат (мс), против спама. */
+  lastNarrateMs?: number;
 }
 interface WorkiState {
   /** Готовые-но-недоставленные результаты — переживают рестарт (HIGH-10). */
@@ -158,11 +167,29 @@ async function postJson(url: string, body: unknown, timeoutSec: number): Promise
   return (await res.json()) as Record<string, unknown>;
 }
 
+/** Опрос прогресса worki-агента с прокси (best-effort, не критично). */
+async function pollProgress(id: string): Promise<void> {
+  const e = pending.get(id);
+  if (!e || e.status !== "running") return;
+  try {
+    const res = await fetch(`${CODE_PROGRESS_BASE}${encodeURIComponent(id)}`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return;
+    const d = (await res.json()) as { latest?: string; recent?: string[]; updated?: number };
+    if (d && (d.latest || (d.recent && d.recent.length))) {
+      e.progress = { latest: d.latest, recent: d.recent, updated: d.updated };
+    }
+  } catch {
+    /* прогресс — best-effort, молча */
+  }
+}
+
 async function runAnalysis(id: string, task: string, model: string, timeoutSec: number): Promise<void> {
   const e = pending.get(id);
   if (!e) return;
   try {
-    const data = await postJson(CODE_ANALYZE_URL, { task, persona: SOUL_BRIEF, model, timeout_s: timeoutSec }, timeoutSec);
+    const data = await postJson(CODE_ANALYZE_URL, { task, persona: SOUL_BRIEF, model, timeout_s: timeoutSec, task_id: id }, timeoutSec);
     const a = String(data.analysis ?? "").trim();
     e.status = "done"; // пустой ответ на HTTP 200 — не ошибка (LOW-20)
     e.result = a || "разбор вышел пустой — попроси переспросить конкретнее";
@@ -179,7 +206,7 @@ async function runFix(id: string, task: string, model: string, timeoutSec: numbe
   const e = pending.get(id);
   if (!e) return;
   try {
-    const data = await postJson(CODE_FIX_URL, { task, persona: SOUL_BRIEF, model, timeout_s: timeoutSec }, timeoutSec);
+    const data = await postJson(CODE_FIX_URL, { task, persona: SOUL_BRIEF, model, timeout_s: timeoutSec, task_id: id }, timeoutSec);
     const r = String(data.report ?? "").trim();
     e.result = r || "fix-агент вернул пустой отчёт";
     e.status = r ? "done" : "error";
@@ -354,16 +381,35 @@ export const workiMod = createMod<WorkiState>("worki", {
     for (const p of pending.values()) {
       // delivered ставим ТОЛЬКО если результат уже доставляется (directed) — иначе постороннее
       // сообщение в этот чат до показа результата тихо «съело» бы его (MEDIUM regression).
-      if (p.askGraphId === chatId && p.directed && (p.status === "done" || p.status === "error") && !p.delivered) {
+      if (p.askGraphId !== chatId) continue;
+      if (p.directed && (p.status === "done" || p.status === "error") && !p.delivered) {
         p.delivered = true;
+      } else if (p.status === "running" && p.directed) {
+        // Она черкнула в спросивший чат во время работы → засчитываем ack/нарратив прогресса.
+        p.acked = true;
+        p.lastNarrateMs = Date.now();
       }
     }
   })
   // contribute() — ЧИСТЫЙ: только читает и отдаёт готовые недоставленные результаты.
   .contribute((): ContributionItem[] => {
     const ready: string[] = [];
+    const live: string[] = [];
     for (const p of pending.values()) {
-      if (p.status === "running" || p.delivered) continue;
+      if (p.delivered) continue;
+      if (p.status === "running") {
+        // Прогресс/ack — только когда давление в спросивший чат активно (она там тикает).
+        if (p.askGraphId && p.directed) {
+          if (!p.acked) {
+            live.push(`Ты взялась за код по «${p.task}» — черкни им коротко «секунду, гляну».`);
+          } else if (p.progress?.latest) {
+            live.push(
+              `Ещё в процессе «${p.task}» — прямо сейчас: ${p.progress.latest}. Покажи им коротко, чем занята (своими словами), чтоб не молчать.`,
+            );
+          }
+        }
+        continue;
+      }
       // Анти-утечка: при заданном askGraphId эмитим ТОЛЬКО после направленного давления
       // (ставится в onTickEnd) — тогда следующий тик уже в спросившем чате. Если канала нет
       // (askGraphId undefined — self/системный тик), скоупить некуда → эмитим без гейта.
@@ -379,15 +425,21 @@ export const workiMod = createMod<WorkiState>("worki", {
         ready.push(p.result); // pr: "PR открыт: <url>"
       }
     }
-    if (ready.length === 0) return [];
-    const raw = ["## Готово по коду Worki", "", ready.join("\n\n")].join("\n");
-    const lines = PromptBuilder.fromRaw(
-      raw
-        .split("\n")
-        .map((l) => l.replace(/^\s+/, "").replace(/\*\*/g, ""))
-        .join("\n"),
-    );
-    return [header(lines, 88)];
+    const items: ContributionItem[] = [];
+    if (live.length > 0) {
+      items.push(header(PromptBuilder.fromRaw(["## По коду — в процессе", "", live.join("\n")].join("\n")), 87));
+    }
+    if (ready.length > 0) {
+      const raw = ["## Готово по коду Worki", "", ready.join("\n\n")].join("\n");
+      const lines = PromptBuilder.fromRaw(
+        raw
+          .split("\n")
+          .map((l) => l.replace(/^\s+/, "").replace(/\*\*/g, ""))
+          .join("\n"),
+      );
+      items.push(header(lines, 88));
+    }
+    return items;
   })
   // Жизненный цикл (мутации) — здесь, не в contribute(): направленное давление + TTL + сторож.
   .onTickEnd((ctx) => {
@@ -409,6 +461,17 @@ export const workiMod = createMod<WorkiState>("worki", {
           p.status = "error";
           p.result = "разбор завис и снят по таймауту";
           p.completedMs = now;
+          continue;
+        }
+        // Прогресс-стриминг: опрашиваем прокси (троттл 4с), складываем в p.progress.
+        if (p.askGraphId && now - (p.lastPollMs ?? 0) > 4000) {
+          p.lastPollMs = now;
+          void pollProgress(id);
+        }
+        // Ack при старте + периодический прогресс (~75с) → нудж в спросивший чат, чтоб не молчала 5 минут.
+        const dueProgress = !!p.progress?.latest && now - (p.lastNarrateMs ?? p.createdMs) > 75_000;
+        if (p.askGraphId && (!p.acked || dueProgress)) {
+          ensureDirected(ctx.graph, p);
         }
         continue;
       }
