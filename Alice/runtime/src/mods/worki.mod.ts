@@ -16,6 +16,7 @@
  * в send_message, target-scoped contribution (полностью убрать окно межчат-утечки).
  */
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { createMod } from "../core/mod-builder.js";
@@ -83,8 +84,13 @@ interface Pending {
   /** Подтверждена отправка сообщения в askGraphId (listener SEND_MESSAGE). */
   delivered?: boolean;
 }
+interface WorkiState {
+  /** Готовые-но-недоставленные результаты — переживают рестарт (HIGH-10). */
+  saved: Record<string, Pending>;
+}
+
 const pending = new Map<string, Pending>();
-let _seq = 0;
+let _rehydrated = false;
 
 /** Канал-источник из авто-параметра _reply_chat (deriveParams ← TARGET_CHAT, числовой ID). */
 function askGraphFromArgs(args: Record<string, unknown>): string | undefined {
@@ -111,6 +117,16 @@ function isBusy(kind: Kind): boolean {
   return false;
 }
 
+/** Отличить таймаут/«не успело» от реальной недоступности сервиса (MED-17). */
+function classifyErr(err: unknown): string {
+  const e = err as Error;
+  const msg = e?.message ?? String(err);
+  if (e?.name === "TimeoutError" || e?.name === "AbortError" || /HTTP 504|timed?\s?out|таймаут/i.test(msg)) {
+    return "не успело вовремя — попробуй с бОльшим timeout_min (напр. 10–15)";
+  }
+  return `сервис недоступен: ${msg}`;
+}
+
 async function postJson(url: string, body: unknown, timeoutSec: number): Promise<Record<string, unknown>> {
   const res = await fetch(url, {
     method: "POST",
@@ -131,12 +147,12 @@ async function runAnalysis(id: string, task: string, model: string, timeoutSec: 
   try {
     const data = await postJson(CODE_ANALYZE_URL, { task, persona: SOUL_BRIEF, model, timeout_s: timeoutSec }, timeoutSec);
     const a = String(data.analysis ?? "").trim();
-    e.status = a ? "done" : "error";
-    e.result = a || "анализатор вернул пустой ответ";
+    e.status = "done"; // пустой ответ на HTTP 200 — не ошибка (LOW-20)
+    e.result = a || "разбор вышел пустой — попроси переспросить конкретнее";
     log.info("code-ask done", { id, len: e.result.length });
   } catch (err) {
     e.status = "error";
-    e.result = `анализатор недоступен: ${(err as Error).message}`;
+    e.result = classifyErr(err);
     log.warn("code-ask failed", { id, task, err: (err as Error).message });
   }
   e.completedMs = Date.now();
@@ -163,7 +179,7 @@ async function runFix(id: string, task: string, model: string, timeoutSec: numbe
     log.info("code-fix done", { id, branch: e.branch });
   } catch (err) {
     e.status = "error";
-    e.result = `fix-агент недоступен: ${(err as Error).message}`;
+    e.result = classifyErr(err);
     log.warn("code-fix failed", { id, err: (err as Error).message });
   }
   e.completedMs = Date.now();
@@ -223,11 +239,11 @@ const MODEL_DESC = "Модель: sonnet (по умолч., быстро) / opus
 const REPLY_CHAT_DESC = "служебный — НЕ заполняй, проставляется автоматически (чат, куда вернуть ответ).";
 const deriveReplyChat = { _reply_chat: (cv: Record<string, unknown>) => cv.TARGET_CHAT };
 
-export const workiMod = createMod<Record<string, never>>("worki", {
+export const workiMod = createMod<WorkiState>("worki", {
   category: "mechanic",
   description: "Анализ и фикс кода Worki чистыми агентами (async): code_ask / code_fix / code_pr",
   topics: ["worki"],
-  initialState: {},
+  initialState: { saved: {} },
 })
   .instruction("code_ask", {
     params: z.object({
@@ -251,7 +267,7 @@ export const workiMod = createMod<Record<string, never>>("worki", {
       }
       const model = normalizeModel(args.model as string | undefined);
       const tmin = clampTimeoutMin(args.timeout_min);
-      const id = `ask${ctx.tick}_${++_seq}`;
+      const id = `ask-${randomUUID()}`;
       pending.set(id, { kind: "ask", task, status: "running", result: "", askGraphId: askGraphFromArgs(args), createdMs: ctx.nowMs });
       void runAnalysis(id, task, model, tmin * 60);
       log.info("code-ask started", { id, model, tmin });
@@ -280,7 +296,7 @@ export const workiMod = createMod<Record<string, never>>("worki", {
       }
       const model = normalizeModel(args.model as string | undefined);
       const tmin = clampTimeoutMin(args.timeout_min);
-      const id = `fix${ctx.tick}_${++_seq}`;
+      const id = `fix-${randomUUID()}`;
       pending.set(id, { kind: "fix", task, status: "running", result: "", askGraphId: askGraphFromArgs(args), createdMs: ctx.nowMs });
       void runFix(id, task, model, tmin * 60);
       log.info("code-fix started", { id, model, tmin });
@@ -307,7 +323,7 @@ export const workiMod = createMod<Record<string, never>>("worki", {
         return { success: true, message: "Уже открываю PR — погоди ссылку." };
       }
       const title = args.title != null ? String(args.title) : "";
-      const id = `pr${ctx.tick}_${++_seq}`;
+      const id = `pr-${randomUUID()}`;
       pending.set(id, { kind: "pr", task: branch, status: "running", result: "", askGraphId: askGraphFromArgs(args), createdMs: ctx.nowMs });
       void runPr(id, branch, title);
       log.info("code-pr started", { id, branch });
@@ -329,6 +345,9 @@ export const workiMod = createMod<Record<string, never>>("worki", {
     const ready: string[] = [];
     for (const p of pending.values()) {
       if (p.status === "running" || p.delivered) continue;
+      // Анти-утечка: эмитим ТОЛЬКО после направленного давления (ставится в onTickEnd) —
+      // тогда следующий тик уже в спросившем чате, и результат не мелькнёт в чужом промпте.
+      if (!p.directed) continue;
       if (p.status === "error") {
         ready.push(`«${p.task}» — не вышло: ${p.result}. Скажи честно в чат, где спросили, что не получилось.`);
       } else if (p.kind === "ask") {
@@ -352,6 +371,13 @@ export const workiMod = createMod<Record<string, never>>("worki", {
   })
   // Жизненный цикл (мутации) — здесь, не в contribute(): направленное давление + TTL + сторож.
   .onTickEnd((ctx) => {
+    // Регидрация один раз после рестарта: вернуть в очередь недоставленные результаты (HIGH-10).
+    if (!_rehydrated) {
+      _rehydrated = true;
+      for (const [id, p] of Object.entries(ctx.state.saved ?? {})) {
+        if (!pending.has(id)) pending.set(id, { ...p, directed: false, completedMs: ctx.nowMs });
+      }
+    }
     const now = ctx.nowMs;
     for (const [id, p] of pending) {
       if (p.delivered) {
@@ -371,5 +397,11 @@ export const workiMod = createMod<Record<string, never>>("worki", {
       // Недоставленный результат живёт по wall-clock, потом сдаёмся.
       if (p.completedMs && now - p.completedMs > RESULT_TTL_MS) pending.delete(id);
     }
+    // Персист готовых-недоставленных (running-промисы рестарт не переживают) → переживут рестарт.
+    const saved: Record<string, Pending> = {};
+    for (const [id, p] of pending) {
+      if ((p.status === "done" || p.status === "error") && !p.delivered) saved[id] = p;
+    }
+    ctx.state.saved = saved;
   })
   .build();
