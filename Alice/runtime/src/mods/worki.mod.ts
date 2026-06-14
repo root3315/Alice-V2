@@ -476,7 +476,7 @@ export const workiMod = createMod<WorkiState>("worki", {
           void pollProgress(id);
         }
         // Ack при старте + периодический прогресс (~45с) → нудж в спросивший чат, чтоб не молчала.
-        const dueProgress = !!p.progress?.latest && now - (p.lastNarrateMs ?? p.createdMs) > 45_000;
+        const dueProgress = !!p.progress?.latest && now - (p.lastNarrateMs ?? p.createdMs) > 18_000;
         if (p.askGraphId && (!p.acked || dueProgress)) {
           if (dueProgress) log.info("worki: даю показать прогресс", { id, latest: p.progress?.latest });
           ensureDirected(ctx.graph, p);
