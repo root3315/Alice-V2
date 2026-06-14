@@ -96,6 +96,12 @@ interface Pending {
   lastPollMs?: number;
   /** Троттл нарратива прогресса в чат (мс), против спама. */
   lastNarrateMs?: number;
+  /** Троттл прямой отправки статус-строки worki (мс). */
+  lastStatusMs?: number;
+  /** Последняя отправленная статус-строка (антидубль). */
+  lastStatusText?: string;
+  /** Счётчик статус-строк (для ротации живых фраз). */
+  statusCount?: number;
 }
 interface WorkiState {
   /** Готовые-но-недоставленные результаты — переживают рестарт (HIGH-10). */
@@ -104,6 +110,16 @@ interface WorkiState {
 
 const pending = new Map<string, Pending>();
 let _rehydrated = false;
+
+/** Прямая отправка статус-строк (подключается из index.ts телеграм-клиентом). Живые фразы, её стиль. */
+let _statusSender: ((chatId: number, text: string, topicId?: number) => void) | null = null;
+export function setWorkiStatusSender(
+  fn: (chatId: number, text: string, topicId?: number) => void,
+): void {
+  _statusSender = fn;
+}
+/** Живые лид-фразы для статус-строк — чтобы читалось как её реплики, не робо-лог. */
+const STATUS_LEADS = ["ага, ", "так, ", "сейчас ", "о, ", "угу, ", ""];
 
 /** Канал-источник из авто-параметра _reply_chat (deriveParams ← TARGET_CHAT, числовой ID). */
 function askGraphFromArgs(args: Record<string, unknown>): string | undefined {
@@ -405,15 +421,8 @@ export const workiMod = createMod<WorkiState>("worki", {
         if (p.askGraphId && p.directed) {
           if (!p.acked) {
             live.push(`Ты взялась за код по «${p.task}» — черкни им коротко «секунду, гляну».`);
-          } else if (p.progress?.latest) {
-            live.push(
-              `Ты ещё работаешь над «${p.task}», прямо сейчас делаешь: ${p.progress.latest}. ` +
-                `Да, ты уже сказала «гляну» — но это НЕ повтор и не спам: тебя специально попросили ` +
-                `показывать процесс вживую, людям интересно следить за тобой в работе. Поэтому брось им ` +
-                `СЕЙЧАС одну новую короткую строку про текущий шаг — своими словами (можно с 🔧/🔍). ` +
-                `Не молчи эти минуты: думать вслух о том, что делаешь, — часть твоей работы.`,
-            );
           }
+          // Прогресс worki шлёт сам напрямую её стилем (см. onTickEnd) — когниция не пробивается.
         }
         continue;
       }
@@ -475,11 +484,42 @@ export const workiMod = createMod<WorkiState>("worki", {
           p.lastPollMs = now;
           void pollProgress(id);
         }
-        // Ack при старте + периодический прогресс (~45с) → нудж в спросивший чат, чтоб не молчала.
-        const dueProgress = !!p.progress?.latest && now - (p.lastNarrateMs ?? p.createdMs) > 18_000;
-        if (p.askGraphId && (!p.acked || dueProgress)) {
-          if (dueProgress) log.info("worki: даю показать прогресс", { id, latest: p.progress?.latest });
-          ensureDirected(ctx.graph, p);
+        // Ack — её голосом (нудж в спросивший чат, пока не подтвердила «гляну»).
+        if (p.askGraphId && !p.acked) ensureDirected(ctx.graph, p);
+        // Прогресс — worki ШЛЁТ САМ её стилем (когниция не пробивается: её реляционное суждение
+        // «он молчит → не строчить» перебивает любой промпт — доказано тестами). Троттл 18с, антидубль.
+        const latest = p.progress?.latest;
+        if (
+          p.askGraphId &&
+          _statusSender &&
+          latest &&
+          latest !== p.lastStatusText &&
+          now - (p.lastStatusMs ?? 0) > 18_000
+        ) {
+          const numeric = Number(p.askGraphId.split(":").pop());
+          if (Number.isFinite(numeric)) {
+            let topicId: number | undefined;
+            try {
+              if (ctx.graph.has(p.askGraphId)) {
+                const t = Number(
+                  (ctx.graph.getChannel(p.askGraphId) as { current_topic_id?: unknown }).current_topic_id,
+                );
+                if (Number.isFinite(t) && t > 0) topicId = t;
+              }
+            } catch {
+              /* топик опционален */
+            }
+            const lead = STATUS_LEADS[(p.statusCount ?? 0) % STATUS_LEADS.length];
+            try {
+              _statusSender(numeric, `${lead}${latest}`, topicId);
+              p.lastStatusMs = now;
+              p.lastStatusText = latest;
+              p.statusCount = (p.statusCount ?? 0) + 1;
+              log.info("worki: статус отправлен", { id, latest });
+            } catch (err) {
+              log.warn("worki: статус не отправлен", { id, err: (err as Error).message });
+            }
+          }
         }
         continue;
       }

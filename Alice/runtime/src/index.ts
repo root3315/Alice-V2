@@ -21,6 +21,7 @@ import { TRAIT_BELIEF_DECAY } from "./belief/types.js";
 import { loadConfig } from "./config.js";
 import { checkToolSurfaceCompleteness } from "./core/d3-completeness.js";
 import { createAliceDispatcher } from "./core/dispatcher.js";
+import { setWorkiStatusSender } from "./mods/worki.mod.js";
 import { loadAllMods } from "./core/mod-loader.js";
 import { ALICE_HOME } from "./core/shell-executor.js";
 import { writeAuditEvent } from "./db/audit.js";
@@ -130,6 +131,11 @@ async function main() {
   const self = await client.getMe();
   const selfId = String(self.id);
   log.info("Logged in", { selfId, username: self.username });
+
+  // worki live-прогресс: worki шлёт статус-строки напрямую через клиент (её стилем, надёжно).
+  setWorkiStatusSender((chatId, text, topicId) => {
+    void sendText(client, chatId, text, { topicId }).catch(() => {});
+  });
 
   // ADR-33 Phase 2: одноразовая миграция со старых graph_snapshots на graph_nodes/graph_edges
   migrateFromSnapshots();
