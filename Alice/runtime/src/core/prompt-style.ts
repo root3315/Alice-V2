@@ -57,13 +57,13 @@ export class PromptBuilder {
 
   /** Key: value 键值对。 */
   kv(key: string, value: string): this {
-    this.lines.push(`${key}: ${value}` as PromptLine);
+    this.lines.push(`${key}: ${value.replaceAll("\n", " ")}` as PromptLine);
     return this;
   }
 
-  /** 裸文本行（零缩进）。 */
+  /** 裸文本行（零缩进）。内嵌换行合并为空格（H15: внешний текст с \n не должен подделать заголовок/структуру промпта). */
   line(text: string): this {
-    this.lines.push(text as PromptLine);
+    this.lines.push(text.replaceAll("\n", " ") as PromptLine);
     return this;
   }
 
@@ -84,7 +84,7 @@ export class PromptBuilder {
   /** [HH:MM] Name (msgId N): text 时间线条目。msgId 可选，用于 irc forward --ref 引用。 */
   timeline(time: string, name: string, text: string, msgId?: number | null): this {
     const idTag = msgId != null && msgId > 0 ? ` (msgId ${msgId})` : "";
-    this.lines.push(`[${time}] ${name}${idTag}: ${text}` as PromptLine);
+    this.lines.push(`[${time}] ${name}${idTag}: ${text.replaceAll("\n", " ")}` as PromptLine);
     return this;
   }
 

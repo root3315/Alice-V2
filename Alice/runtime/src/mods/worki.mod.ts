@@ -127,6 +127,13 @@ function classifyErr(err: unknown): string {
   return `сервис недоступен: ${msg}`;
 }
 
+/** Вырезать GitHub-PAT из строки перед логом/чатом (H5: токен не должен утечь наружу). */
+function scrubToken(s: string): string {
+  let out = s;
+  if (WORKI_ALICE_TOKEN) out = out.split(WORKI_ALICE_TOKEN).join("***");
+  return out.replace(/x-access-token:[^@\s]*@/g, "x-access-token:***@");
+}
+
 async function postJson(url: string, body: unknown, timeoutSec: number): Promise<Record<string, unknown>> {
   const res = await fetch(url, {
     method: "POST",
@@ -228,8 +235,8 @@ async function runPr(id: string, branch: string, title: string): Promise<void> {
     }
   } catch (err) {
     e.status = "error";
-    e.result = `push/PR не вышло: ${(err as Error).message}`;
-    log.warn("code-pr failed", { id, err: (err as Error).message });
+    e.result = scrubToken(`push/PR не вышло: ${(err as Error).message}`);
+    log.warn("code-pr failed", { id, err: scrubToken((err as Error).message) });
   }
   e.completedMs = Date.now();
 }
