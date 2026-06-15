@@ -29,14 +29,14 @@ importers:
         specifier: ^1.7.0
         version: 1.7.0(openai@6.32.0(ws@8.20.0)(zod@3.25.76))(zod@3.25.76)
       '@mtcute/dispatcher':
-        specifier: ^0.27.8
-        version: 0.27.9
+        specifier: ^0.30.1
+        version: 0.30.1
       '@mtcute/markdown-parser':
-        specifier: ^0.27.9
-        version: 0.27.9
+        specifier: ^0.30.1
+        version: 0.30.1
       '@mtcute/node':
-        specifier: ^0.27.9
-        version: 0.27.9(ws@8.20.0)
+        specifier: ^0.30.1
+        version: 0.30.1(ws@8.20.0)
       ai:
         specifier: ^6.0.79
         version: 6.0.85(zod@3.25.76)
@@ -653,9 +653,6 @@ packages:
       ws:
         optional: true
 
-  '@fuman/utils@0.0.15':
-    resolution: {integrity: sha512-3H3WzkfG7iLKCa/yNV4s80lYD4yr5hgiNzU13ysLY2BcDqFjM08XGYuLd5wFVp4V8+DA/fe8gIDW96To/JwDyA==}
-
   '@fuman/utils@0.0.19':
     resolution: {integrity: sha512-4qVrZ9AjKYztLJsNr1Tp7kL48b22dvVLN1iVW+Me8ZSQ0ILN0qknoxjsczVPReF7+GDWgknNxR2l6ggrA4SZyw==}
 
@@ -947,32 +944,29 @@ packages:
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
 
-  '@mtcute/core@0.27.9':
-    resolution: {integrity: sha512-kbi/ml8H7Asnn5u1yQVRVl8CVZd03WU2Z4Sgd5d3RYqaoqRUA9wgUV9aEhq+bEgsvmnEr+PuwZ+/HKriXhtqlA==}
+  '@mtcute/core@0.30.1':
+    resolution: {integrity: sha512-9mppVRIiC/h8PI8Jo+KhBihk4xR0DwKt16Q9PDUNDcsr4OutmDAK+GCXTzTp2e1MZ/iMMFlJ8PE6mjlQSGSnyg==}
 
-  '@mtcute/dispatcher@0.27.9':
-    resolution: {integrity: sha512-YqCbH/DNEvIjBGG4GGWXd3MQI6W9RD3TJ+jUj64ADqnOw4FpFlevhcevLUtpyRHOMVjVEm7a4VXk13S+Ujk1UA==}
+  '@mtcute/dispatcher@0.30.1':
+    resolution: {integrity: sha512-+ZEKFHeZonqXDpW7PRCuWSKf9hRitgx3L+9Nqf0WCOU2LuGNIT7I04HSaK3OqZyf805D44VOGOEsfes+MwS91g==}
 
-  '@mtcute/file-id@0.27.8':
-    resolution: {integrity: sha512-clwuBxVZKCSv65HMjxCx0zSnaZypAeNFy0pmnA0Uhvb9zvvB8lbd9Ig2BPieUkk/BbI+z8KZa0jvWOVe929Egw==}
+  '@mtcute/file-id@0.29.0':
+    resolution: {integrity: sha512-kfNFKjdfFoo9YIl823EJ068u0djgK6MsqfIHIcb6iwmKOxnCFTLRvBGnJUaO+SbOejg63Tz5lzQxKnt03kEV6A==}
 
-  '@mtcute/html-parser@0.27.9':
-    resolution: {integrity: sha512-ojq7ah4rwkLWmZP0fZx4glnSA7D75fcrMBS1HsEf6/uyrWy/F74aDZWwdLMrL8EjSVS0JdMKbli+kow+49JPJA==}
+  '@mtcute/html-parser@0.30.1':
+    resolution: {integrity: sha512-j/eosnkgDAUSKojIU7ArOvnZuIIpgGlsTDJep1r1WcdTYSzbAzKOi6usMT4JvyS6EKEbu1tu+KpJf14BHlcPbQ==}
 
-  '@mtcute/markdown-parser@0.27.9':
-    resolution: {integrity: sha512-4roQapd+r3aZtP2BWeYbcPt6rhZUBv1Ua0CJfopGY25XlU3lEDYeqGrn0KuWYKr11dztEDo5M01IBmcyRqUlow==}
+  '@mtcute/markdown-parser@0.30.1':
+    resolution: {integrity: sha512-QYeRMp4tzg0ruBc1dMnooK2M64js0y1r8xi2BlGtFsco/utFHBpEGsas6ckGkQlHfq6Dtdwn5SePe+GYqZP/CA==}
 
-  '@mtcute/node@0.27.9':
-    resolution: {integrity: sha512-Tflz5LRbTG5DE2rSUIRhLlBfey7ibhSQLTLTJD9nsoNpBeOG4ms/bc6VfBTQMHJytb8VCYQOHrXWZb9eYhWOPg==}
+  '@mtcute/node@0.30.1':
+    resolution: {integrity: sha512-MqG+St3sTivPzI093bM2OI0YD7KrrKJcAbXwUDGc04L1gKwbZHcc4QZPLlhCFKGxsxAsotSVmuhpPq+AmXIhfQ==}
 
-  '@mtcute/tl-runtime@0.24.3':
-    resolution: {integrity: sha512-61J3cgYgNOQT532GdIiuezRrSC7v6cc9MfvWv9GO27bRGf7JUKWVbFt4U0KzQ9Tp0J1uMOUfi1EbQKkYKacIKQ==}
+  '@mtcute/tl-runtime@0.29.0':
+    resolution: {integrity: sha512-VhDVYKYeC5TypdgzJ/6CtoZgwlR3h1xKatVTnuVcAe1sXrbIwju0EzZlPbUCjH6vgoOXyrJvkhUXdax/oSSjpg==}
 
-  '@mtcute/tl@221.0.0':
-    resolution: {integrity: sha512-Wp01L9nznTMLl2s9rbKnzQ8pij72eF4HK2XIziOQoJXiObPKZxQdxvMj+C6l0ArxMFmpT0H0/3EL5RB7O6VPwg==}
-
-  '@mtcute/wasm@0.27.8':
-    resolution: {integrity: sha512-3z1v1WtkAAW95l5t8LB3Ul+Y8dQNMez5YF16cHE3mAHX5RRrfgE+rgVk+wRQJHa24CugfuEEBSi6QpdZuTRBIw==}
+  '@mtcute/wasm@0.29.0':
+    resolution: {integrity: sha512-PFZ60ufUIt3BW1FFkCqcaEvEcezaTK+KyMVs3A/aXA19aFhDpu6HCSI8FJ6iOfGsIMGaNGYrwH3CZ7XxLn24XA==}
 
   '@opentelemetry/api@1.9.0':
     resolution: {integrity: sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg==}
@@ -1199,9 +1193,9 @@ packages:
   better-sqlite3@11.10.0:
     resolution: {integrity: sha512-EwhOpyXiOEL/lKzHz9AW1msWFNzGc/z+LzeB3/jnFJpxu+th2yqvzsSWas1v9jgs9+xiXJcD5A8CJxAG2TaghQ==}
 
-  better-sqlite3@12.6.2:
-    resolution: {integrity: sha512-8VYKM3MjCa9WcaSAI3hzwhmyHVlH8tiGFwf0RlTsZPWJ1I5MkzjiudCo4KC4DxOaL/53A5B1sI/IbldNFDbsKA==}
-    engines: {node: 20.x || 22.x || 23.x || 24.x || 25.x}
+  better-sqlite3@12.10.1:
+    resolution: {integrity: sha512-HfFtzCqnSfwB3+HroF6PSKzyh+7RfNMGPCzHFUZXRlvrPCb4P3cvxKZNN43Sr7IrkofqQZM+gIvffGpA8VvqgA==}
+    engines: {node: 20.x || 22.x || 23.x || 24.x || 25.x || 26.x}
 
   bindings@1.5.0:
     resolution: {integrity: sha512-p2q/t/mhvuOj/UeLlV6566GD/guowlr0hHxClI0W9m7MWYkL1F0hLo+0Aexs9HSPCtR1SXQ0TD3MMKrXZajbiQ==}
@@ -1551,8 +1545,8 @@ packages:
   json-stringify-safe@5.0.1:
     resolution: {integrity: sha512-ZClg6AaYvamvYEE82d3Iyd3vSSIjQ+odgjaTzRuO3s7toCdFKczob2i0zCh7JE8kWn17yvAWhUVxvqGwUalsRA==}
 
-  long@5.2.3:
-    resolution: {integrity: sha512-lcHwpNoggQTObv5apGNCTdJrO69eHOZMi4BNC+rTLER8iHAqGrUVeLh/irVIM7zTw2bOXA8T6uNPeujwOLg/2Q==}
+  long@5.3.2:
+    resolution: {integrity: sha512-mNAgZ1GmyNhD7AuqnTG3/VQ26o760+ZYBPKjPvugO8+nLbYfX6TVpJPseBvopbdY+qpZ/lKUnmEc1LeZYS3QAA==}
 
   loupe@3.2.1:
     resolution: {integrity: sha512-CdzqowRJCeLU72bHvWqwRBBlLcMEtIvGrlvef74kMnV2AolS9Y8xUv1I0U/MNAWMhBlKIoyuEgoJ0t/bbwHbLQ==}
@@ -1636,6 +1630,7 @@ packages:
   prebuild-install@7.1.3:
     resolution: {integrity: sha512-8Mf2cbV7x1cXPUILADGI3wuhfqWvtiLA1iclTDbFRZkgRQS0NqsPZphna9V+HyTEadheuPmjaJMsbzKQFOzLug==}
     engines: {node: '>=10'}
+    deprecated: No longer maintained. Please contact the author of the relevant native addon; alternatives are available.
     hasBin: true
 
   pump@3.0.3:
@@ -2286,8 +2281,6 @@ snapshots:
     optionalDependencies:
       ws: 8.20.0
 
-  '@fuman/utils@0.0.15': {}
-
   '@fuman/utils@0.0.19': {}
 
   '@gutenye/ocr-common@1.4.8':
@@ -2485,62 +2478,57 @@ snapshots:
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
-  '@mtcute/core@0.27.9':
+  '@mtcute/core@0.30.1':
     dependencies:
       '@fuman/io': 0.0.19
       '@fuman/net': 0.0.19
       '@fuman/utils': 0.0.19
-      '@mtcute/file-id': 0.27.8
-      '@mtcute/tl': 221.0.0
-      '@mtcute/tl-runtime': 0.24.3
+      '@mtcute/file-id': 0.29.0
+      '@mtcute/tl-runtime': 0.29.0
       '@types/events': 3.0.0
-      long: 5.2.3
+      long: 5.3.2
 
-  '@mtcute/dispatcher@0.27.9':
+  '@mtcute/dispatcher@0.30.1':
     dependencies:
       '@fuman/utils': 0.0.19
-      '@mtcute/core': 0.27.9
+      '@mtcute/core': 0.30.1
 
-  '@mtcute/file-id@0.27.8':
+  '@mtcute/file-id@0.29.0':
     dependencies:
       '@fuman/utils': 0.0.19
-      '@mtcute/tl-runtime': 0.24.3
-      long: 5.2.3
+      '@mtcute/tl-runtime': 0.29.0
+      long: 5.3.2
 
-  '@mtcute/html-parser@0.27.9':
+  '@mtcute/html-parser@0.30.1':
     dependencies:
-      '@mtcute/core': 0.27.9
+      '@mtcute/core': 0.30.1
       htmlparser2: 10.1.0
-      long: 5.2.3
+      long: 5.3.2
 
-  '@mtcute/markdown-parser@0.27.9':
+  '@mtcute/markdown-parser@0.30.1':
     dependencies:
-      '@mtcute/core': 0.27.9
-      long: 5.2.3
+      '@mtcute/core': 0.30.1
+      long: 5.3.2
 
-  '@mtcute/node@0.27.9(ws@8.20.0)':
+  '@mtcute/node@0.30.1(ws@8.20.0)':
     dependencies:
       '@fuman/net': 0.0.19
       '@fuman/node': 0.0.19(ws@8.20.0)
       '@fuman/utils': 0.0.19
-      '@mtcute/core': 0.27.9
-      '@mtcute/html-parser': 0.27.9
-      '@mtcute/markdown-parser': 0.27.9
-      '@mtcute/wasm': 0.27.8
-      better-sqlite3: 12.6.2
+      '@mtcute/core': 0.30.1
+      '@mtcute/html-parser': 0.30.1
+      '@mtcute/markdown-parser': 0.30.1
+      '@mtcute/wasm': 0.29.0
+      better-sqlite3: 12.10.1
     transitivePeerDependencies:
       - ws
 
-  '@mtcute/tl-runtime@0.24.3':
+  '@mtcute/tl-runtime@0.29.0':
     dependencies:
-      '@fuman/utils': 0.0.15
-      long: 5.2.3
+      '@fuman/utils': 0.0.19
+      long: 5.3.2
 
-  '@mtcute/tl@221.0.0':
-    dependencies:
-      long: 5.2.3
-
-  '@mtcute/wasm@0.27.8': {}
+  '@mtcute/wasm@0.29.0': {}
 
   '@opentelemetry/api@1.9.0': {}
 
@@ -2712,7 +2700,7 @@ snapshots:
       bindings: 1.5.0
       prebuild-install: 7.1.3
 
-  better-sqlite3@12.6.2:
+  better-sqlite3@12.10.1:
     dependencies:
       bindings: 1.5.0
       prebuild-install: 7.1.3
@@ -3029,7 +3017,7 @@ snapshots:
 
   json-stringify-safe@5.0.1: {}
 
-  long@5.2.3: {}
+  long@5.3.2: {}
 
   loupe@3.2.1: {}
 

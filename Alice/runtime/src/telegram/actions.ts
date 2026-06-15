@@ -558,8 +558,10 @@ export async function joinChat(
   chatIdOrLink: string | number,
 ): Promise<{ chat?: Chat; pending: boolean }> {
   await globalLimiter.acquire();
-  const chat = await client.joinChat(chatIdOrLink);
-  return { chat, pending: false };
+  // mtcute 0.30: client.joinChat возвращает результат {status, chat?}, а не сам Chat.
+  // status "ok" → вступили (есть chat); иначе требуется одобрение админа → pending.
+  const result = await client.joinChat(chatIdOrLink);
+  return result.status === "ok" ? { chat: result.chat, pending: false } : { pending: true };
 }
 
 /**
