@@ -28,12 +28,12 @@ import {
 // -- action-defs 注册验证 ---------------------------------------------------
 
 describe("action-defs 注册完整性", () => {
-  it("共 36 个动作注册（含 shell-native system chat surface + publish_channel）", () => {
-    expect(TELEGRAM_ACTIONS.length).toBe(36);
+  it("共 38 个动作注册（含 shell-native system chat surface + publish_channel + 富消息 checklist/table）", () => {
+    expect(TELEGRAM_ACTIONS.length).toBe(38);
   });
 
   it("TELEGRAM_ACTION_MAP 包含所有注册动作", () => {
-    expect(TELEGRAM_ACTION_MAP.size).toBe(36);
+    expect(TELEGRAM_ACTION_MAP.size).toBe(38);
     for (const def of TELEGRAM_ACTIONS) {
       expect(TELEGRAM_ACTION_MAP.has(def.name)).toBe(true);
     }

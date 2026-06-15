@@ -17,7 +17,15 @@ import {
 import { recordForwardShare } from "../../graph/dynamic-props.js";
 import { defineAction } from "../action-builder.js";
 import type { TelegramActionDef } from "../action-types.js";
-import { editMessage, forwardMessage, markRead, sendText, setTyping } from "../actions.js";
+import {
+  editMessage,
+  forwardMessage,
+  markRead,
+  sendChecklist,
+  sendTable,
+  sendText,
+  setTyping,
+} from "../actions.js";
 import { cacheOutgoingMsg } from "../events.js";
 import { getExplorationGuard } from "./shared.js";
 
@@ -125,6 +133,192 @@ export const messagingActions: TelegramActionDef[] = [
       ctx.dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
 
       ctx.log.info("send_message executed", { chatId: args.chatId, textLen: text.length });
+      return { success: true, msgId: msgId ?? undefined, obligationsConsumed: 1 };
+    },
+  }),
+
+  defineAction({
+    name: "send_checklist",
+    category: "messaging",
+    description: [
+      "Send a NATIVE Telegram checklist (real tappable checkboxes, not bullet text).",
+      "Use when asked to make/send a checklist, to-do list, or шаг-за-шагом план with checkable items.",
+    ],
+    usageHint:
+      "Items are rendered as real Telegram todo checkboxes (mtcute rich-message). One short line per item. Title is optional.",
+    params: z.object({
+      chatId: z.number().describe("Target chat"),
+      items: z.array(z.string()).describe("Checklist items, one short line each"),
+      title: z.string().optional().describe("Optional heading shown above the checklist"),
+      topicId: z
+        .number()
+        .optional()
+        .describe("Forum: id топика (по умолчанию — активный топик чата)"),
+    }),
+    inject: { chatId: "TARGET_CHAT" },
+    affordance: {
+      whenToUse: "When someone asks you to make or send a checklist / to-do list with tickable items",
+      whenNotToUse: "For plain prose or a single line — use send_message instead",
+      priority: "core",
+    },
+    async impl(ctx, args) {
+      const rawItems = Array.isArray(args.items) ? args.items : [];
+      const items = rawItems
+        .map((s) => sanitizeOutgoingText(String(s ?? "")))
+        .filter((s) => s.trim().length > 0);
+      if (!args.chatId || items.length === 0) return false;
+      const title = args.title ? sanitizeOutgoingText(String(args.title)) : undefined;
+
+      const rawId = ctx.parseChatId(args.chatId);
+      const graphId = ctx.ensureGraphId(args.chatId);
+
+      // Окно наблюдения: новые каналы требуют режима молчания/ученика (как send_message).
+      if (ctx.G.has(graphId)) {
+        const channelAttrs = ctx.G.getChannel(graphId);
+        const joinMs = channelAttrs.join_ms ?? 0;
+        if (joinMs > 0) {
+          const guard = getExplorationGuard();
+          const phase = guard.getObservationPhase(joinMs, Date.now());
+          if (phase === "silent") {
+            ctx.log.info("send_checklist blocked: observation window silent phase", {
+              chatId: graphId,
+            });
+            return false;
+          }
+          if (phase === "apprentice") {
+            const msgCount = channelAttrs.apprentice_msg_count ?? 0;
+            if (msgCount >= guard.config.apprenticeMaxMessages) {
+              ctx.log.info("send_checklist throttled: apprentice limit", {
+                chatId: graphId,
+                msgCount,
+              });
+              return false;
+            }
+            ctx.G.setDynamic(graphId, "apprentice_msg_count", msgCount + 1);
+          }
+        }
+      }
+
+      // Forum #8: bare-send маршрутизируется в current_topic_id (см. send_message).
+      const explicitTopicId = args.topicId as number | undefined;
+      const topicId =
+        explicitTopicId ??
+        (ctx.G.has(graphId)
+          ? (ctx.G.getChannel(graphId) as { current_topic_id?: number }).current_topic_id
+          : undefined);
+
+      const msgId = await sendChecklist(ctx.client, rawId, { title, items, topicId });
+
+      if (msgId != null) cacheOutgoingMsg(graphId, msgId);
+      if (ctx.G.has(graphId)) {
+        const summary = title ?? items[0] ?? "checklist";
+        ctx.G.setDynamic(graphId, "last_outgoing_text", [...summary].slice(0, 150).join(""));
+      }
+
+      ctx.dispatcher.dispatch("SEND_MESSAGE", {
+        chatId: graphId,
+        text: title ?? items.join("\n"),
+        msgId,
+      });
+      ctx.dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
+
+      ctx.log.info("send_checklist executed", { chatId: args.chatId, items: items.length });
+      return { success: true, msgId: msgId ?? undefined, obligationsConsumed: 1 };
+    },
+  }),
+
+  defineAction({
+    name: "send_table",
+    category: "messaging",
+    description: [
+      "Send a NATIVE Telegram table (real document-grade table with header row, not ASCII art).",
+      "Use when asked to make/send a table, compare options in columns, or show structured rows.",
+    ],
+    usageHint:
+      "headers is the column header row; rows is an array of rows, each an array of cell strings (same column order). Title is optional.",
+    params: z.object({
+      chatId: z.number().describe("Target chat"),
+      headers: z.array(z.string()).describe("Column header cells (the header row)"),
+      rows: z
+        .array(z.array(z.string()))
+        .describe("Body rows: each row is an array of cell strings in column order"),
+      title: z.string().optional().describe("Optional heading shown above the table"),
+      topicId: z
+        .number()
+        .optional()
+        .describe("Forum: id топика (по умолчанию — активный топик чата)"),
+    }),
+    inject: { chatId: "TARGET_CHAT" },
+    affordance: {
+      whenToUse: "When someone asks you to make or send a table / comparison / structured grid",
+      whenNotToUse: "For free-form text or a checklist — use send_message or send_checklist",
+      priority: "core",
+    },
+    async impl(ctx, args) {
+      const rawHeaders = Array.isArray(args.headers) ? args.headers : [];
+      const headers = rawHeaders.map((h) => sanitizeOutgoingText(String(h ?? "")));
+      const rawRows = Array.isArray(args.rows) ? args.rows : [];
+      const rows = rawRows.map((r) =>
+        (Array.isArray(r) ? r : []).map((c) => sanitizeOutgoingText(String(c ?? ""))),
+      );
+      if (!args.chatId || (headers.length === 0 && rows.length === 0)) return false;
+      const title = args.title ? sanitizeOutgoingText(String(args.title)) : undefined;
+
+      const rawId = ctx.parseChatId(args.chatId);
+      const graphId = ctx.ensureGraphId(args.chatId);
+
+      // Окно наблюдения: новые каналы требуют режима молчания/ученика (как send_message).
+      if (ctx.G.has(graphId)) {
+        const channelAttrs = ctx.G.getChannel(graphId);
+        const joinMs = channelAttrs.join_ms ?? 0;
+        if (joinMs > 0) {
+          const guard = getExplorationGuard();
+          const phase = guard.getObservationPhase(joinMs, Date.now());
+          if (phase === "silent") {
+            ctx.log.info("send_table blocked: observation window silent phase", {
+              chatId: graphId,
+            });
+            return false;
+          }
+          if (phase === "apprentice") {
+            const msgCount = channelAttrs.apprentice_msg_count ?? 0;
+            if (msgCount >= guard.config.apprenticeMaxMessages) {
+              ctx.log.info("send_table throttled: apprentice limit", { chatId: graphId, msgCount });
+              return false;
+            }
+            ctx.G.setDynamic(graphId, "apprentice_msg_count", msgCount + 1);
+          }
+        }
+      }
+
+      // Forum #8: bare-send маршрутизируется в current_topic_id (см. send_message).
+      const explicitTopicId = args.topicId as number | undefined;
+      const topicId =
+        explicitTopicId ??
+        (ctx.G.has(graphId)
+          ? (ctx.G.getChannel(graphId) as { current_topic_id?: number }).current_topic_id
+          : undefined);
+
+      const msgId = await sendTable(ctx.client, rawId, { title, headers, rows, topicId });
+
+      if (msgId != null) cacheOutgoingMsg(graphId, msgId);
+      if (ctx.G.has(graphId)) {
+        const summary = title ?? (headers.join(" | ") || "table");
+        ctx.G.setDynamic(graphId, "last_outgoing_text", [...summary].slice(0, 150).join(""));
+      }
+
+      ctx.dispatcher.dispatch("SEND_MESSAGE", {
+        chatId: graphId,
+        text: title ?? headers.join(" | "),
+        msgId,
+      });
+      ctx.dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
+
+      ctx.log.info("send_table executed", {
+        chatId: args.chatId,
+        cols: headers.length,
+        rows: rows.length,
+      });
       return { success: true, msgId: msgId ?? undefined, obligationsConsumed: 1 };
     },
   }),

@@ -7,8 +7,15 @@
  */
 
 import { md } from "@mtcute/markdown-parser";
-import type { Chat, ChatPreview, Message, StickerSet, TelegramClient } from "@mtcute/node";
-import { InputMedia, Long, tl } from "@mtcute/node";
+import type {
+  Chat,
+  ChatPreview,
+  InputPageBlock,
+  Message,
+  StickerSet,
+  TelegramClient,
+} from "@mtcute/node";
+import { InputMedia, Long, Rich, tl } from "@mtcute/node";
 import { createLogger } from "../utils/logger.js";
 import {
   rethrowTelegramActionFailure,
@@ -136,6 +143,115 @@ export async function sendText(
     }
   } catch (err) {
     rethrowTelegramActionFailure(err, "send_text", { chatId: String(chatId) });
+  }
+  return sent?.id;
+}
+
+/**
+ * mtcute 0.30: отправляет НАСТОЯЩИЙ нативный чеклист Telegram (rich-message, layer 227).
+ * Каждый пункт — tappable checkbox (Rich.listItem({ checkbox: true })), а не текстовый «• ».
+ *
+ * Реализация: sendRichMessage с content type "blocks":
+ *   [опц. Rich.heading(3, title)] + Rich.list([Rich.listItem(item, { checkbox: true })...])
+ *
+ * replyToMsgId/topicId маршрутизируются так же, как в sendText (replyTo = replyToMsgId ?? topicId).
+ */
+export async function sendChecklist(
+  client: TelegramClient,
+  chatId: string | number,
+  options: {
+    title?: string;
+    items: string[];
+    /** Forum: id топика (его корневого сообщения) — ответ уйдёт в этот топик, не в General. */
+    topicId?: number;
+    replyToMsgId?: number;
+  },
+): Promise<number | undefined> {
+  await globalLimiter.acquire();
+
+  // Пустые пункты отбрасываем; вызывающий impl уже гарантирует непустой items.
+  const items = options.items.filter((s) => s != null && String(s).trim().length > 0);
+
+  const blocks: InputPageBlock[] = [];
+  if (options.title?.trim()) {
+    blocks.push(Rich.heading(3, options.title.trim()));
+  }
+  blocks.push(Rich.list(items.map((text) => Rich.listItem(text, { checkbox: true }))));
+
+  let sent: Message | undefined;
+  try {
+    sent = await client.sendRichMessage(chatId, {
+      content: { type: "blocks", blocks },
+      replyTo: options.replyToMsgId ?? options.topicId,
+    });
+  } catch (err) {
+    rethrowTelegramActionFailure(err, "send_checklist", { chatId: String(chatId) });
+  }
+  return sent?.id;
+}
+
+/**
+ * mtcute 0.30: отправляет НАСТОЯЩУЮ нативную таблицу Telegram (rich-message, layer 227).
+ * Строка заголовка рендерится через Rich.tableCell({ header: true }).
+ *
+ * Реализация: sendRichMessage с content type "blocks":
+ *   Rich.table([headerRow?, ...bodyRows], { title?, bordered: true })
+ *
+ * Ряды короче самой длинной строки дополняются пустыми ячейками, чтобы таблица не съехала.
+ */
+export async function sendTable(
+  client: TelegramClient,
+  chatId: string | number,
+  options: {
+    title?: string;
+    headers: string[];
+    rows: string[][];
+    /** Forum: id топика (его корневого сообщения) — ответ уйдёт в этот топик, не в General. */
+    topicId?: number;
+    replyToMsgId?: number;
+  },
+): Promise<number | undefined> {
+  await globalLimiter.acquire();
+
+  // Вызывающий impl уже гарантирует наличие headers/rows; здесь только нормализация.
+  const headers = (options.headers ?? []).map((h) => (h == null ? "" : String(h)));
+  const rows = (options.rows ?? []).map((r) =>
+    Array.isArray(r) ? r.map((c) => (c == null ? "" : String(c))) : [],
+  );
+
+  // Ширина = максимум по заголовку и всем строкам — добиваем недостающие ячейки пустыми.
+  const width = Math.max(headers.length, ...rows.map((r) => r.length), 1);
+  const pad = (cells: string[]): string[] => {
+    const out = [...cells];
+    while (out.length < width) out.push("");
+    return out;
+  };
+
+  const tableRows: tl.TypePageTableRow[] = [];
+  if (headers.length > 0) {
+    tableRows.push(
+      Rich.tableRow(pad(headers).map((h) => Rich.tableCell(h, { header: true }))),
+    );
+  }
+  for (const row of rows) {
+    tableRows.push(Rich.tableRow(pad(row).map((c) => Rich.tableCell(c))));
+  }
+
+  const blocks: InputPageBlock[] = [
+    Rich.table(tableRows, {
+      ...(options.title?.trim() ? { title: options.title.trim() } : {}),
+      bordered: true,
+    }),
+  ];
+
+  let sent: Message | undefined;
+  try {
+    sent = await client.sendRichMessage(chatId, {
+      content: { type: "blocks", blocks },
+      replyTo: options.replyToMsgId ?? options.topicId,
+    });
+  } catch (err) {
+    rethrowTelegramActionFailure(err, "send_table", { chatId: String(chatId) });
   }
   return sent?.id;
 }
