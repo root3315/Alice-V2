@@ -262,6 +262,12 @@ function classifyCommand(
         action: { type: "telegram", fn: "send_checklist", args: {}, executedAt },
       };
     }
+    if (sub === "poll") {
+      return {
+        kind: "action",
+        action: { type: "telegram", fn: "send_poll", args: {}, executedAt },
+      };
+    }
     if (sub === "table") {
       return {
         kind: "action",

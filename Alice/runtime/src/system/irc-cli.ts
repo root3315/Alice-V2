@@ -11,6 +11,7 @@ import {
   leaveCommand,
   motdCommand,
   OBSERVATION_PREFIX,
+  pollCommand,
   reactCommand,
   readCommand,
   replyCommand,
@@ -207,6 +208,50 @@ const checklist = defineCommand({
     },
   },
   run: makeRunner("checklist", checklistCommand),
+});
+
+const poll = defineCommand({
+  meta: {
+    name: "poll",
+    description:
+      "Send a poll / опрос — вопрос + варианты (native Telegram poll, FREE, no Premium). Use when asked to vote / poll the group / collect opinions. Optional --multiple (multi-select) or --quiz with --correct (quiz mode).",
+  },
+  args: {
+    ...jsonFlag,
+    in: inOption,
+    question: {
+      type: "string",
+      description: "Poll question (≤255 chars, clamped). Example: 'Куда пойдём в пятницу?'",
+      required: true,
+      valueHint: "question",
+    },
+    options: {
+      type: "string",
+      description:
+        'Answer options as a JSON array of strings (robust to commas/quotes/newlines) or one per line. Example: \'["Кафе","Кино","Дома"]\'. 2-10 options, each ≤100 chars (clamped).',
+      required: true,
+      valueHint: '["option 1","option 2"]',
+    },
+    multiple: {
+      type: "boolean",
+      description: "Allow selecting multiple options (multi-answer poll).",
+    },
+    quiz: {
+      type: "boolean",
+      description: "Quiz mode (one correct answer). Requires --correct.",
+    },
+    correct: {
+      type: "string",
+      description: "0-based index of the correct option (quiz mode). Example: --correct 1",
+      valueHint: "0",
+    },
+    ref: {
+      type: "string",
+      description: "Visible current-chat message ID to reply to",
+      valueHint: "msgId",
+    },
+  },
+  run: makeRunner("poll", pollCommand),
 });
 
 const table = defineCommand({
@@ -568,6 +613,7 @@ export const ircSubCommands = {
   react,
   sticker,
   checklist,
+  poll,
   table,
   voice,
   read,

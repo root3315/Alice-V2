@@ -46,6 +46,10 @@ class SlidingWindowLimiter {
   }
 
   private async _doAcquire(): Promise<void> {
+    // Под Vitest троттлинг отключён: множество модульных тестов дёргают общий синглтон-лимитер
+    // (action-обёртки) и иначе исчерпывают окно 30/мин, заставляя поздние тесты ждать ~минуту
+    // и падать по таймауту. На проде (без VITEST) лимитер работает как обычно. (idiom — см. logger.ts)
+    if (process.env.VITEST) return;
     const now = Date.now();
     // Удаляем старые метки времени за пределами окна
     this.timestamps = this.timestamps.filter((t) => t > now - this.windowMs);
@@ -155,6 +159,14 @@ const TODO_ITEM_MAX = 64;
 const TODO_ITEMS_MAX = 30;
 /** Заголовок по умолчанию, если вызывающий не передал его (title обязателен в InputMedia.todo). */
 const TODO_DEFAULT_TITLE = "Чеклист";
+
+// Лимиты нативного опроса Telegram (server appConfig). Документированные значения:
+// вопрос ≤255 символов (для user-аккаунтов), 2-10 вариантов, каждый вариант ≤100 символов.
+// Клампим консервативно, чтобы запрос не отбрасывался сервером (POLL_*_INVALID / QUESTION_TOO_LONG).
+const POLL_QUESTION_MAX = 255;
+const POLL_OPTION_MAX = 100;
+const POLL_OPTIONS_MIN = 2;
+const POLL_OPTIONS_MAX = 10;
 
 /** Обрезает строку по числу кодовых точек (не разрывая surrogate pair emoji). */
 function clampCodePoints(text: string, max: number): string {
@@ -715,16 +727,73 @@ export async function sendMedia(
 }
 
 /**
- * Отправляет опрос. Доступно только в группах/каналах (userbot в личке получит MEDIA_INVALID).
+ * mtcute 0.30: отправляет НАСТОЯЩИЙ нативный опрос Telegram (poll/опрос).
+ * Опрос — БЕСПЛАТНАЯ функция Telegram (Premium НЕ требуется), работает для user-аккаунтов.
+ *
+ * Реализация: client.sendMedia(InputMedia.poll({ question, answers, multiple? }))
+ * либо InputMedia.quiz({ question, answers, correct }) для викторины с правильным ответом.
+ *
+ * question/варианты клампятся под лимиты Telegram (POLL_QUESTION_MAX/POLL_OPTION_MAX),
+ * число вариантов — в диапазон 2..10 (POLL_OPTIONS_MIN..POLL_OPTIONS_MAX).
+ *
+ * replyToMsgId/topicId маршрутизируются так же, как в sendText (replyTo = replyToMsgId ?? topicId).
  */
 export async function sendPoll(
   client: TelegramClient,
   chatId: string | number,
-  question: string,
-  answers: string[],
-): Promise<Message> {
+  options: {
+    question: string;
+    options: string[];
+    /** Forum: id топика (его корневого сообщения) — ответ уйдёт в этот топик, не в General. */
+    topicId?: number;
+    replyToMsgId?: number;
+    /** Разрешить выбор нескольких вариантов. */
+    multiple?: boolean;
+    /** Режим викторины (quiz): один правильный ответ. */
+    quiz?: boolean;
+    /** Индекс правильного варианта (для quiz). */
+    correctOption?: number;
+  },
+): Promise<number | undefined> {
   await globalLimiter.acquire();
-  return client.sendMedia(chatId, InputMedia.poll({ question, answers }));
+
+  // Вопрос обязателен и непуст — кламп длины под лимит Telegram.
+  const question = clampCodePoints((options.question ?? "").trim(), POLL_QUESTION_MAX);
+
+  // Пустые варианты отбрасываем; клампим длину каждого + общее число (2..10).
+  const answers = options.options
+    .filter((s) => s != null && String(s).trim().length > 0)
+    .slice(0, POLL_OPTIONS_MAX)
+    .map((s) => clampCodePoints(String(s).trim(), POLL_OPTION_MAX));
+
+  if (answers.length < POLL_OPTIONS_MIN) {
+    throw new TelegramActionError(
+      "invalid_poll",
+      `poll requires at least ${POLL_OPTIONS_MIN} non-empty options (got ${answers.length})`,
+    );
+  }
+
+  // quiz требует корректного индекса правильного ответа; иначе откатываемся на обычный опрос.
+  const isQuiz =
+    options.quiz === true &&
+    typeof options.correctOption === "number" &&
+    options.correctOption >= 0 &&
+    options.correctOption < answers.length;
+
+  const media = isQuiz
+    ? InputMedia.quiz({ question, answers, correct: options.correctOption as number })
+    : InputMedia.poll({ question, answers, multiple: options.multiple === true });
+
+  let sent: Message | undefined;
+  try {
+    sent = await client.sendMedia(chatId, media, {
+      replyTo: options.replyToMsgId ?? options.topicId,
+    });
+  } catch (err) {
+    // Опросы — бесплатная функция (без Premium-фолбэка); просто классифицируем и пробрасываем.
+    rethrowTelegramActionFailure(err, "send_poll", { chatId: String(chatId) });
+  }
+  return sent?.id;
 }
 
 /**

@@ -559,6 +559,77 @@ export async function checklistCommand(
   };
 }
 
+// ── Poll Command ──
+
+export interface PollArgs {
+  json?: string;
+  in?: string;
+  /** Текст вопроса опроса. */
+  question: string;
+  /** JSON-массив строк-вариантов, например: '["Да","Нет","Не знаю"]' (или по строке на вариант). */
+  options: string;
+  /** Разрешить выбор нескольких вариантов. */
+  multiple?: boolean;
+  /** Режим викторины (quiz): один правильный ответ. */
+  quiz?: boolean;
+  /** Индекс правильного варианта (0-based) для quiz. */
+  correct?: string;
+  ref?: string;
+}
+
+/** Логика команды poll — отправляет нативный опрос Telegram (БЕСПЛАТНО, без Premium). */
+export async function pollCommand(ctx: CliContext, args: PollArgs): Promise<CommandResult> {
+  const die = makeDie(ctx.output, "irc");
+
+  const chatId = await ctx.resolveTarget(args.in);
+  const question = sanitizeOutgoingText((args.question ?? "").trim());
+  if (!question) die("poll requires a non-empty --question", "command_missing_argument");
+
+  const options = parseJsonStringArray(args.options ?? "", die, "options")
+    .map((s) => sanitizeOutgoingText(s))
+    .filter((s) => s.trim().length > 0);
+
+  if (options.length < 2) {
+    die("poll requires at least 2 non-empty options", "command_missing_argument");
+  }
+  assertCurrentChatForSend(ctx, chatId, die, "irc.poll", args.ref ? { replyRef: args.ref } : undefined);
+
+  const quiz = args.quiz === true;
+  let correctOption: number | undefined;
+  if (args.correct !== undefined && args.correct !== "") {
+    const idx = Number.parseInt(String(args.correct), 10);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= options.length) {
+      die(
+        `--correct must be a 0-based index into options (0..${options.length - 1})`,
+        "command_arg_format",
+      );
+    }
+    correctOption = idx;
+  }
+  if (quiz && correctOption === undefined) {
+    die("--quiz requires --correct <0-based option index>", "command_missing_argument");
+  }
+
+  const body: Record<string, unknown> = { chatId, question, options };
+  if (args.multiple === true) body.multiple = true;
+  if (quiz) body.quiz = true;
+  if (correctOption !== undefined) body.correctOption = correctOption;
+  if (args.ref) body.replyTo = parseMsgId(args.ref);
+
+  const result = (await ctx.engine.post("/telegram/poll", body)) as SendResult | null;
+
+  const action =
+    result?.msgId != null
+      ? actionLine({ kind: "poll", chatId: String(chatId), msgId: String(result.msgId) })
+      : undefined;
+
+  return {
+    action,
+    output: renderConfirm(quiz ? "Sent quiz" : "Sent poll", `${options.length} option(s)`),
+    rawResult: { msgId: result?.msgId, chatId },
+  };
+}
+
 // ── Table Command ──
 
 export interface TableArgs {

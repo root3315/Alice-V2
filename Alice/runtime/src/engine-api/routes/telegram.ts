@@ -6,6 +6,7 @@
  * POST /telegram/react   → { ok: true }
  * POST /telegram/sticker → { msgId: number | null }
  * POST /telegram/checklist → { msgId: number | null }   (native tappable To-Do list)
+ * POST /telegram/poll    → { msgId: number | null }     (native poll / опрос — free feature)
  * POST /telegram/table   → { msgId: number | null }     (scrollable rich table)
  * POST /telegram/join    → { ok: true }
  * POST /telegram/leave   → { ok: true }
@@ -356,6 +357,72 @@ export async function handleTelegramForward(
       res.end(JSON.stringify(result));
     } catch (err) {
       serverError(res, "checklist failed", err);
+    }
+    return;
+  }
+
+  if (action === "poll") {
+    if (!deps.telegramPoll) {
+      notConfigured(res, "poll");
+      return;
+    }
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      badRequest(
+        res,
+        'body must be { "chatId": number, "question": string, "options": string[], "multiple"?: boolean, "quiz"?: boolean, "correctOption"?: number, "replyTo"?: number }',
+      );
+      return;
+    }
+    const { chatId, question, options, multiple, quiz, correctOption, replyTo } = body as {
+      chatId?: number;
+      question?: unknown;
+      options?: unknown;
+      multiple?: unknown;
+      quiz?: unknown;
+      correctOption?: unknown;
+      replyTo?: number;
+    };
+    if (
+      typeof chatId !== "number" ||
+      typeof question !== "string" ||
+      question.trim().length === 0 ||
+      !Array.isArray(options) ||
+      options.length < 2 ||
+      !options.every((o) => typeof o === "string")
+    ) {
+      badRequest(
+        res,
+        'body must be { "chatId": number, "question": non-empty string, "options": string[] (2-10), "multiple"?: boolean, "quiz"?: boolean, "correctOption"?: number, "replyTo"?: number }',
+      );
+      return;
+    }
+    if (multiple !== undefined && typeof multiple !== "boolean") {
+      badRequest(res, '"multiple" must be a boolean');
+      return;
+    }
+    if (quiz !== undefined && typeof quiz !== "boolean") {
+      badRequest(res, '"quiz" must be a boolean');
+      return;
+    }
+    if (correctOption !== undefined && typeof correctOption !== "number") {
+      badRequest(res, '"correctOption" must be a number');
+      return;
+    }
+    if (!ensureTargetAllowed(res, deps, chatId)) return;
+    try {
+      const result = await deps.telegramPoll({
+        chatId,
+        question,
+        options: options as string[],
+        multiple: multiple as boolean | undefined,
+        quiz: quiz as boolean | undefined,
+        correctOption: correctOption as number | undefined,
+        replyTo,
+      });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      serverError(res, "poll failed", err);
     }
     return;
   }

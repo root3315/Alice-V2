@@ -11,7 +11,7 @@
 import type { TelegramClient } from "@mtcute/node";
 import { InputMedia } from "@mtcute/node";
 import { describe, expect, it, vi } from "vitest";
-import { joinChat, sendChecklist, sendTable } from "../src/telegram/actions.js";
+import { joinChat, sendChecklist, sendPoll, sendTable } from "../src/telegram/actions.js";
 
 // Typed fake media-send signatures so vi.fn().mock.calls carries the arg types.
 type TodoMedia = { type: string; title: string; items: string[] };
@@ -215,6 +215,156 @@ describe("sendChecklist — native To-Do list (InputMedia.todo)", () => {
     await sendChecklist(client as unknown as TelegramClient, -100, {
       title: "T",
       items: ["a"],
+      topicId: 7,
+    });
+
+    const opts = sendMedia.mock.calls[0][2] as { replyTo?: number };
+    expect(opts.replyTo).toBe(7);
+  });
+});
+
+describe("sendPoll — native poll (InputMedia.poll, free feature)", () => {
+  type PollMedia = { type: string; question: unknown; answers: string[]; multiple?: boolean; correct?: number };
+  type PollSendArgs = [chatId: number, media: PollMedia, opts: { replyTo?: number }];
+  const fakePollSend = () => vi.fn(async (..._args: PollSendArgs) => ({ id: 11 }));
+
+  it("sends an InputMedia.poll-shaped media with question + options", async () => {
+    const sendMedia = fakePollSend();
+    const client = { sendMedia };
+
+    const msgId = await sendPoll(client as unknown as TelegramClient, -100, {
+      question: "Куда пойдём?",
+      options: ["Кафе", "Кино"],
+    });
+
+    expect(msgId).toBe(11);
+    expect(sendMedia).toHaveBeenCalledTimes(1);
+    const [chatId, media] = sendMedia.mock.calls[0];
+    expect(chatId).toBe(-100);
+    // Built via InputMedia.poll → { type: "poll", question, answers }
+    expect(media).toMatchObject({ type: "poll", answers: ["Кафе", "Кино"] });
+    // Sanity: matches the real mtcute builder output for the same inputs.
+    expect(media).toEqual(
+      InputMedia.poll({ question: "Куда пойдём?", answers: ["Кафе", "Кино"], multiple: false }),
+    );
+  });
+
+  it("passes multiple:true through to the poll media", async () => {
+    const sendMedia = fakePollSend();
+    const client = { sendMedia };
+
+    await sendPoll(client as unknown as TelegramClient, -100, {
+      question: "Q",
+      options: ["a", "b"],
+      multiple: true,
+    });
+
+    expect(sendMedia.mock.calls[0][1]).toMatchObject({ type: "poll", multiple: true });
+  });
+
+  it("builds a quiz with the correct option index when quiz + correctOption are valid", async () => {
+    const sendMedia = fakePollSend();
+    const client = { sendMedia };
+
+    await sendPoll(client as unknown as TelegramClient, -100, {
+      question: "2+2?",
+      options: ["3", "4", "5"],
+      quiz: true,
+      correctOption: 1,
+    });
+
+    expect(sendMedia.mock.calls[0][1]).toMatchObject({ type: "quiz", correct: 1 });
+  });
+
+  it("falls back to a plain poll when quiz correctOption is out of range", async () => {
+    const sendMedia = fakePollSend();
+    const client = { sendMedia };
+
+    await sendPoll(client as unknown as TelegramClient, -100, {
+      question: "Q",
+      options: ["a", "b"],
+      quiz: true,
+      correctOption: 9,
+    });
+
+    expect(sendMedia.mock.calls[0][1]).toMatchObject({ type: "poll" });
+  });
+
+  it("clamps options to 10", async () => {
+    const sendMedia = fakePollSend();
+    const client = { sendMedia };
+
+    const options = Array.from({ length: 15 }, (_, i) => `opt-${i}`);
+    await sendPoll(client as unknown as TelegramClient, -100, { question: "Q", options });
+
+    const media = sendMedia.mock.calls[0][1] as { answers: string[] };
+    expect(media.answers).toHaveLength(10);
+    expect(media.answers[0]).toBe("opt-0");
+    expect(media.answers[9]).toBe("opt-9");
+  });
+
+  it("drops blank options and rejects fewer than 2 remaining", async () => {
+    const sendMedia = fakePollSend();
+    const client = { sendMedia };
+
+    await expect(
+      sendPoll(client as unknown as TelegramClient, -100, {
+        question: "Q",
+        options: ["only", "", "   "],
+      }),
+    ).rejects.toBeDefined();
+    expect(sendMedia).not.toHaveBeenCalled();
+  });
+
+  it("truncates a question longer than 255 code points", async () => {
+    const sendMedia = fakePollSend();
+    const client = { sendMedia };
+
+    const longQ = "q".repeat(300);
+    await sendPoll(client as unknown as TelegramClient, -100, {
+      question: longQ,
+      options: ["a", "b"],
+    });
+
+    const media = sendMedia.mock.calls[0][1] as { question: string };
+    expect([...media.question]).toHaveLength(255);
+  });
+
+  it("truncates an option longer than 100 code points", async () => {
+    const sendMedia = fakePollSend();
+    const client = { sendMedia };
+
+    await sendPoll(client as unknown as TelegramClient, -100, {
+      question: "Q",
+      options: ["x".repeat(150), "b"],
+    });
+
+    const media = sendMedia.mock.calls[0][1] as { answers: string[] };
+    expect([...media.answers[0]]).toHaveLength(100);
+  });
+
+  it("routes replyTo to replyToMsgId when provided", async () => {
+    const sendMedia = fakePollSend();
+    const client = { sendMedia };
+
+    await sendPoll(client as unknown as TelegramClient, -100, {
+      question: "Q",
+      options: ["a", "b"],
+      replyToMsgId: 42,
+      topicId: 7,
+    });
+
+    const opts = sendMedia.mock.calls[0][2] as { replyTo?: number };
+    expect(opts.replyTo).toBe(42);
+  });
+
+  it("routes replyTo to topicId when replyToMsgId is absent", async () => {
+    const sendMedia = fakePollSend();
+    const client = { sendMedia };
+
+    await sendPoll(client as unknown as TelegramClient, -100, {
+      question: "Q",
+      options: ["a", "b"],
       topicId: 7,
     });
 

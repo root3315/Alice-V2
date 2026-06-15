@@ -4,6 +4,7 @@ export const TELEGRAM_ACTION_ERROR_CODES = [
   "invalid_reply_ref",
   "invalid_reaction",
   "invalid_sticker_keyword",
+  "invalid_poll",
   "unreachable_telegram_user",
   "voice_messages_forbidden",
   "album_asset_not_found",

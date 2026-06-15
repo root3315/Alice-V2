@@ -33,6 +33,7 @@ export type CompletedAction =
   | { kind: "voice"; chatId: string; msgId: string }
   | { kind: "sticker"; chatId: string; msgId: string }
   | { kind: "checklist"; chatId: string; msgId: string }
+  | { kind: "poll"; chatId: string; msgId: string }
   | { kind: "table"; chatId: string; msgId: string }
   | { kind: "react"; chatId: string; msgId: string; emoji?: string }
   | { kind: "sent-file"; chatId: string; msgId?: string; path?: string }
@@ -268,6 +269,13 @@ export function decodeCompletedAction(raw: string): CompletedAction {
       if (typeof msgId !== "string") return msgId;
       return { kind: "checklist", chatId, msgId };
     }
+    case "poll": {
+      const chatId = requireField(raw, fields, "chatId");
+      if (typeof chatId !== "string") return chatId;
+      const msgId = requireField(raw, fields, "msgId");
+      if (typeof msgId !== "string") return msgId;
+      return { kind: "poll", chatId, msgId };
+    }
     case "table": {
       const chatId = requireField(raw, fields, "chatId");
       if (typeof chatId !== "string") return chatId;
@@ -328,6 +336,8 @@ export function encodeCompletedAction(action: CompletedAction): string {
       return `sticker:chatId=${action.chatId}:msgId=${action.msgId}`;
     case "checklist":
       return `checklist:chatId=${action.chatId}:msgId=${action.msgId}`;
+    case "poll":
+      return `poll:chatId=${action.chatId}:msgId=${action.msgId}`;
     case "table":
       return `table:chatId=${action.chatId}:msgId=${action.msgId}`;
     case "react":
@@ -371,6 +381,7 @@ export function isTelegramSideEffect(action: CompletedAction): boolean {
     action.kind === "voice" ||
     action.kind === "sticker" ||
     action.kind === "checklist" ||
+    action.kind === "poll" ||
     action.kind === "table" ||
     action.kind === "react" ||
     action.kind === "sent-file" ||

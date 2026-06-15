@@ -77,6 +77,7 @@ import {
   leaveChat,
   markRead,
   sendChecklist,
+  sendPoll,
   sendReaction,
   sendSticker,
   sendTable,
@@ -678,6 +679,45 @@ async function main() {
         dispatcher.dispatch("SEND_MESSAGE", {
           chatId: graphId,
           text: items.join("\n").trim() || title?.trim() || "checklist",
+          msgId,
+        });
+        dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
+      }
+      return { msgId: msgId ?? null };
+    },
+    // Нативный опрос (poll/опрос) — БЕСПЛАТНАЯ функция Telegram. Зеркалит telegramChecklist:
+    // typing → resolve топика → sendPoll → cache → SEND_MESSAGE(text=question) + DECLARE_ACTION.
+    telegramPoll: async ({ chatId, question, options, replyTo, multiple, quiz, correctOption }) => {
+      const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
+      try {
+        await setTyping(client, rawChatId);
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      } catch {
+        // ошибка typing не блокирует отправку
+      }
+      // Forum: отвечаем в топик канала (current_topic_id), если он известен.
+      const graphId = telegramChannelId(rawChatId);
+      const topicId =
+        graphId && G.has(graphId) ? G.getChannel(graphId).current_topic_id : undefined;
+      const msgId = await sendPoll(client, rawChatId, {
+        question,
+        options,
+        topicId,
+        replyToMsgId: replyTo,
+        multiple,
+        quiz,
+        correctOption,
+      });
+      setTyping(client, rawChatId, true).catch(() => {});
+      if (msgId != null && graphId) {
+        cacheOutgoingMsg(graphId, msgId);
+      }
+      if (graphId && G.has(graphId)) {
+        const summary = (question?.trim() || options[0] || "poll").slice(0, 150);
+        G.setDynamic(graphId, "last_outgoing_text", summary);
+        dispatcher.dispatch("SEND_MESSAGE", {
+          chatId: graphId,
+          text: question?.trim() || options[0] || "poll",
           msgId,
         });
         dispatcher.dispatch("DECLARE_ACTION", { target: graphId });

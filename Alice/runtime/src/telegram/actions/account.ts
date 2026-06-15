@@ -110,7 +110,7 @@ export const accountActions: TelegramActionDef[] = [
       const rawId = ctx.parseChatId(args.chatId);
       const graphId = ctx.ensureGraphId(args.chatId);
 
-      await sendPoll(ctx.client, rawId, args.question, answers);
+      await sendPoll(ctx.client, rawId, { question: args.question, options: answers });
 
       ctx.dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
 

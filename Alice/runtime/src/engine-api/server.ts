@@ -105,6 +105,16 @@ export interface EngineApiDeps {
     title?: string;
     replyTo?: number;
   }) => Promise<{ msgId: number | null }>;
+  /** Telegram native poll (опрос) callback (`irc poll`). Free feature — no Premium needed. */
+  telegramPoll?: (params: {
+    chatId: number;
+    question: string;
+    options: string[];
+    multiple?: boolean;
+    quiz?: boolean;
+    correctOption?: number;
+    replyTo?: number;
+  }) => Promise<{ msgId: number | null }>;
   /** Telegram scrollable rich table callback (`irc table`). */
   telegramTable?: (params: {
     chatId: number;
