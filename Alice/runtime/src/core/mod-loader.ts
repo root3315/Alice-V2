@@ -7,6 +7,7 @@
  * Ссылка: narrative-engine/core/engine.ts (mod registration)
  */
 import { channelMod } from "../mods/channel.mod.js";
+import { commitmentMod } from "../mods/commitment.mod.js";
 import { consciousnessMod } from "../mods/consciousness.mod.js";
 import { consolidationMod } from "../mods/consolidation.mod.js";
 import { devOfferMod } from "../mods/dev-offer.mod.js";
@@ -65,6 +66,7 @@ export function loadAllMods(): ModDefinition[] {
     recallMod, // cross-chat recall: «что мы решили по X» (факты+дневник+эпизоды, read-only query)
     kbMod, // KB-ingestion: «запомни про проект …» (стойкое незатухающее знание)
     digestMod, // раз в сутки самосочинённая сводка дня в личку владельца
+    commitmentMod, // follow-through: ловит намерения с мягким сроком → сама возвращается к ним, когда срок прошёл
     devOfferMod, // очень сдержанный нудж «предложить глянуть код» в рабочем чате
     explorationMod, // автономное read-only обучение по каналам: находит публичные каналы по сильнейшим темам её людей, тихо подписывается, ингестит заметное в KB
   ];
