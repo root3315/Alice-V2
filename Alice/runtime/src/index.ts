@@ -21,9 +21,6 @@ import { TRAIT_BELIEF_DECAY } from "./belief/types.js";
 import { loadConfig } from "./config.js";
 import { checkToolSurfaceCompleteness } from "./core/d3-completeness.js";
 import { createAliceDispatcher } from "./core/dispatcher.js";
-import { setDigestTarget } from "./mods/digest.mod.js";
-import { setHealthWatchTarget } from "./mods/health-watch.mod.js";
-import { setWorkiStatusSender } from "./mods/worki.mod.js";
 import { loadAllMods } from "./core/mod-loader.js";
 import { ALICE_HOME } from "./core/shell-executor.js";
 import { writeAuditEvent } from "./db/audit.js";
@@ -55,6 +52,10 @@ import { initProviders, selectProviderForFirstPass } from "./llm/client.js";
 import { closeGroupCache, initGroupCache } from "./llm/group-cache.js";
 import { closeMediaCache, initMediaCache } from "./llm/media-cache.js";
 import { onBreakerStateChange } from "./llm/resilience.js";
+import { setDigestTarget } from "./mods/digest.mod.js";
+import { setExplorationTarget, setExplorationWorker } from "./mods/exploration.mod.js";
+import { setHealthWatchTarget } from "./mods/health-watch.mod.js";
+import { setWorkiStatusSender } from "./mods/worki.mod.js";
 import { createOneBotTransportAdapter } from "./platform/onebot.js";
 import {
   type OneBotReceiverController,
@@ -97,6 +98,7 @@ import { buildInitialGraph } from "./telegram/bootstrap.js";
 import { createClient, createDispatcher, destroyClient, startClient } from "./telegram/client.js";
 import { isTelegramActionError, TelegramActionError } from "./telegram/errors.js";
 import { bindEvents, cacheOutgoingMsg, EventBuffer, warmOutgoingCache } from "./telegram/events.js";
+import { createExplorationWorker, startWikiScan, stopWikiScan } from "./telegram/explorer.js";
 import { cleanupPhantomContacts } from "./telegram/mapper.js";
 import { initAdminNotify, notifyAdmin } from "./telegram/notify-admin.js";
 import { createLogger } from "./utils/logger.js";
@@ -296,6 +298,16 @@ async function main() {
     () => config.focusWhitelist,
     () => config.telegramAdmin,
   );
+
+  // Автономное read-only обучение по каналам (exploration.mod):
+  //  - воркер (search→channel-only guard→join→read→KB-ingest) внедряем сюда, где есть client+graph;
+  //  - уведомления о найденных каналах идут в ЛИЧКУ владельца (как digest/health-watch);
+  //  - Wiki-скан читает уже подписанные каналы (ручной путь «owner создал Wiki + добавил Алису»).
+  // Конфиг-гейт ALICE_CHANNEL_EXPLORE проверяется внутри mod'а (по умолчанию ВКЛ, консервативно).
+  setExplorationWorker(createExplorationWorker(client, () => G));
+  if (config.telegramAdmin) setExplorationTarget(telegramChannelId(config.telegramAdmin));
+  startWikiScan(client, () => G);
+
   if (config.qqOneBotEventWsUrl) {
     oneBotReceiver = startOneBotEventReceiver({
       url: config.qqOneBotEventWsUrl,
@@ -612,9 +624,12 @@ async function main() {
         const lastIncomingMs = Number(ch.last_incoming_ms ?? 0);
         // Её прошлый стикер — самое свежее событие (ответа людей после него не было) → второй не шлём.
         if (lastStickerMs > 0 && lastIncomingMs <= lastStickerMs) {
-          log.info("sticker skipped: no human reply since last sticker (owner: text needed between stickers)", {
-            chatId: rawChatId,
-          });
+          log.info(
+            "sticker skipped: no human reply since last sticker (owner: text needed between stickers)",
+            {
+              chatId: rawChatId,
+            },
+          );
           return { msgId: null };
         }
       }
@@ -985,7 +1000,10 @@ async function main() {
         `LLM provider "${providerName}" — предохранитель OPEN, Alice временно не может говорить`,
       );
     } else if (event === "closed") {
-      notifyAdmin(`breaker-recovery:${providerName}`, `LLM provider "${providerName}" снова работает`);
+      notifyAdmin(
+        `breaker-recovery:${providerName}`,
+        `LLM provider "${providerName}" снова работает`,
+      );
     }
   });
 
@@ -1269,6 +1287,7 @@ async function main() {
     log.info("Final snapshot saved", { tick: clock.tick });
 
     // Очистка
+    stopWikiScan();
     await destroyClient();
     closeGroupCache();
     closeMediaCache();

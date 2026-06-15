@@ -222,6 +222,23 @@ function renderTextTable(title: string, headers: string[], rows: string[][]): st
   return `${titleLine}\`\`\`\n${lines.join("\n")}\n\`\`\``;
 }
 
+/** Текстовый фолбэк опроса для ЛС (юзер-аккаунт не шлёт нативный опрос в PM — только в группы/каналы). */
+function renderTextPoll(question: string, answers: string[]): string {
+  const head = question.trim() ? `📊 **${question.trim()}**\n` : "📊 ";
+  return `${head}${answers.map((a, i) => `${i + 1}. ${a}`).join("\n")}\n_(ответь номером)_`;
+}
+
+/** true, если Telegram отверг poll-media (MEDIA_INVALID / POLL_*_INVALID) — напр. опрос в ЛС от юзер-аккаунта. */
+function isPollMediaInvalid(err: unknown): boolean {
+  const text = String(
+    (err as { text?: unknown } | null)?.text ??
+      (err as { message?: unknown } | null)?.message ??
+      err ??
+      "",
+  );
+  return /MEDIA_INVALID|POLL_[A-Z_]*INVALID/i.test(text);
+}
+
 /**
  * mtcute 0.30: отправляет НАСТОЯЩИЙ нативный tappable чеклист Telegram (To-Do list, layer 227).
  * Каждый пункт — реальный нажимаемый checkbox (inputMediaTodo → todoList/todoItem), а НЕ статичный
@@ -773,6 +790,18 @@ export async function sendPoll(
     );
   }
 
+  // Юзер-аккаунт НЕ может слать нативный опрос в ЛС (PM) — только в группы/каналы (иначе MEDIA_INVALID).
+  // PM = положительный chatId. Там грациозно шлём текстовый опрос (вопрос + нумерованные варианты).
+  if (Number(chatId) > 0) {
+    log.info("poll: native poll unsupported in PM (userbot) — text fallback", {
+      chatId: String(chatId),
+    });
+    return sendText(client, chatId, renderTextPoll(question, answers), {
+      replyToMsgId: options.replyToMsgId,
+      topicId: options.topicId,
+    });
+  }
+
   // quiz требует корректного индекса правильного ответа; иначе откатываемся на обычный опрос.
   const isQuiz =
     options.quiz === true &&
@@ -790,7 +819,15 @@ export async function sendPoll(
       replyTo: options.replyToMsgId ?? options.topicId,
     });
   } catch (err) {
-    // Опросы — бесплатная функция (без Premium-фолбэка); просто классифицируем и пробрасываем.
+    // Страховка: если Telegram всё же отверг poll-media (MEDIA_INVALID / POLL_*_INVALID) — текстовый
+    // фолбэк, а не 500. Прочие ошибки классифицируем и пробрасываем.
+    if (isPollMediaInvalid(err)) {
+      log.info("poll: native poll rejected — text fallback", { chatId: String(chatId) });
+      return sendText(client, chatId, renderTextPoll(question, answers), {
+        replyToMsgId: options.replyToMsgId,
+        topicId: options.topicId,
+      });
+    }
     rethrowTelegramActionFailure(err, "send_poll", { chatId: String(chatId) });
   }
   return sent?.id;

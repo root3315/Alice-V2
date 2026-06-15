@@ -9,15 +9,20 @@
 import { channelMod } from "../mods/channel.mod.js";
 import { consciousnessMod } from "../mods/consciousness.mod.js";
 import { consolidationMod } from "../mods/consolidation.mod.js";
+import { devOfferMod } from "../mods/dev-offer.mod.js";
 import { diaryMod } from "../mods/diary.mod.js";
+import { digestMod } from "../mods/digest.mod.js";
 import { episodeMod } from "../mods/episode.mod.js";
+import { explorationMod } from "../mods/exploration.mod.js";
 import { feedsMod } from "../mods/feeds.mod.js";
 import { healthWatchMod } from "../mods/health-watch.mod.js";
+import { kbMod } from "../mods/kb.mod.js";
 import { learningMod } from "../mods/learning.mod.js";
 import { memoryMod } from "../mods/memory.mod.js";
 import { metacognitionMod } from "../mods/metacognition.mod.js";
 import { observerMod } from "../mods/observer.mod.js";
 import { pressureMod } from "../mods/pressure.mod.js";
+import { recallMod } from "../mods/recall.mod.js";
 import { relationshipsMod } from "../mods/relationships.mod.js";
 import { schedulerMod } from "../mods/scheduler.mod.js";
 import { socialCaseMod } from "../mods/social-case.mod.js";
@@ -25,10 +30,6 @@ import { soulMod } from "../mods/soul.mod.js";
 import { strategyMod } from "../mods/strategy.mod.js";
 import { threadsMod } from "../mods/threads.mod.js";
 import { workiMod } from "../mods/worki.mod.js";
-import { recallMod } from "../mods/recall.mod.js";
-import { kbMod } from "../mods/kb.mod.js";
-import { digestMod } from "../mods/digest.mod.js";
-import { devOfferMod } from "../mods/dev-offer.mod.js";
 import type { ModDefinition } from "./types.js";
 
 /**
@@ -65,5 +66,6 @@ export function loadAllMods(): ModDefinition[] {
     kbMod, // KB-ingestion: «запомни про проект …» (стойкое незатухающее знание)
     digestMod, // раз в сутки самосочинённая сводка дня в личку владельца
     devOfferMod, // очень сдержанный нудж «предложить глянуть код» в рабочем чате
+    explorationMod, // автономное read-only обучение по каналам: находит публичные каналы по сильнейшим темам её людей, тихо подписывается, ингестит заметное в KB
   ];
 }
