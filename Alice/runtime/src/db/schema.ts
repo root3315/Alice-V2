@@ -1068,6 +1068,11 @@ export const stickerPalette = sqliteTable(
      * защищён от очистки syncInstalledSets даже если пак не установлен в аккаунте.
      */
     curated: integer("curated").notNull().default(0),
+    /**
+     * Флаг отключённого стикера: 1 = выключен владельцем через дашборд, Алиса НИКОГДА
+     * его не отправляет. Исключается из ВСЕХ запросов выборки в sticker-palette.ts.
+     */
+    disabled: integer("disabled").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
       .$defaultFn(() => new Date()),

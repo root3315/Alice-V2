@@ -28,6 +28,13 @@ import { analyzeVoiceDiversity } from "../../diagnostics/diversity.js";
 import { safeDisplayName } from "../../graph/display.js";
 import { getWorkiSnapshot } from "../../mods/worki.mod.js";
 import { getSelfcheckData } from "../../telegram/apps/selfcheck.js";
+import {
+  getStickerPack,
+  listStickerPacks,
+  lookupStickerFileId,
+  NULL_SET_SENTINEL,
+  setStickerDisabled,
+} from "../../telegram/apps/sticker-palette.js";
 import { VOICES } from "../../voices/personality.js";
 import { createLogger } from "../../utils/logger.js";
 import type { EngineApiDeps } from "../server.js";
@@ -950,6 +957,127 @@ async function handleControl(
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Sticker Admin (панель «Стикеры» дашборда): список паков, грид пака, toggle, превью.
+// Сознательно БЕЗ авторизации — как и остальной дашборд (решение владельца).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** GET /dashboard/sticker-packs → массив сводок паков (группировка по set_name). */
+function handleStickerPacks(res: ServerResponse): void {
+  try {
+    const packs = listStickerPacks(getDb());
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(packs));
+  } catch (e) {
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: (e as Error).message }));
+  }
+}
+
+/** GET /dashboard/sticker-pack?set=<name|__null__> → массив стикеров пака. */
+function handleStickerPack(req: IncomingMessage, res: ServerResponse): void {
+  try {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const setParam = url.searchParams.get("set");
+    if (setParam === null) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "set query param required" }));
+      return;
+    }
+    const setName = setParam === NULL_SET_SENTINEL ? null : setParam;
+    const rows = getStickerPack(getDb(), setName);
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(rows));
+  } catch (e) {
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: (e as Error).message }));
+  }
+}
+
+/** POST /dashboard/sticker-toggle {id, disabled} → пишет флаг в БД (эффект без рестарта). */
+function handleStickerToggle(body: unknown, res: ServerResponse): void {
+  const sendJson = (code: number, payload: Record<string, unknown>): void => {
+    res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(payload));
+  };
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    sendJson(400, { ok: false, error: "body must be a JSON object" });
+    return;
+  }
+  const id = Number((body as Record<string, unknown>).id);
+  const disabled = Boolean((body as Record<string, unknown>).disabled);
+  if (!Number.isInteger(id) || id <= 0) {
+    sendJson(400, { ok: false, error: "id must be a positive integer" });
+    return;
+  }
+  try {
+    const ok = setStickerDisabled(getDb(), id, disabled);
+    if (!ok) {
+      sendJson(404, { ok: false, error: `sticker ${id} not found` });
+      return;
+    }
+    sendJson(200, { ok: true, id, disabled });
+  } catch (e) {
+    sendJson(500, { ok: false, error: (e as Error).message });
+  }
+}
+
+/**
+ * GET /dashboard/sticker-image?id=<id> | ?uid=<fileUniqueId> → байты превью.
+ * file_id ищем в БД, скачивание делегируем deps.telegramStickerImage (клиент в index.ts).
+ * Анимированные/неотдаваемые → 204 (фронт показывает emoji+теги). Кэш — на стороне deps.
+ */
+async function handleStickerImage(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: EngineApiDeps,
+): Promise<void> {
+  try {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const idParam = url.searchParams.get("id");
+    const uidParam = url.searchParams.get("uid");
+    const ref: { id?: number; fileUniqueId?: string } = {};
+    if (idParam != null) ref.id = Number(idParam);
+    else if (uidParam != null) ref.fileUniqueId = uidParam;
+    else {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "id or uid query param required" }));
+      return;
+    }
+
+    const hit = lookupStickerFileId(getDb(), ref);
+    if (!hit) {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "sticker not found" }));
+      return;
+    }
+
+    if (!deps.telegramStickerImage) {
+      // Возможность не подключена (например, без Telegram-клиента) → фронт-фолбэк.
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    const img = await deps.telegramStickerImage(hit.fileId);
+    if (!img) {
+      // Анимированный/видео/не скачался → 204, фронт покажет emoji+теги.
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": img.contentType,
+      "Cache-Control": "public, max-age=86400",
+    });
+    res.end(img.bytes);
+  } catch (e) {
+    log.warn("dashboard sticker-image failed", { err: (e as Error).message });
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: (e as Error).message }));
+  }
+}
+
 /** Читает JSON из тела запроса (лимит 1 МБ); пустое тело → {}. */
 function readBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -988,7 +1116,7 @@ export async function handleDashboard(
   deps: EngineApiDeps,
 ): Promise<void> {
   if (method === "POST") {
-    if (sub !== "control") {
+    if (sub !== "control" && sub !== "sticker-toggle") {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "not found" }));
       return;
@@ -999,6 +1127,10 @@ export async function handleDashboard(
     } catch {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "invalid JSON body" }));
+      return;
+    }
+    if (sub === "sticker-toggle") {
+      handleStickerToggle(body, res);
       return;
     }
     await handleControl(body, res, deps);
@@ -1014,6 +1146,19 @@ export async function handleDashboard(
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: (e as Error).message }));
     }
+    return;
+  }
+  // ── Sticker Admin endpoints ──────────────────────────────────────────────
+  if (sub === "sticker-packs") {
+    handleStickerPacks(res);
+    return;
+  }
+  if (sub === "sticker-pack") {
+    handleStickerPack(req, res);
+    return;
+  }
+  if (sub === "sticker-image") {
+    await handleStickerImage(req, res, deps);
     return;
   }
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -1102,6 +1247,25 @@ const DASHBOARD_HTML = `<!doctype html>
   .sc-section { margin-bottom:14px; }
   .sc-section .sc-label { color:var(--acc); font-size:12px; text-transform:uppercase; letter-spacing:.5px; margin-bottom:5px; }
   .sc-section .sc-line { color:var(--tx); font-size:13px; padding:2px 0; white-space:pre-wrap; }
+  /* ── Стикеры (sticker admin) ── */
+  .stk-packs { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; }
+  .stk-pack { background:#0e1116; border:1px solid var(--line); border-radius:10px; padding:10px 12px; cursor:pointer; text-align:left; color:var(--tx); font:inherit; }
+  .stk-pack:hover { border-color:var(--acc); }
+  .stk-pack.active { border-color:var(--acc); background:#1f6feb18; }
+  .stk-pack .nm { font-weight:600; font-size:13px; word-break:break-all; }
+  .stk-pack .ct { color:var(--mut); font-size:11px; margin-top:4px; }
+  .stk-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:12px; margin-top:12px; }
+  .stk-cell { background:#0e1116; border:1px solid var(--line); border-radius:10px; padding:10px; display:flex; flex-direction:column; align-items:center; gap:6px; }
+  .stk-cell.off { opacity:.45; }
+  .stk-cell .img { width:96px; height:96px; display:flex; align-items:center; justify-content:center; }
+  .stk-cell .img img { max-width:96px; max-height:96px; object-fit:contain; image-rendering:auto; }
+  .stk-cell .fallback { font-size:38px; line-height:96px; }
+  .stk-cell .meta { text-align:center; font-size:11px; color:var(--mut); width:100%; }
+  .stk-cell .meta .em { font-size:16px; }
+  .stk-cell .tags { display:flex; flex-wrap:wrap; gap:3px; justify-content:center; margin-top:2px; }
+  .stk-toggle { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--mut); cursor:pointer; user-select:none; }
+  .stk-toggle input { accent-color:var(--good); }
+  .stk-toggle.off { color:var(--bad); }
 </style>
 </head>
 <body>
@@ -1224,6 +1388,19 @@ const DASHBOARD_HTML = `<!doctype html>
     </div>
   </section>
 
+  <!-- ════════ СТИКЕРЫ (sticker admin) ════════ -->
+  <section class="tabpage" data-tab="stickers">
+    <div class="panel">
+      <h2>Паки стикеров <span class="hint">клик по паку открывает стикеры · переключатель выключает отправку</span></h2>
+      <div class="ctlbar"><span class="ctlmsg" id="stkMsg"></span></div>
+      <div id="stkPacks"><div class="empty">загрузка…</div></div>
+    </div>
+    <div class="panel">
+      <h2 id="stkPackTitle">Стикеры <span class="hint">выберите пак выше</span></h2>
+      <div id="stkGrid"><div class="empty">пак не выбран</div></div>
+    </div>
+  </section>
+
   <!-- ════════ ЗДОРОВЬЕ (аномалии + аудит) ════════ -->
   <section class="tabpage" data-tab="health">
     <div class="panel">
@@ -1300,6 +1477,7 @@ const TABS = [
   { id:'activity',  label:'Активность', badge:d=>d&&d.db?d.db.actions:null },
   { id:'memory',    label:'Память',     badge:d=>d&&d.summary?d.summary.facts:null },
   { id:'worki',     label:'Worki',      badge:d=>d&&d.summary?d.summary.worki:null },
+  { id:'stickers',  label:'Стикеры',    badge:null },
   { id:'health',    label:'Здоровье',   badge:d=>d&&d.summary?d.summary.anomalies:null },
   { id:'selfcheck', label:'Self-report',badge:d=>d&&d.selfcheck&&d.selfcheck.sections?d.selfcheck.sections.length:null },
 ];
@@ -1700,7 +1878,84 @@ function wireControls(){
   });
 }
 
-const RENDERERS = { overview:renderOverview, cognition:renderCognition, social:renderSocial, activity:renderActivity, memory:renderMemory, worki:renderWorki, health:renderHealth, selfcheck:renderSelfcheck };
+/* ── Стикеры (sticker admin) — отдельная подгрузка, минует /dashboard/data. ──
+   Список паков → грид стикеров пака с превью (lazy <img>), emoji+теги и переключателем
+   disabled. Переключатель шлёт POST /dashboard/sticker-toggle и сразу гасит/возвращает ячейку. */
+let stkPacksLoaded = false;
+let stkActiveSet = undefined; // выбранный set (string | null), undefined = ничего не выбрано
+function stkPackKey(p){ return p.setName===null ? '__null__' : p.setName; }
+async function loadStickerPacks(force){
+  if(stkPacksLoaded && !force) return;
+  try {
+    const packs = await (await fetch('/dashboard/sticker-packs')).json();
+    stkPacksLoaded = true;
+    const total = packs.reduce((s,p)=>s+(p.count||0),0);
+    const badge = $('badge-stickers'); if(badge){ if(total>0){ badge.style.display=''; badge.textContent=fmtInt(total); } else badge.style.display='none'; }
+    if(!packs.length){ $('stkPacks').innerHTML='<div class="empty">палитра пуста</div>'; return; }
+    $('stkPacks').innerHTML = '<div class="stk-packs">'+packs.map(p=>{
+      const key=stkPackKey(p);
+      const cur=p.curated?' <span class="pill owner">curated</span>':'';
+      const off=(p.count-p.enabledCount);
+      return '<button class="stk-pack'+(key===(stkActiveSet===null?'__null__':stkActiveSet)?' active':'')+'" data-set="'+esc(key)+'">'+
+        '<div class="nm">'+esc(p.label)+cur+'</div>'+
+        '<div class="ct">'+fmtInt(p.enabledCount)+' вкл / '+fmtInt(p.count)+' всего'+(off>0?(' · '+fmtInt(off)+' выкл'):'')+'</div>'+
+      '</button>';
+    }).join('')+'</div>';
+    $('stkPacks').querySelectorAll('button[data-set]').forEach(b=>{
+      b.addEventListener('click', ()=>{ const k=b.getAttribute('data-set'); openStickerPack(k); });
+    });
+  } catch(e){ $('stkPacks').innerHTML='<div class="err">не удалось загрузить паки: '+esc(e.message)+'</div>'; }
+}
+async function openStickerPack(key){
+  stkActiveSet = (key==='__null__') ? null : key;
+  document.querySelectorAll('.stk-pack').forEach(b=>b.classList.toggle('active', b.getAttribute('data-set')===key));
+  $('stkPackTitle').innerHTML = 'Стикеры <span class="hint">'+esc(key==='__null__'?'(найденные в чатах)':key)+'</span>';
+  $('stkGrid').innerHTML='<div class="empty">загрузка…</div>';
+  try {
+    const rows = await (await fetch('/dashboard/sticker-pack?set='+encodeURIComponent(key))).json();
+    if(!rows.length){ $('stkGrid').innerHTML='<div class="empty">в паке нет стикеров</div>'; return; }
+    $('stkGrid').innerHTML = '<div class="stk-grid">'+rows.map(r=>stickerCell(r)).join('')+'</div>';
+    // Переключатели disabled.
+    $('stkGrid').querySelectorAll('input[data-toggle-id]').forEach(inp=>{
+      inp.addEventListener('change', async ()=>{
+        const id=Number(inp.getAttribute('data-toggle-id'));
+        const disabled = !inp.checked; // checked = «включён»
+        inp.disabled=true;
+        try {
+          await ctl2('/dashboard/sticker-toggle', {id, disabled});
+          const cell=inp.closest('.stk-cell'); if(cell) cell.classList.toggle('off', disabled);
+          const lbl=inp.closest('.stk-toggle'); if(lbl) lbl.classList.toggle('off', disabled);
+          ctlMsg('stkMsg','стикер '+id+(disabled?' выключен':' включён'),'ok');
+          stkPacksLoaded=false; loadStickerPacks(true); // обновить счётчики паков
+        } catch(e){ inp.checked=!inp.checked; ctlMsg('stkMsg','не вышло: '+e.message,'err'); }
+        finally { inp.disabled=false; }
+      });
+    });
+  } catch(e){ $('stkGrid').innerHTML='<div class="err">не удалось загрузить стикеры: '+esc(e.message)+'</div>'; }
+}
+/* Ячейка стикера: lazy <img> (при ошибке/204 — фолбэк emoji), теги, переключатель. */
+function stickerCell(r){
+  const tags=[r.emotion,r.action,r.intensity].filter(x=>x&&x!=='none'&&x!=='neutral').map(t=>'<span class="tag">'+esc(t)+'</span>').join('');
+  const em=r.emoji?esc(r.emoji):'🏷️';
+  const img='<img loading="lazy" src="/dashboard/sticker-image?id='+encodeURIComponent(r.id)+'" '+
+    "onerror=\"this.style.display='none';this.nextElementSibling.style.display='block'\" />"+
+    '<span class="fallback" style="display:none">'+em+'</span>';
+  return '<div class="stk-cell'+(r.disabled?' off':'')+'">'+
+    '<div class="img">'+img+'</div>'+
+    '<div class="meta"><span class="em">'+em+'</span>'+(tags?('<div class="tags">'+tags+'</div>'):'')+'</div>'+
+    '<label class="stk-toggle'+(r.disabled?' off':'')+'"><input type="checkbox" data-toggle-id="'+esc(r.id)+'"'+(r.disabled?'':' checked')+' /> '+(r.disabled?'выкл':'вкл')+'</label>'+
+  '</div>';
+}
+/* POST-хелпер для sticker admin (зеркалит ctl(), но с произвольным URL). */
+async function ctl2(url, payload){
+  const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+  let j={}; try { j=await r.json(); } catch(e){}
+  if(!r.ok || j.ok===false){ const e=new Error(j.error||('HTTP '+r.status)); throw e; }
+  return j;
+}
+function renderStickers(_d){ loadStickerPacks(false); }
+
+const RENDERERS = { overview:renderOverview, cognition:renderCognition, social:renderSocial, activity:renderActivity, memory:renderMemory, worki:renderWorki, stickers:renderStickers, health:renderHealth, selfcheck:renderSelfcheck };
 function renderTab(id, d){ try { (RENDERERS[id]||(()=>{}))(d); } catch(e){ console.error('render '+id, e); } }
 
 async function refresh(){

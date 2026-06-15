@@ -40,6 +40,7 @@ beforeEach(() => {
       action TEXT,
       intensity TEXT,
       curated INTEGER NOT NULL DEFAULT 0,
+      disabled INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
     CREATE INDEX idx_sticker_palette_label ON sticker_palette(label);

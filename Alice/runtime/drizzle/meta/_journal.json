@@ -211,6 +211,13 @@
       "when": 1778003600000,
       "tag": "0030_sticker_curated",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "6",
+      "when": 1778007200000,
+      "tag": "0031_sticker_disabled",
+      "breakpoints": true
     }
   ]
 }

@@ -26,6 +26,14 @@ import { createLogger } from "../../utils/logger.js";
 /** Тип экземпляра Drizzle DB (соответствует возвращаемому значению getDb()). */
 type Db = ReturnType<typeof getDb>;
 
+/**
+ * Предикат «стикер НЕ отключён владельцем» (disabled = 0). Добавляется в WHERE КАЖДОГО
+ * запроса выборки стикера на отправку — отключённый через дашборд стикер не должен
+ * просочиться ни по одному пути подбора (см. Part A spec). Текстовые пути, где WHERE
+ * не покрывает все строки, дополнительно фильтруют результат по disabled на стороне JS.
+ */
+const NOT_DISABLED = eq(stickerPalette.disabled, 0);
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Phase 1: Базовые запросы
 // ═══════════════════════════════════════════════════════════════════════════
@@ -166,11 +174,12 @@ function pickByDimension(
 ): string | null {
   const col = column === "emotion" ? stickerPalette.emotion : stickerPalette.action;
 
-  // Основной пул: собственные установленные наборы стикеров (приоритет)
+  // Основной пул: собственные установленные наборы стикеров (приоритет).
+  // disabled = 0 — отключённые владельцем стикеры НИКОГДА не попадают в выборку.
   const own = db
     .select({ fileId: stickerPalette.fileId })
     .from(stickerPalette)
-    .where(and(eq(col, value), isNotNull(stickerPalette.setName)))
+    .where(and(eq(col, value), isNotNull(stickerPalette.setName), NOT_DISABLED))
     .all();
   if (own.length > 0) {
     return own[Math.floor(Math.random() * own.length)].fileId;
@@ -180,7 +189,7 @@ function pickByDimension(
   const fallback = db
     .select({ fileId: stickerPalette.fileId })
     .from(stickerPalette)
-    .where(and(eq(col, value), sql`${stickerPalette.setName} IS NULL`))
+    .where(and(eq(col, value), sql`${stickerPalette.setName} IS NULL`, NOT_DISABLED))
     .all();
   if (fallback.length > 0) {
     return fallback[Math.floor(Math.random() * fallback.length)].fileId;
@@ -214,11 +223,12 @@ export function resolveLabel(db: Db, label: string, chatId?: string | number): s
     if (hit) return hit;
   }
 
-  // 2-3. Text-based matching (точный label → совпадение по подстроке) — установленные приоритетнее, VLM как запасной вариант
+  // 2-3. Text-based matching (точный label → совпадение по подстроке) — установленные приоритетнее, VLM как запасной вариант.
+  // disabled = 0 — отключённые стикеры исключаем из выборки (фильтр в WHERE покрывает все строки пула).
   const ownRows = db
     .select({ label: stickerPalette.label, fileId: stickerPalette.fileId })
     .from(stickerPalette)
-    .where(isNotNull(stickerPalette.setName))
+    .where(and(isNotNull(stickerPalette.setName), NOT_DISABLED))
     .all();
 
   const ownExact = ownRows.find((r) => r.label === label);
@@ -226,11 +236,11 @@ export function resolveLabel(db: Db, label: string, chatId?: string | number): s
   const ownPartial = ownRows.find((r) => label.includes(r.label) || r.label.includes(label));
   if (ownPartial) return ownPartial.fileId;
 
-  // Нет совпадений среди установленных → переход к резервному пулу VLM
+  // Нет совпадений среди установленных → переход к резервному пулу VLM (тоже без отключённых)
   const vlmRows = db
     .select({ label: stickerPalette.label, fileId: stickerPalette.fileId })
     .from(stickerPalette)
-    .where(sql`${stickerPalette.setName} IS NULL`)
+    .where(and(sql`${stickerPalette.setName} IS NULL`, NOT_DISABLED))
     .all();
 
   const vlmExact = vlmRows.find((r) => r.label === label);
@@ -284,21 +294,35 @@ export async function resolveLabelSemantic(
   if (!queryVec) return null; // сбой/cooldown сервера эмбеддингов → молча деградируем
 
   // Приоритетный пул: установленные самостоятельно ИЛИ курируемые паки.
+  // disabled = 0 — отключённые владельцем стикеры исключаем из кандидатов.
   const ownRows = db
     .select({ label: stickerPalette.label, fileId: stickerPalette.fileId })
     .from(stickerPalette)
-    .where(sql`${stickerPalette.setName} IS NOT NULL OR ${stickerPalette.curated} = 1`)
+    .where(
+      and(
+        // ВАЖНО: явные скобки вокруг OR — иначе SQL-приоритет (AND > OR) превратит условие в
+        // `setName IS NOT NULL OR (curated = 1 AND disabled = 0)`, и отключённый установленный
+        // стикер просочился бы в кандидаты.
+        sql`(${stickerPalette.setName} IS NOT NULL OR ${stickerPalette.curated} = 1)`,
+        NOT_DISABLED,
+      ),
+    )
     .limit(SEMANTIC_CANDIDATE_CAP)
     .all();
 
   const ownHit = await rankBySimilarity(ownRows, queryVec, embeddingConfig, nowMs);
   if (ownHit) return ownHit;
 
-  // Резервный пул: VLM-найденные (setName IS NULL и не курируемые).
+  // Резервный пул: VLM-найденные (setName IS NULL и не курируемые), тоже без отключённых.
   const fallbackRows = db
     .select({ label: stickerPalette.label, fileId: stickerPalette.fileId })
     .from(stickerPalette)
-    .where(sql`${stickerPalette.setName} IS NULL AND ${stickerPalette.curated} = 0`)
+    .where(
+      and(
+        sql`(${stickerPalette.setName} IS NULL AND ${stickerPalette.curated} = 0)`,
+        NOT_DISABLED,
+      ),
+    )
     .limit(SEMANTIC_CANDIDATE_CAP)
     .all();
 
@@ -410,11 +434,11 @@ export function resolveByEmoji(db: Db, keyword: string, _chatId?: string | numbe
   const emoji = KEYWORD_TO_EMOJI[keyword.toLowerCase()];
   if (!emoji) return null;
 
-  // Установленные приоритетнее, VLM как запасной вариант
+  // Установленные приоритетнее, VLM как запасной вариант. disabled = 0 — без отключённых.
   const own = db
     .select({ fileId: stickerPalette.fileId })
     .from(stickerPalette)
-    .where(and(eq(stickerPalette.emoji, emoji), isNotNull(stickerPalette.setName)))
+    .where(and(eq(stickerPalette.emoji, emoji), isNotNull(stickerPalette.setName), NOT_DISABLED))
     .all();
   if (own.length > 0) {
     return own.length === 1 ? own[0].fileId : own[Math.floor(Math.random() * own.length)].fileId;
@@ -423,7 +447,9 @@ export function resolveByEmoji(db: Db, keyword: string, _chatId?: string | numbe
   const candidates = db
     .select({ fileId: stickerPalette.fileId })
     .from(stickerPalette)
-    .where(and(eq(stickerPalette.emoji, emoji), sql`${stickerPalette.setName} IS NULL`))
+    .where(
+      and(eq(stickerPalette.emoji, emoji), sql`${stickerPalette.setName} IS NULL`, NOT_DISABLED),
+    )
     .all();
 
   if (candidates.length === 0) return null;
@@ -469,15 +495,20 @@ export function getAvailableKeywords(db: Db): string {
  * отправить нейтральный стикер, чем вернуть ошибку. null только если палитра пуста.
  */
 export function pickAnySticker(db: Db): string | null {
+  // disabled = 0 — даже финальный фолбэк не отправляет отключённый владельцем стикер.
   const own = db
     .select({ fileId: stickerPalette.fileId })
     .from(stickerPalette)
-    .where(isNotNull(stickerPalette.setName))
+    .where(and(isNotNull(stickerPalette.setName), NOT_DISABLED))
     .all();
   const pool =
     own.length > 0
       ? own
-      : db.select({ fileId: stickerPalette.fileId }).from(stickerPalette).all();
+      : db
+          .select({ fileId: stickerPalette.fileId })
+          .from(stickerPalette)
+          .where(NOT_DISABLED)
+          .all();
   if (pool.length === 0) return null;
   return pool[Math.floor(Math.random() * pool.length)].fileId;
 }
@@ -797,4 +828,158 @@ export async function batchIndexStickerSet(
 
   indexLog.info("Batch index complete", { shortName, tagged, skipped, failed, total });
   return { tagged, skipped, failed, total };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Sticker Admin: read-only обзор палитры + toggle disabled для дашборда
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Сентинел для запроса группы стикеров без набора (set_name IS NULL) через query-параметр. */
+export const NULL_SET_SENTINEL = "__null__";
+
+/** Сводка одного пака стикеров для списка дашборда. */
+export interface StickerPackSummary {
+  /** Короткое имя набора; null = пул VLM-найденных стикеров (set_name IS NULL). */
+  setName: string | null;
+  /** Человекочитаемая метка пака (setName либо подпись для NULL-группы). */
+  label: string;
+  /** Всего стикеров в паке. */
+  count: number;
+  /** Сколько из них включено (disabled = 0). */
+  enabledCount: number;
+  /** true, если хотя бы один стикер пака курируемый (batch-VLM). */
+  curated: boolean;
+}
+
+/** Одна строка стикера внутри пака (для грида дашборда). */
+export interface StickerAdminRow {
+  id: number;
+  fileUniqueId: string;
+  label: string;
+  emoji: string | null;
+  emotion: string | null;
+  action: string | null;
+  intensity: string | null;
+  disabled: boolean;
+}
+
+/**
+ * Группирует палитру по set_name → сводки паков для списка дашборда.
+ * NULL-группа (стикеры, найденные VLM в чатах) выводится с подписью label.
+ * Сортировка: курируемые/собственные (есть setName) выше, NULL-пул в конце.
+ */
+export function listStickerPacks(db: Db, nullGroupLabel = "(найденные в чатах)"): StickerPackSummary[] {
+  const rows = db
+    .select({
+      setName: stickerPalette.setName,
+      disabled: stickerPalette.disabled,
+      curated: stickerPalette.curated,
+    })
+    .from(stickerPalette)
+    .all();
+
+  const groups = new Map<string | null, { count: number; enabled: number; curated: boolean }>();
+  for (const r of rows) {
+    const key = r.setName ?? null;
+    const g = groups.get(key) ?? { count: 0, enabled: 0, curated: false };
+    g.count += 1;
+    if (r.disabled === 0) g.enabled += 1;
+    if (r.curated === 1) g.curated = true;
+    groups.set(key, g);
+  }
+
+  const out: StickerPackSummary[] = [];
+  for (const [setName, g] of groups) {
+    out.push({
+      setName,
+      label: setName ?? nullGroupLabel,
+      count: g.count,
+      enabledCount: g.enabled,
+      curated: g.curated,
+    });
+  }
+
+  // Собственные/курируемые паки выше, NULL-пул (setName=null) в конце; внутри — по имени.
+  out.sort((a, b) => {
+    if (a.setName === null && b.setName !== null) return 1;
+    if (a.setName !== null && b.setName === null) return -1;
+    if (a.curated !== b.curated) return a.curated ? -1 : 1;
+    return (a.label || "").localeCompare(b.label || "");
+  });
+  return out;
+}
+
+/**
+ * Возвращает все стикеры одного пака для грида дашборда.
+ * setName === null → группа без набора (set_name IS NULL). Показываются и отключённые
+ * (admin видит всё; флаг disabled управляет toggle), сортировка по id для стабильности.
+ */
+export function getStickerPack(db: Db, setName: string | null): StickerAdminRow[] {
+  const where =
+    setName === null
+      ? sql`${stickerPalette.setName} IS NULL`
+      : eq(stickerPalette.setName, setName);
+  const rows = db
+    .select({
+      id: stickerPalette.id,
+      fileUniqueId: stickerPalette.fileUniqueId,
+      label: stickerPalette.label,
+      emoji: stickerPalette.emoji,
+      emotion: stickerPalette.emotion,
+      action: stickerPalette.action,
+      intensity: stickerPalette.intensity,
+      disabled: stickerPalette.disabled,
+    })
+    .from(stickerPalette)
+    .where(where)
+    .orderBy(stickerPalette.id)
+    .all();
+  return rows.map((r) => ({
+    id: r.id,
+    fileUniqueId: r.fileUniqueId,
+    label: r.label,
+    emoji: r.emoji ?? null,
+    emotion: r.emotion ?? null,
+    action: r.action ?? null,
+    intensity: r.intensity ?? null,
+    disabled: r.disabled === 1,
+  }));
+}
+
+/**
+ * Переключает флаг disabled одного стикера (toggle из дашборда).
+ * Пишет прямо в БД, которую Алиса читает вживую → эффект без перезапуска.
+ * @returns true, если строка найдена и обновлена.
+ */
+export function setStickerDisabled(db: Db, id: number, disabled: boolean): boolean {
+  const { changes } = db
+    .update(stickerPalette)
+    .set({ disabled: disabled ? 1 : 0 })
+    .where(eq(stickerPalette.id, id))
+    .run();
+  return changes > 0;
+}
+
+/** Ищет file_id стикера по числовому id или по file_unique_id (для отдачи превью). */
+export function lookupStickerFileId(
+  db: Db,
+  ref: { id?: number; fileUniqueId?: string },
+): { fileId: string; fileUniqueId: string } | null {
+  let row: { fileId: string; fileUniqueId: string } | undefined;
+  if (ref.id != null && Number.isFinite(ref.id)) {
+    row = db
+      .select({ fileId: stickerPalette.fileId, fileUniqueId: stickerPalette.fileUniqueId })
+      .from(stickerPalette)
+      .where(eq(stickerPalette.id, ref.id))
+      .limit(1)
+      .get();
+  } else if (ref.fileUniqueId) {
+    row = db
+      .select({ fileId: stickerPalette.fileId, fileUniqueId: stickerPalette.fileUniqueId })
+      .from(stickerPalette)
+      .where(eq(stickerPalette.fileUniqueId, ref.fileUniqueId))
+      .limit(1)
+      .get();
+  }
+  return row ?? null;
 }

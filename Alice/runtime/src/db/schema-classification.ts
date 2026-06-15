@@ -439,9 +439,10 @@ export const TABLE_CLASSIFICATIONS = {
     class: "state",
     appendOnly: false,
     rebuildable: "partially",
-    authority: "Current sticker semantic palette used for action selection.",
-    writer: "sticker sync/admin/batch-index (curated) palette paths",
-    readers: "sticker action selection",
+    authority:
+      "Current sticker semantic palette used for action selection; disabled=1 rows are owner-muted and excluded from every selection query.",
+    writer: "sticker sync/admin/batch-index (curated/disabled) palette paths",
+    readers: "sticker action selection + dashboard sticker admin",
     absence: "No row means the sticker is unavailable to semantic lookup.",
   },
   stickerUsage: {

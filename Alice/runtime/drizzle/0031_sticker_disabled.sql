@@ -1,0 +1,1 @@
+ALTER TABLE `sticker_palette` ADD `disabled` integer DEFAULT 0 NOT NULL;

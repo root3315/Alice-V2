@@ -129,6 +129,15 @@ export interface EngineApiDeps {
     shortName: string;
     force?: boolean;
   }) => Promise<{ started: boolean; shortName: string; estimated: number; message: string }>;
+  /**
+   * Превью стикера для дашборда (sticker admin): по fileId скачивает медиа через клиент Алисы
+   * и возвращает байты изображения + content-type. Статичные (webp/png) отдаются как есть;
+   * анимированные (tgs/webm) → растровая миниатюра, если есть, иначе null (фронт покажет emoji+теги).
+   * Реализация кэширует байты (in-memory LRU), чтобы повторное открытие пака было быстрым.
+   */
+  telegramStickerImage?: (
+    fileId: string,
+  ) => Promise<{ bytes: Buffer; contentType: string } | null>;
   /** Telegram scrollable rich table callback (`irc table`). */
   telegramTable?: (params: {
     chatId: number;

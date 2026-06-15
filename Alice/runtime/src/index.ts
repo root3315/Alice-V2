@@ -115,6 +115,54 @@ import { selectAction } from "./voices/selection.js";
 const log = createLogger("alice");
 const RUNTIME_HEARTBEAT_INTERVAL_MS = 30 * 1000;
 
+// ── Sticker admin: кэш превью стикеров для дашборда ──────────────────────────
+// In-memory LRU байтов изображения по fileId. null = «не растр / не скачалось»
+// (тоже кэшируем, чтобы не дёргать сеть повторно). Маленький потолок — превью лёгкие.
+const STICKER_IMAGE_CACHE_MAX = 512;
+const stickerImageCache = new Map<string, { bytes: Buffer; contentType: string } | null>();
+function stickerImageCacheGet(
+  key: string,
+): ({ bytes: Buffer; contentType: string } | null) | undefined {
+  if (!stickerImageCache.has(key)) return undefined;
+  const v = stickerImageCache.get(key) ?? null;
+  // LRU touch: переставляем в конец.
+  stickerImageCache.delete(key);
+  stickerImageCache.set(key, v);
+  return v;
+}
+function stickerImageCacheSet(key: string, v: { bytes: Buffer; contentType: string } | null): void {
+  if (stickerImageCache.has(key)) stickerImageCache.delete(key);
+  stickerImageCache.set(key, v);
+  while (stickerImageCache.size > STICKER_IMAGE_CACHE_MAX) {
+    const oldest = stickerImageCache.keys().next().value;
+    if (oldest === undefined) break;
+    stickerImageCache.delete(oldest);
+  }
+}
+
+/**
+ * Определяет content-type растрового стикера по head-байтам. Возвращает null для
+ * нерастровых форматов (анимированные tgs=gzip, видео webm, SVG/XML) — фронт покажет
+ * фолбэк emoji+теги. Статичные Telegram-стикеры почти всегда WEBP.
+ */
+function detectStickerContentType(buf: Buffer): string | null {
+  if (buf.length < 12) return null;
+  // RIFF .... WEBP
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46) {
+    if (buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) {
+      return "image/webp";
+    }
+  }
+  // PNG
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return "image/png";
+  // JPEG
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
+  // GIF
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return "image/gif";
+  // gzip (tgs / Lottie) и XML/SVG → не растр
+  return null;
+}
+
 function recordRuntimeHeartbeat(G: WorldModel, nowMs = Date.now()): void {
   if (!G.has(ALICE_SELF)) return;
   G.updateAgent(ALICE_SELF, { runtime_last_seen_ms: nowMs });
@@ -811,6 +859,35 @@ async function main() {
         estimated: estimate,
         message: `indexing ${shortName}: ~${estimate} stickers, will report when done`,
       };
+    },
+    // Превью стикера для дашборда (sticker admin). Скачивает медиа по fileId через клиент
+    // Алисы и кэширует байты в in-memory LRU (повторное открытие пака — без сети).
+    // Статичные стикеры (webp) браузер рисует напрямую; буфер с XML/SVG/tgs head-byte
+    // считаем нерастровым → возвращаем null (фронт покажет emoji+теги).
+    telegramStickerImage: async (fileId) => {
+      const cached = stickerImageCacheGet(fileId);
+      if (cached !== undefined) return cached;
+      try {
+        const bytes = Buffer.from(
+          await client.downloadAsBuffer(fileId as Parameters<typeof client.downloadAsBuffer>[0]),
+        );
+        if (bytes.byteLength < 16 || bytes.byteLength > 1_000_000) {
+          stickerImageCacheSet(fileId, null);
+          return null;
+        }
+        // Head-byte распознавание: WEBP (RIFF....WEBP), PNG, JPEG, GIF — растр, отдаём.
+        // gzip (tgs, 0x1f 0x8b) и XML/SVG (0x3c) — не растр → null (фронт-фолбэк).
+        const ct = detectStickerContentType(bytes);
+        const result = ct ? { bytes, contentType: ct } : null;
+        stickerImageCacheSet(fileId, result);
+        return result;
+      } catch (e) {
+        log.debug("sticker image download failed", {
+          error: e instanceof Error ? e.message : String(e),
+        });
+        stickerImageCacheSet(fileId, null);
+        return null;
+      }
     },
     // Нативная прокручиваемая таблица (rich-message). Зеркалит telegramSticker: typing → resolve топика → sendTable.
     telegramTable: async ({ chatId, title, headers, rows, replyTo }) => {
