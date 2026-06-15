@@ -7,12 +7,20 @@
  *
  * @see https://github.com/TelechaBot/anime-identify — классификация аниме-изображений
  */
-import type { TelegramClient } from "@mtcute/node";
+import type { Sticker, TelegramClient } from "@mtcute/node";
 import { and, eq, isNotNull, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
 
+import type { Config } from "../../config.js";
 import type { getDb } from "../../db/connection.js";
 import { stickerPalette } from "../../db/schema.js";
+import {
+  embedManyCached,
+  embedQueryCached,
+  warmEmbeddingOnIngest,
+} from "../../llm/embedding-store.js";
+import { cosineSimilarity, type EmbeddingConfig, isEmbeddingEnabled } from "../../llm/embeddings.js";
+import { describeMedia, getStickerAnalysis, isVisionEnabled } from "../../llm/vision.js";
 import { createLogger } from "../../utils/logger.js";
 
 /** Тип экземпляра Drizzle DB (соответствует возвращаемому значению getDb()). */
@@ -59,6 +67,8 @@ export const upsertParamsSchema = z.object({
   label: z.string(),
   emoji: z.string().optional(),
   setName: z.string().optional(),
+  /** Курируемый стикер (batch-VLM пак): true → curated=1, защищён от очистки. По умолчанию false. */
+  curated: z.boolean().optional(),
   emotion: z.string(),
   action: z.string(),
   intensity: z.string(),
@@ -71,6 +81,9 @@ export type UpsertParams = z.infer<typeof upsertParamsSchema>;
  * При конфликте file_unique_id — обновляет измерения и обновляет file_id.
  */
 export function upsertFromVLM(db: Db, params: UpsertParams): void {
+  // boolean → 0/1; при upsert обновляем curated только когда явно курируем (true), чтобы
+  // оппортунистический путь (curated не передан) не сбрасывал ранее выставленный флаг.
+  const curatedFlag = params.curated ? 1 : 0;
   db.insert(stickerPalette)
     .values({
       label: params.label,
@@ -78,6 +91,7 @@ export function upsertFromVLM(db: Db, params: UpsertParams): void {
       fileUniqueId: params.fileUniqueId,
       emoji: params.emoji,
       setName: params.setName,
+      curated: curatedFlag,
       emotion: params.emotion,
       action: params.action,
       intensity: params.intensity,
@@ -90,6 +104,11 @@ export function upsertFromVLM(db: Db, params: UpsertParams): void {
         emotion: params.emotion,
         action: params.action,
         intensity: params.intensity,
+        // setName/curated обновляем только при явной курации (батч-индекс),
+        // иначе оставляем как было (оппортунистический путь не перетирает курируемый пак).
+        ...(params.curated
+          ? { setName: params.setName, curated: 1 }
+          : {}),
       },
     })
     .run();
@@ -220,6 +239,98 @@ export function resolveLabel(db: Db, label: string, chatId?: string | number): s
   if (vlmPartial) return vlmPartial.fileId;
 
   return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Tier 1.5: подбор «по смыслу» через эмбеддинги (ADDITIVE, OFF BY DEFAULT)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Минимальная косинусная близость для семантического матча (тот же порог, что в recall.mod). */
+const SEMANTIC_STICKER_MIN_SIMILARITY = 0.55;
+/** Жёсткий потолок кандидатов на эмбеддинг за один подбор (ограничивает стоимость). */
+const SEMANTIC_CANDIDATE_CAP = 200;
+
+/**
+ * Разрешает запрос в fileId ПО СМЫСЛУ через эмбеддинги (опциональный слой).
+ *
+ * ГАРАНТИЯ БАЙТ-В-БАЙТ: если эмбеддинги выключены (isEmbeddingEnabled=false) —
+ * возвращает null НЕМЕДЛЕННО, ничего не эмбеддит и не читает БД. Вызывающая сторона
+ * (index.ts) вызывает эту функцию только когда дешёвый resolveLabel уже вернул null,
+ * поэтому при выключенных эмбеддингах путь отправки стикера остаётся прежним.
+ *
+ * Логика (когда включено):
+ * 1. Эмбеддим запрос (кэш-обёртка embedQueryCached).
+ * 2. Берём кандидатов: сперва собственный/курируемый пул (setName IS NOT NULL ИЛИ curated=1),
+ *    затем — резервный пул (setName IS NULL). Каждый пул проверяется отдельно: если в
+ *    приоритетном пуле нашёлся матч ≥ порога — берём его, к резервному не спускаемся.
+ * 3. Эмбеддим метки кандидатов (embedManyCached), косинус-ранжируем, возвращаем лучший
+ *    fileId при cosine ≥ 0.55, иначе null.
+ *
+ * @returns fileId лучшего по смыслу стикера или null (выключено/нет матча/сбой).
+ */
+export async function resolveLabelSemantic(
+  db: Db,
+  query: string,
+  embeddingConfig: EmbeddingConfig,
+  _chatId?: string | number,
+): Promise<string | null> {
+  // СТРОГИЙ no-op при выключенных эмбеддингах — гарантирует прежнее поведение.
+  if (!isEmbeddingEnabled(embeddingConfig)) return null;
+  const q = query.trim();
+  if (!q) return null;
+
+  const nowMs = Date.now();
+  const queryVec = await embedQueryCached(q, embeddingConfig, nowMs);
+  if (!queryVec) return null; // сбой/cooldown сервера эмбеддингов → молча деградируем
+
+  // Приоритетный пул: установленные самостоятельно ИЛИ курируемые паки.
+  const ownRows = db
+    .select({ label: stickerPalette.label, fileId: stickerPalette.fileId })
+    .from(stickerPalette)
+    .where(sql`${stickerPalette.setName} IS NOT NULL OR ${stickerPalette.curated} = 1`)
+    .limit(SEMANTIC_CANDIDATE_CAP)
+    .all();
+
+  const ownHit = await rankBySimilarity(ownRows, queryVec, embeddingConfig, nowMs);
+  if (ownHit) return ownHit;
+
+  // Резервный пул: VLM-найденные (setName IS NULL и не курируемые).
+  const fallbackRows = db
+    .select({ label: stickerPalette.label, fileId: stickerPalette.fileId })
+    .from(stickerPalette)
+    .where(sql`${stickerPalette.setName} IS NULL AND ${stickerPalette.curated} = 0`)
+    .limit(SEMANTIC_CANDIDATE_CAP)
+    .all();
+
+  return rankBySimilarity(fallbackRows, queryVec, embeddingConfig, nowMs);
+}
+
+/** Косинус-ранжирование набора {label,fileId} против вектора запроса; null если лучший < порога. */
+async function rankBySimilarity(
+  rows: Array<{ label: string; fileId: string }>,
+  queryVec: number[],
+  embeddingConfig: EmbeddingConfig,
+  nowMs: number,
+): Promise<string | null> {
+  if (rows.length === 0) return null;
+  const labels = rows.map((r) => r.label).filter((l) => l.trim().length > 0);
+  if (labels.length === 0) return null;
+
+  const vecByLabel = await embedManyCached(labels, embeddingConfig, nowMs);
+  if (vecByLabel.size === 0) return null;
+
+  let bestFileId: string | null = null;
+  let bestScore = -1;
+  for (const row of rows) {
+    const vec = vecByLabel.get(row.label);
+    if (!vec) continue;
+    const score = cosineSimilarity(queryVec, vec);
+    if (score > bestScore) {
+      bestScore = score;
+      bestFileId = row.fileId;
+    }
+  }
+  return bestScore >= SEMANTIC_STICKER_MIN_SIMILARITY ? bestFileId : null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -468,11 +579,16 @@ export async function syncInstalledSets(client: TelegramClient, db: Db): Promise
     }
   }
 
-  // Очистка устаревших стикеров: строки, где setName не входит в список установленных (защищаем VLM-стикеры: setName IS NULL)
+  // Очистка устаревших стикеров: строки, где setName не входит в список установленных.
+  // Защищаем: VLM-стикеры (setName IS NULL) И курируемые паки (curated = 1) — последние
+  // могут быть НЕ установлены в аккаунте Алисы, но проиндексированы вручную (batch-VLM).
   try {
     if (installedSetNames.size === 0) {
-      // Нет установленных наборов стикеров → удаляем все записи, принадлежащие наборам
-      const { changes } = db.delete(stickerPalette).where(isNotNull(stickerPalette.setName)).run();
+      // Нет установленных наборов стикеров → удаляем записи наборов, КРОМЕ курируемых
+      const { changes } = db
+        .delete(stickerPalette)
+        .where(and(isNotNull(stickerPalette.setName), eq(stickerPalette.curated, 0)))
+        .run();
       removed = changes;
     } else {
       const { changes } = db
@@ -480,6 +596,7 @@ export async function syncInstalledSets(client: TelegramClient, db: Db): Promise
         .where(
           and(
             isNotNull(stickerPalette.setName),
+            eq(stickerPalette.curated, 0),
             notInArray(stickerPalette.setName, [...installedSetNames]),
           ),
         )
@@ -494,4 +611,190 @@ export async function syncInstalledSets(client: TelegramClient, db: Db): Promise
 
   syncLog.info("Sync complete", { added, removed, refreshed });
   return { added, removed, refreshed };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Batch-индексация целого пака через VLM (curate, explicit-ask, фоновая задача)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const indexLog = createLogger("sticker-indexer");
+
+/**
+ * Белый список растровых типов миниатюр (зеркалит RASTER_THUMB_TYPES в engine/act/messages.ts).
+ * s/m/x/y/w/a/b/c/d = растровый JPEG; j = SVG outline, i = stripped, f/u/v = video.
+ */
+const RASTER_THUMB_TYPES = new Set(["s", "m", "x", "y", "w", "a", "b", "c", "d"]);
+
+/** Жёсткий потолок размера пака — защита от патологически больших наборов. */
+const MAX_STICKERS_PER_PACK = 200;
+/** Параллелизм VLM-вызовов внутри батча (компромисс скорость/нагрузка). */
+const INDEX_CONCURRENCY = 4;
+
+/** Признак «грубого» (bootstrap) тега вида "<emoji> sticker" — такой не считаем богатым. */
+function isCrudeLabel(label: string | null | undefined): boolean {
+  if (!label) return true;
+  return /\bsticker$/i.test(label.trim());
+}
+
+export interface BatchIndexStats {
+  tagged: number;
+  skipped: number;
+  failed: number;
+  total: number;
+}
+
+export interface BatchIndexOpts {
+  /** Переиндексировать даже уже богато размеченные стикеры этого пака. */
+  force?: boolean;
+  /** Конфиг эмбеддингов — при включённом прогреваем вектор описания (fire-and-forget). */
+  embeddingConfig?: EmbeddingConfig;
+}
+
+/**
+ * Индексирует ВЕСЬ пак стикеров через VLM, помечая строки как curated (защищены от очистки).
+ *
+ * Отличия от оппортунистического пути (engine/act/messages.ts):
+ *  - нет лимита 20/пак (индексируем весь пак, потолок MAX_STICKERS_PER_PACK от патологий);
+ *  - индексируем И текстовые стикеры (это явная курация, не фоновое восприятие);
+ *  - пишет setName=shortName, curated=true → строка переживает syncInstalledSets cleanup.
+ *
+ * Извлечение кадра ТОЧНО как в messages.ts: для non-static — растровая миниатюра,
+ * для static — полное медиа; size-gate 1024..512000; пропуск анимированных/SVG буферов.
+ *
+ * Идемпотентность: уже богато размеченный стикер ЭТОГО пака пропускается, если !force.
+ * Ошибка одного стикера не прерывает батч.
+ */
+export async function batchIndexStickerSet(
+  client: TelegramClient,
+  db: Db,
+  visionConfig: Config,
+  shortName: string,
+  opts: BatchIndexOpts = {},
+): Promise<BatchIndexStats> {
+  const force = opts.force ?? false;
+  const embeddingConfig = opts.embeddingConfig;
+
+  if (!isVisionEnabled(visionConfig)) {
+    indexLog.warn("Batch index skipped: vision disabled", { shortName });
+    return { tagged: 0, skipped: 0, failed: 0, total: 0 };
+  }
+
+  const set = await client.getStickerSet(shortName);
+  const allDocs = set.stickers ?? [];
+  let docs = allDocs;
+  if (allDocs.length > MAX_STICKERS_PER_PACK) {
+    docs = allDocs.slice(0, MAX_STICKERS_PER_PACK);
+    indexLog.warn("Pack truncated to hard ceiling", {
+      shortName,
+      total: allDocs.length,
+      cap: MAX_STICKERS_PER_PACK,
+    });
+  }
+
+  const total = docs.length;
+  let tagged = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  indexLog.info("Batch index started", { shortName, total, force });
+
+  // Существующие богатые теги ЭТОГО пака (для идемпотентного пропуска при !force).
+  const existingRich = new Set<string>();
+  if (!force) {
+    const rows = db
+      .select({ fileUniqueId: stickerPalette.fileUniqueId, label: stickerPalette.label })
+      .from(stickerPalette)
+      .where(eq(stickerPalette.setName, shortName))
+      .all();
+    for (const r of rows) {
+      if (!isCrudeLabel(r.label)) existingRich.add(r.fileUniqueId);
+    }
+  }
+
+  // Обработка одного стикера: download → frame → VLM → upsert(curated).
+  async function indexOne(doc: (typeof docs)[number]): Promise<"tagged" | "skipped" | "failed"> {
+    const media = doc.sticker as Sticker;
+    const fileId = media.fileId;
+    const fileUniqueId = media.uniqueFileId;
+    const emoji = doc.alt || undefined;
+
+    if (!fileUniqueId || !fileId) return "skipped";
+    if (!force && existingRich.has(fileUniqueId)) return "skipped";
+
+    try {
+      // Извлечение кадра — ТОЧНО как в messages.ts.
+      let buffer: Buffer;
+      if (media.sourceType !== "static") {
+        const thumb = media.thumbnails?.find(
+          (t) => t.width > 0 && !Number.isNaN(t.width) && RASTER_THUMB_TYPES.has(t.type),
+        );
+        if (!thumb) return "skipped";
+        buffer = Buffer.from(await client.downloadAsBuffer(thumb));
+      } else {
+        buffer = Buffer.from(
+          await client.downloadAsBuffer(media as Parameters<typeof client.downloadAsBuffer>[0]),
+        );
+      }
+      if (buffer.byteLength > 512_000 || buffer.byteLength < 1024) return "skipped";
+      // Анимированный/SVG head-byte → не растр, пропускаем (как в messages.ts).
+      const head4 = buffer.subarray(0, 4);
+      if (head4[0] === 0x3c && (head4[1] === 0x3f || head4[1] === 0x73)) return "skipped";
+
+      const base64 = buffer.toString("base64");
+      const caption = await describeMedia(base64, fileUniqueId, "sticker", visionConfig);
+      const analysis = getStickerAnalysis(fileUniqueId);
+      // В ОТЛИЧИЕ от оппортунистического пути — текстовые стикеры тоже индексируем (явная курация).
+      if (!analysis || !caption) return "failed";
+
+      upsertFromVLM(db, {
+        fileUniqueId,
+        fileId,
+        label: analysis.description,
+        emoji,
+        setName: shortName,
+        curated: true,
+        emotion: analysis.emotion,
+        action: analysis.action,
+        intensity: analysis.intensity,
+      });
+
+      // Прогрев эмбеддинга описания (no-op при выключенных эмбеддингах).
+      if (embeddingConfig) {
+        warmEmbeddingOnIngest(analysis.description, embeddingConfig, Date.now());
+      }
+      return "tagged";
+    } catch (e) {
+      indexLog.debug("Sticker index failed (continuing)", {
+        shortName,
+        fileUniqueId,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      return "failed";
+    }
+  }
+
+  // Ограниченный параллелизм: «рабочие» тянут из общей очереди индексов.
+  let cursor = 0;
+  async function worker(): Promise<void> {
+    while (cursor < docs.length) {
+      const i = cursor++;
+      const r = await indexOne(docs[i]);
+      if (r === "tagged") tagged++;
+      else if (r === "skipped") skipped++;
+      else failed++;
+      if ((tagged + skipped + failed) % 25 === 0) {
+        indexLog.info("Batch index progress", {
+          shortName,
+          done: tagged + skipped + failed,
+          total,
+        });
+      }
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(INDEX_CONCURRENCY, docs.length) }, () => worker()),
+  );
+
+  indexLog.info("Batch index complete", { shortName, tagged, skipped, failed, total });
+  return { tagged, skipped, failed, total };
 }

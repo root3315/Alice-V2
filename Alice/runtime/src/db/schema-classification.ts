@@ -440,7 +440,7 @@ export const TABLE_CLASSIFICATIONS = {
     appendOnly: false,
     rebuildable: "partially",
     authority: "Current sticker semantic palette used for action selection.",
-    writer: "sticker sync/admin palette paths",
+    writer: "sticker sync/admin/batch-index (curated) palette paths",
     readers: "sticker action selection",
     absence: "No row means the sticker is unavailable to semantic lookup.",
   },

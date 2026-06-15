@@ -121,6 +121,14 @@ export interface EngineApiDeps {
     msgId: number;
     options: number[];
   }) => Promise<{ voted: number[] }>;
+  /**
+   * Batch-индексация целого пака стикеров через VLM (`irc index-pack`). ТЯЖЁЛАЯ разовая
+   * операция: запускается в фоне, возвращает немедленный ack (started + оценка размера).
+   */
+  telegramIndexStickerPack?: (params: {
+    shortName: string;
+    force?: boolean;
+  }) => Promise<{ started: boolean; shortName: string; estimated: number; message: string }>;
   /** Telegram scrollable rich table callback (`irc table`). */
   telegramTable?: (params: {
     chatId: number;

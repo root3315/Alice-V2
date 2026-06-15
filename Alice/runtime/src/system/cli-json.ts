@@ -66,6 +66,7 @@ export const COMMAND_FIELDS = {
   checklist: ["msgId", "chatId"] as const,
   poll: ["msgId", "chatId"] as const,
   vote: ["voted", "chatId", "msgId"] as const,
+  "index-pack": ["started", "shortName", "estimated", "message"] as const,
   table: ["msgId", "chatId"] as const,
   voice: ["msgId", "chatId"] as const,
   read: ["success"] as const,

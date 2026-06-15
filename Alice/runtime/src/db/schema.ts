@@ -1063,6 +1063,11 @@ export const stickerPalette = sqliteTable(
     action: text("action"),
     /** Измерение интенсивности (заполняется VLM в Phase 2) */
     intensity: text("intensity"),
+    /**
+     * Флаг курируемого стикера: 1 = пак проиндексирован вручную (batch-VLM),
+     * защищён от очистки syncInstalledSets даже если пак не установлен в аккаунте.
+     */
+    curated: integer("curated").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
       .$defaultFn(() => new Date()),

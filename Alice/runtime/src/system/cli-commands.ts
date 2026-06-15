@@ -696,6 +696,49 @@ export async function voteCommand(ctx: CliContext, args: VoteArgs): Promise<Comm
   };
 }
 
+// ── Index-Pack Command ──
+
+export interface IndexPackArgs {
+  json?: string;
+  /** Короткое имя пака стикеров (shortName) для индексации. */
+  set: string;
+  /** Переиндексировать даже уже размеченные стикеры. */
+  force?: boolean;
+}
+
+/**
+ * Логика команды index-pack — запускает фоновую batch-VLM индексацию пака стикеров.
+ * ТЯЖЁЛАЯ разовая операция: сервер запускает её в фоне и сразу отдаёт ack.
+ */
+export async function indexPackCommand(
+  ctx: CliContext,
+  args: IndexPackArgs,
+): Promise<CommandResult> {
+  const die = makeDie(ctx.output, "irc");
+
+  const shortName = (args.set ?? "").trim();
+  if (!shortName) die("index-pack requires --set <shortName>", "command_missing_argument");
+
+  const force = args.force === true;
+
+  const result = (await ctx.engine.post("/telegram/index-sticker-pack", {
+    shortName,
+    force,
+  })) as { started?: boolean; shortName?: string; estimated?: number; message?: string } | null;
+
+  const message =
+    result?.message ?? `indexing ${shortName}: started, will report when done`;
+  return {
+    output: renderConfirm("Indexing sticker pack", message),
+    rawResult: {
+      started: result?.started ?? true,
+      shortName: result?.shortName ?? shortName,
+      estimated: result?.estimated ?? 0,
+      message,
+    },
+  };
+}
+
 // ── Table Command ──
 
 export interface TableArgs {

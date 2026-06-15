@@ -7,6 +7,7 @@ import { renderConfirm } from "./cli-bridge.js";
 import {
   assertCurrentChatForSend,
   checklistCommand,
+  indexPackCommand,
   joinCommand,
   leaveCommand,
   motdCommand,
@@ -279,6 +280,28 @@ const vote = defineCommand({
     },
   },
   run: makeRunner("vote", voteCommand),
+});
+
+const indexPack = defineCommand({
+  meta: {
+    name: "index-pack",
+    description:
+      "Learn/index a WHOLE sticker pack via the vision model so each sticker gets a rich semantic tag. HEAVY one-off operation (takes minutes) — use ONLY when explicitly asked to learn/index a specific sticker pack, NOT on a whim. Runs in the BACKGROUND: returns immediately, reports when done. Indexed packs are marked curated (kept even if not installed in the account).",
+  },
+  args: {
+    ...jsonFlag,
+    set: {
+      type: "string",
+      description: "Sticker pack short name (the addstickers/<shortName> id). Required.",
+      required: true,
+      valueHint: "shortName",
+    },
+    force: {
+      type: "boolean",
+      description: "Re-index even stickers already richly tagged for this pack.",
+    },
+  },
+  run: makeRunner("index-pack", indexPackCommand),
 });
 
 const table = defineCommand({
@@ -642,6 +665,7 @@ export const ircSubCommands = {
   checklist,
   poll,
   vote,
+  "index-pack": indexPack,
   table,
   voice,
   read,

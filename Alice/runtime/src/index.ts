@@ -52,7 +52,8 @@ import { initProviders, selectProviderForFirstPass } from "./llm/client.js";
 import { closeGroupCache, initGroupCache } from "./llm/group-cache.js";
 import { closeMediaCache, initMediaCache } from "./llm/media-cache.js";
 import { onBreakerStateChange } from "./llm/resilience.js";
-import { setEmbeddingConfig } from "./llm/semantic-recall-config.js";
+import { isEmbeddingEnabled } from "./llm/embeddings.js";
+import { getEmbeddingConfig, setEmbeddingConfig } from "./llm/semantic-recall-config.js";
 import { setDigestTarget } from "./mods/digest.mod.js";
 import { setExplorationTarget, setExplorationWorker } from "./mods/exploration.mod.js";
 import { setHealthWatchTarget } from "./mods/health-watch.mod.js";
@@ -90,10 +91,12 @@ import {
 import { bindAdminCommands } from "./telegram/admin.js";
 import { sendAlbumPhoto } from "./telegram/album-send.js";
 import {
+  batchIndexStickerSet,
   getAvailableKeywords,
   pickAnySticker,
   resolveByEmoji,
   resolveLabel,
+  resolveLabelSemantic,
   syncInstalledSets,
 } from "./telegram/apps/sticker-palette.js";
 import { buildInitialGraph } from "./telegram/bootstrap.js";
@@ -651,8 +654,18 @@ async function main() {
       }
       const graphId = telegramChannelId(rawChatId);
       const db = getDb();
-      // Многоуровневый поиск: ключевое слово измерения → emoji → raw fileId
+      // Многоуровневый поиск: ключевое слово измерения → (опц.) семантика → emoji → raw fileId
       let fileId: string | null = resolveLabel(db, keyword, graphId ?? undefined);
+      // Tier 1.5 (ADDITIVE, OFF BY DEFAULT): подбор «по смыслу» через эмбеддинги.
+      // СТРОГИЙ guard: только если дешёвый resolveLabel пуст И эмбеддинги включены.
+      // При выключенных эмбеддингах (текущий дефолт) эта ветка НЕ выполняется — путь
+      // отправки стикера остаётся байт-в-байт прежним.
+      if (!fileId) {
+        const embeddingConfig = getEmbeddingConfig();
+        if (isEmbeddingEnabled(embeddingConfig)) {
+          fileId = await resolveLabelSemantic(db, keyword, embeddingConfig, graphId ?? undefined);
+        }
+      }
       if (!fileId) fileId = resolveByEmoji(db, keyword, graphId ?? undefined);
       if (!fileId && keyword.startsWith("CAACAgI")) fileId = keyword;
       // Финальный фолбэк: набор не классифицирован под этот keyword → шлём любой
@@ -760,6 +773,44 @@ async function main() {
     telegramVote: async ({ chatId, msgId, options }) => {
       const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
       return sendVote(client, rawChatId, msgId, options);
+    },
+    // Batch-индексация целого пака стикеров через VLM (curate, explicit-ask).
+    // ТЯЖЁЛАЯ разовая операция (минуты): запускаем в ФОНЕ на уже открытом клиенте Алисы
+    // (не отдельный процесс → нет конфликта блокировки Telegram-сессии). Возвращаем ack
+    // сразу, по завершении логируем итоговую статистику.
+    telegramIndexStickerPack: async ({ shortName, force }) => {
+      const embeddingConfig = getEmbeddingConfig();
+      // Оценка размера пака для ack (best-effort; не блокируем надолго).
+      let estimate = 0;
+      try {
+        const set = await client.getStickerSet(shortName);
+        estimate = set.stickers?.length ?? 0;
+      } catch {
+        // не критично — отдадим ack без точной оценки
+      }
+      // Фоновая задача: НЕ ждём полного завершения перед ответом.
+      void batchIndexStickerSet(client, getDb(), config, shortName, {
+        force,
+        embeddingConfig,
+      })
+        .then((stats) => {
+          log.info("Sticker pack indexed (background job done)", {
+            shortName,
+            ...stats,
+          });
+        })
+        .catch((e) => {
+          log.warn("Sticker pack indexing failed (background job)", {
+            shortName,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        });
+      return {
+        started: true,
+        shortName,
+        estimated: estimate,
+        message: `indexing ${shortName}: ~${estimate} stickers, will report when done`,
+      };
     },
     // Нативная прокручиваемая таблица (rich-message). Зеркалит telegramSticker: typing → resolve топика → sendTable.
     telegramTable: async ({ chatId, title, headers, rows, replyTo }) => {
