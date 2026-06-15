@@ -59,7 +59,11 @@ import {
  *
  * Используется для снапшота/отката атомарного выполнения в песочнице:
  * - dirtyNodeEntries: поверхностные копии NodeEntry для dirty-узлов
- * - edges: полный набор рёбер, только если dirtyEdgesRebuild=true
+ * - nodeEntries: M2-фикс — поверхностные копии NodeEntry для ВСЕХ узлов на момент
+ *   снапшота, чтобы при откате можно было восстановить каскадно удалённые ЧИСТЫЕ
+ *   соседние узлы (например, conversation, удалённые removeEntity(channel))
+ * - edges: полный набор рёбер, всегда захватывается (M2-фикс) — иначе фантомные рёбра,
+ *   добавленные после снапшота, переживают откат
  * - beliefsDict: всегда включён (гарантия полного отката)
  *
  * @see paper/ §4 "Incremental State Management"
@@ -68,11 +72,17 @@ export interface IncrementalSnapshot {
   tick: number;
   /** Типизированные записи dirty-узлов (Map<nodeId, поверхностная копия NodeEntry>). */
   dirtyNodeEntries: Map<string, NodeEntry>;
+  /**
+   * M2-фикс: поверхностные копии NodeEntry для ВСЕХ узлов на момент снапшота.
+   * Нужны, чтобы восстановить каскадно удалённые ЧИСТЫЕ соседние узлы при откате
+   * (узел, не помеченный dirty на момент снапшота и удалённый removeEntity позже).
+   */
+  nodeEntries?: Map<string, NodeEntry>;
   /** ID удалённых узлов среди dirty-узлов (узлы, отсутствующие в графе на момент снапшота, но записанные в dirtySet). */
   deletedNodeIds: Set<string>;
   /** H8: полный набор id узлов НА МОМЕНТ снапшота — чтобы при откате удалять только реально новые. */
   snapshotNodeIds?: Set<string>;
-  /** Полный набор данных рёбер, если требуется перестройка рёбер. */
+  /** Полный набор данных рёбер на момент снапшота (M2-фикс: захватывается всегда). */
   edges?: Array<{ src: string; dst: string; data: EdgeData }>;
   beliefsDict: BeliefDict;
 }
@@ -503,10 +513,24 @@ export class WorldModel {
     const snap: IncrementalSnapshot = {
       tick: this._tick,
       dirtyNodeEntries: new Map(),
+      nodeEntries: new Map(), // M2-фикс: полные записи всех узлов на момент снапшота
       deletedNodeIds: new Set(),
       snapshotNodeIds: new Set(this.nodes.keys()), // H8: что существовало на момент снапшота
       beliefsDict: this.beliefs.toDict(),
     };
+
+    // M2-фикс: захватываем поверхностные копии ВСЕХ узлов, чтобы при откате можно было
+    // восстановить каскадно удалённые ЧИСТЫЕ соседние узлы (например, conversation,
+    // удалённые removeEntity(channel) уже ПОСЛЕ снапшота — они не попадают в dirtyNodes
+    // на момент снапшота и иначе вернулись бы без рёбер или вовсе не восстановились).
+    for (const [nodeId, entry] of this.nodes) {
+      const copy = {
+        type: entry.type,
+        attrs: { ...entry.attrs },
+      } as NodeEntry;
+      // biome-ignore lint/style/noNonNullAssertion: nodeEntries инициализирован выше
+      snap.nodeEntries!.set(nodeId, copy);
+    }
 
     for (const nodeId of this.dirtyNodes) {
       const entry = this.nodes.get(nodeId);
@@ -520,11 +544,12 @@ export class WorldModel {
       }
     }
 
-    if (this.dirtyEdgesRebuild) {
-      snap.edges = [];
-      for (const [src, dst, data] of this.allEdges()) {
-        snap.edges.push({ src, dst, data: { ...data } });
-      }
+    // M2-фикс: захватываем полный набор рёбер ВСЕГДА (не только при dirtyEdgesRebuild).
+    // Если op после снапшота добавит рёбра или вызовет removeEntity, откат обязан
+    // полностью перестроить рёбра — иначе фантомные рёбра переживают откат.
+    snap.edges = [];
+    for (const [src, dst, data] of this.allEdges()) {
+      snap.edges.push({ src, dst, data: { ...data } });
     }
 
     return snap;
@@ -545,6 +570,19 @@ export class WorldModel {
     for (const [nodeId, entry] of snap.dirtyNodeEntries) {
       this.nodes.set(nodeId, { type: entry.type, attrs: { ...entry.attrs } } as NodeEntry);
       this._ensureEdgeMaps(nodeId);
+    }
+
+    // 1b. M2-фикс: восстанавливаем каскадно удалённые ЧИСТЫЕ узлы.
+    // Узел, существовавший на момент снапшота, но удалённый ПОСЛЕ снапшота (например,
+    // conversation, каскадно удалённый removeEntity(channel)), не попадает в
+    // dirtyNodeEntries. Восстанавливаем его из полного снимка nodeEntries.
+    if (snap.nodeEntries) {
+      for (const [nodeId, entry] of snap.nodeEntries) {
+        if (!this.nodes.has(nodeId)) {
+          this.nodes.set(nodeId, { type: entry.type, attrs: { ...entry.attrs } } as NodeEntry);
+          this._ensureEdgeMaps(nodeId);
+        }
+      }
     }
 
     // 2. Удаляем узлы, которых не было в снапшоте, но созданные в процессе выполнения

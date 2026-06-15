@@ -75,13 +75,37 @@ export const messagingActions: TelegramActionDef[] = [
         }
       }
 
-      // Forum: если топик не задан явно — слать в активный топик чата (#25 хранит
-      // current_topic_id из входящих). В не-форумах он undefined → обычная отправка.
+      // Forum #8: маршрутизация топика по приоритету, чтобы исходящий ответ не уходил в
+      // ЧУЖОЙ топик в активном форуме (баг: current_topic_id хранит топик ПОСЛЕДНЕГО входящего,
+      // т.е. может указывать на топик, на который пользователь только что переключился, а не тот,
+      // куда Alice отвечает).
+      //
+      // Порядок приоритета:
+      //   1. args.topicId          — явный топик от вызывающего (наивысший приоритет).
+      //   2. args.replyTo          — если это reply, сам Telegram привяжет сообщение к топику
+      //      исходного сообщения (см. actions.ts sendText: replyToMsgId имеет приоритет над topicId).
+      //      Поэтому при наличии replyTo НЕ подставляем stale current_topic_id — это могло бы
+      //      переопределить корректный топик reply на устаревший. Передаём topicId=undefined и
+      //      позволяем reply-маршрутизации определить топик.
+      //   3. current_topic_id      — только как последнее средство (bare send без явного топика и
+      //      без reply): лучший доступный ориентир для активного форум-чата.
+      //
+      // ОГРАНИЧЕНИЕ (#8): для bare-send (без replyTo) точный топик конкретного сообщения, на которое
+      // Alice реагирует, недоступен в памяти — message_log/граф не хранят topic per-msgId, а трекается
+      // только current_topic_id (последний входящий). Полное per-message решение требует хранить thread_id
+      // на сообщение (миграция схемы + запись в events.ts + lookup здесь) — крупное cross-file изменение,
+      // намеренно отложенное. Текущая эвристика устраняет распространённый случай (reply + явный топик).
+      const explicitTopicId = args.topicId as number | undefined;
+      const replyTo = args.replyTo as number | undefined;
       const topicId =
-        (args.topicId as number | undefined) ??
-        (ctx.G.has(graphId) ? (ctx.G.getChannel(graphId) as { current_topic_id?: number }).current_topic_id : undefined);
+        explicitTopicId ??
+        (replyTo != null
+          ? undefined // reply сам определяет топик — не навязываем устаревший current_topic_id
+          : ctx.G.has(graphId)
+            ? (ctx.G.getChannel(graphId) as { current_topic_id?: number }).current_topic_id
+            : undefined);
       const msgId = await sendText(ctx.client, rawId, text, {
-        replyToMsgId: args.replyTo,
+        replyToMsgId: replyTo,
         topicId,
         mentions: args.mentions,
       });

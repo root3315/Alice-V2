@@ -134,8 +134,20 @@ async function main() {
   log.info("Logged in", { selfId, username: self.username });
 
   // worki live-прогресс: worki шлёт статус-строки напрямую через клиент (её стилем, надёжно).
-  setWorkiStatusSender((chatId, text, topicId) => {
-    void sendText(client, chatId, text, { topicId }).catch(() => {});
+  // Возвращаем Promise<boolean> — успех/провал доставки. worki продвигает троттл/антидубль/
+  // счётчик статус-строк ТОЛЬКО при успехе (раньше .catch(()=>{}) глотал сбой, а worki считал
+  // отправку удавшейся → строка терялась молча, троттл всё равно тикал).
+  setWorkiStatusSender(async (chatId, text, topicId) => {
+    try {
+      await sendText(client, chatId, text, { topicId });
+      return true;
+    } catch (err) {
+      log.warn("worki status send failed", {
+        chatId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
   });
 
   // Инцидент-алёрт: Алиса сама пишет о своих сбоях (error-аномалиях) в ЛИЧКУ владельца.

@@ -178,23 +178,23 @@ describe("增量快照", () => {
     expect(G.edgeCount).toBe(1);
   });
 
-  it("clean 边不在增量快照中（增量快照局限性）", () => {
+  it("M2-фикс: clean рёбра захватываются в инкрем-снапшот и откатываются", () => {
     const G = new WorldModel();
     G.addContact("c1");
     G.addContact("c2");
     G.addRelation("c1", "friend", "c2");
-    G.clearDirty(); // 边变为 clean
+    G.clearDirty(); // рёбра стали clean
     const snap = G.snapshotIncremental();
 
-    // snap.edges 未定义（dirtyEdgesRebuild=false）
-    expect(snap.edges).toBeUndefined();
+    // M2: snap.edges теперь захватывается ВСЕГДА (раньше — только при dirtyEdgesRebuild=true).
+    expect(snap.edges).toBeDefined();
 
-    // 即使添加了新边，回滚也不会恢复边（因为快照中无边数据）
+    // Добавили новое ребро → откат к снапшоту его убирает (откат рёбер теперь работает).
     G.addRelation("c1", "knows", "c2");
     G.restoreFromIncremental(snap);
 
-    // 新边未被删除——增量快照不包含 clean 边的恢复
-    expect(G.edgeCount).toBe(2);
+    // Состояние рёбер откатилось к моменту снапшота: осталось только "friend".
+    expect(G.edgeCount).toBe(1);
   });
 
   it("删除边后回滚恢复", () => {

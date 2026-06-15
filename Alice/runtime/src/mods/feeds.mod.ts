@@ -24,7 +24,7 @@
  */
 import { createMod } from "../core/mod-builder.js";
 import { PromptBuilder } from "../core/prompt-style.js";
-import type { ContributionItem } from "../core/types.js";
+import type { ContributionItem, ModContext } from "../core/types.js";
 import { readPressureApi, section } from "../core/types.js";
 import { type FeedDef, type FeedsConfig, loadFeedsConfig } from "../feeds/config.js";
 import { createLogger } from "../utils/logger.js";
@@ -201,6 +201,23 @@ interface FeedsState {
   pollerStarted: boolean;
   /** Время последней успешной инъекции фида (мс). */
   lastInjectMs: number;
+  /**
+   * Fix #5 (чистота contribute): решение об инъекции принимается ровно ОДИН РАЗ за tick
+   * в onTickStart (там же — все мутации: инкремент exposures, обновление lastInjectMs, расход
+   * Math.random()). contribute() только читает этот заранее принятый результат и рендерит его.
+   *
+   * Хранятся «лёгкие» строки (а не PromptBuilder/ContributionItem), чтобы состояние оставалось
+   * JSON-сериализуемым (persist в DB) и безопасным для structuredClone (snapshot/restore).
+   * Пустой массив = в этом tick инъекции нет.
+   */
+  pendingInject: string[];
+  /**
+   * Fix #5: tick, для которого pendingInject уже вычислен. Сторож «решение принимается один раз
+   * за tick». В рабочем движке onTickStart всегда выполняется до contribute → contribute ЧИСТАЯ.
+   * Если onTickStart по какой-то причине не отработал (decidedTick !== ctx.tick), contribute
+   * вычислит решение лениво ровно один раз — это страховка, не основной путь.
+   */
+  decidedTick: number;
 }
 
 // ── Вспомогательные функции выборки ──────────────────────────────────────────
@@ -244,10 +261,80 @@ function diverseSample(items: CachedFeedItem[], n: number): CachedFeedItem[] {
 
 // ── Определение Mod ───────────────────────────────────────────────────────────
 
+/**
+ * Fix #5: вычисляет решение об инъекции для одного tick (вся мутирующая логика здесь) и
+ * запоминает его в state.pendingInject / state.decidedTick. Идемпотентно: повторный вызов
+ * в рамках того же tick ничего не пересчитывает (выходит сразу), поэтому ни exposures, ни
+ * lastInjectMs не двоятся и Math.random() не расходуется повторно.
+ *
+ * Вынесено из contribute(): collectContributions вызывается несколько раз за один ReAct-tick
+ * и спекулятивно в eval ablation — мутации внутри contribute() двоили бы exposures, сбивали бы
+ * кулдаун и расходовали бы Math.random() лишний раз.
+ */
+function ensureFeedDecision(ctx: ModContext<FeedsState>): void {
+  // Решение для этого tick уже принято — ничего не делаем (чистый повтор).
+  if (ctx.state.decidedTick === ctx.tick) return;
+  ctx.state.decidedTick = ctx.tick;
+  ctx.state.pendingInject = computeFeedInjection(ctx);
+}
+
+/**
+ * Внутреннее: единственное место мутаций (инкремент exposures, обновление lastInjectMs,
+ * расход Math.random()). Возвращает «лёгкие» строки для рендеринга (пустой массив = инъекции нет).
+ */
+function computeFeedInjection(ctx: ModContext<FeedsState>): string[] {
+  if (!feedsConfig || feedCache.size === 0) return [];
+
+  // ── Поведенческие блокировки: имитация реального «листания телефона» ──
+
+  // 1. Блокировка по давлению: при активной обработке сообщений телефон не листается
+  const pressure = readPressureApi(ctx);
+  if (pressure > PRESSURE_GATE) return [];
+
+  // 2. Период охлаждения: только что посмотрела телефон — сразу снова не смотрит
+  const now = ctx.nowMs;
+  if (ctx.state.lastInjectMs > 0 && now - ctx.state.lastInjectMs < INJECT_COOLDOWN_MS) {
+    return [];
+  }
+
+  // 3. Вероятностный пропуск: человек смотрит в телефон не каждую минуту
+  if (Math.random() < SKIP_PROBABILITY) return [];
+
+  // ── Фильтрация + выборка ──
+
+  const shelfLifeMs = feedsConfig.shelfLifeHours * 3600_000;
+  const maxExp = feedsConfig.maxExposures;
+
+  const eligible: CachedFeedItem[] = [];
+  for (const item of feedCache.values()) {
+    if (now - item.fetchedMs > shelfLifeMs) continue;
+    if (item.exposures >= maxExp) continue;
+    eligible.push(item);
+  }
+
+  if (eligible.length === 0) return [];
+
+  // Разнообразная выборка: случайно выбираем 2–3 записи, стараемся охватить разные источники
+  const toShow = diverseSample(eligible, MAX_ITEMS_PER_INJECT);
+
+  // Увеличиваем счётчик показов + фиксируем время инъекции (мутации — только здесь)
+  for (const item of toShow) {
+    item.exposures += 1;
+  }
+  ctx.state.lastInjectMs = now;
+
+  // Рендерим в «лёгкие» строки (PromptBuilder соберётся в contribute из этих строк)
+  return toShow.map((item) => {
+    let line = `${item.feedLabel} «${item.title}»`;
+    if (item.url) line += ` ${item.url}`;
+    return line;
+  });
+}
+
 export const feedsMod = createMod<FeedsState>("feeds", {
   category: "mechanic",
   description: "ADR-167: канал восприятия фидов — интернет-зрение Алисы",
-  initialState: { pollerStarted: false, lastInjectMs: 0 },
+  initialState: { pollerStarted: false, lastInjectMs: 0, pendingInject: [], decidedTick: -1 },
 })
   .onTickStart((ctx) => {
     // При первом tick запускаем фоновый поллинг (гарантируем единственный запуск)
@@ -255,54 +342,22 @@ export const feedsMod = createMod<FeedsState>("feeds", {
       startFeedPoller();
       ctx.state.pollerStarted = true;
     }
+
+    // Fix #5: принимаем решение об инъекции ровно один раз за tick (все мутации — здесь).
+    ensureFeedDecision(ctx);
   })
   .contribute((ctx): ContributionItem[] => {
-    if (!feedsConfig || feedCache.size === 0) return [];
+    // Fix #5: contribute() ЧИСТАЯ относительно повторных вызовов в одном tick — она лишь читает
+    // решение, принятое в onTickStart. ensureFeedDecision() идемпотентна в рамках tick: если
+    // решение уже принято (обычный путь — onTickStart отработал), она сразу выходит и НИЧЕГО
+    // не мутирует. Ленивый расчёт сработает только если onTickStart не запускался (страховка),
+    // и тоже ровно один раз за tick — поэтому ни exposures, ни lastInjectMs не двоятся.
+    ensureFeedDecision(ctx);
 
-    // ── Поведенческие блокировки: имитация реального «листания телефона» ──
+    const pending = ctx.state.pendingInject;
+    if (!pending || pending.length === 0) return [];
 
-    // 1. Блокировка по давлению: при активной обработке сообщений телефон не листается
-    const pressure = readPressureApi(ctx);
-    if (pressure > PRESSURE_GATE) return [];
-
-    // 2. Период охлаждения: только что посмотрела телефон — сразу снова не смотрит
-    const now = ctx.nowMs;
-    if (ctx.state.lastInjectMs > 0 && now - ctx.state.lastInjectMs < INJECT_COOLDOWN_MS) {
-      return [];
-    }
-
-    // 3. Вероятностный пропуск: человек смотрит в телефон не каждую минуту
-    if (Math.random() < SKIP_PROBABILITY) return [];
-
-    // ── Фильтрация + выборка ──
-
-    const shelfLifeMs = feedsConfig.shelfLifeHours * 3600_000;
-    const maxExp = feedsConfig.maxExposures;
-
-    const eligible: CachedFeedItem[] = [];
-    for (const item of feedCache.values()) {
-      if (now - item.fetchedMs > shelfLifeMs) continue;
-      if (item.exposures >= maxExp) continue;
-      eligible.push(item);
-    }
-
-    if (eligible.length === 0) return [];
-
-    // Разнообразная выборка: случайно выбираем 2–3 записи, стараемся охватить разные источники
-    const toShow = diverseSample(eligible, MAX_ITEMS_PER_INJECT);
-
-    // Увеличиваем счётчик показов + фиксируем время инъекции
-    for (const item of toShow) {
-      item.exposures += 1;
-    }
-    ctx.state.lastInjectMs = now;
-
-    // Рендерим в секцию prompt
-    const lines = toShow.map((item) => {
-      let line = `${item.feedLabel} «${item.title}»`;
-      if (item.url) line += ` ${item.url}`;
-      return PromptBuilder.of(line);
-    });
+    const lines = pending.map((line) => PromptBuilder.of(line));
 
     return [
       section(

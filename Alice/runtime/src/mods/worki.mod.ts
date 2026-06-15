@@ -102,19 +102,36 @@ interface Pending {
   lastStatusText?: string;
   /** Счётчик статус-строк (для ротации живых фраз). */
   statusCount?: number;
+  /** Статус-строка сейчас в полёте (async): не шлём дубль, троттл/счётчик двигаем лишь на success. */
+  statusSending?: boolean;
 }
 interface WorkiState {
   /** Готовые-но-недоставленные результаты — переживают рестарт (HIGH-10). */
   saved: Record<string, Pending>;
 }
 
+// ВНИМАНИЕ (НЕ sandbox-rollback-safe): `pending` и `_rehydrated` — module-global, ВНЕ снимка
+// диспетчера (snapshot/rollback гоняет только ctx.state, не модульные переменные). Это осознанно:
+// worki — single-instance (один процесс рантайма, один dev-клон, code_*-инструкции сериализованы
+// через isBusy), а живой цикл доставки завязан на in-flight промисы (runAnalysis/runFix/runPr),
+// listener SEND_MESSAGE и async-статусы — всё это живёт в `pending`, а НЕ в ctx.state.
+// Перенос `pending` в ctx.state ломает доставку (промисы и listener мутируют объект напрямую,
+// rollback отыграл бы их назад) → НЕ делать без отдельного аудита. Долговечность через рестарт
+// решена иначе: недоставленные результаты (вкл. running → честная ошибка) персистятся в
+// ctx.state.saved в onTickEnd и регидрируются после рестарта. Откат тика worki НЕ откатит
+// (приемлемо: статус-строки идемпотентны по антидублю, доставка — по wall-clock и delivered).
 const pending = new Map<string, Pending>();
 let _rehydrated = false;
 
-/** Прямая отправка статус-строк (подключается из index.ts телеграм-клиентом). Живые фразы, её стиль. */
-let _statusSender: ((chatId: number, text: string, topicId?: number) => void) | null = null;
+/**
+ * Прямая отправка статус-строк (подключается из index.ts телеграм-клиентом). Живые фразы, её стиль.
+ * Возвращает Promise<boolean> — true только при УСПЕШНОЙ доставке. worki продвигает троттл/
+ * антидубль/счётчик строк лишь на success (раньше провал глотался → строка терялась молча).
+ */
+let _statusSender: ((chatId: number, text: string, topicId?: number) => Promise<boolean>) | null =
+  null;
 export function setWorkiStatusSender(
-  fn: (chatId: number, text: string, topicId?: number) => void,
+  fn: (chatId: number, text: string, topicId?: number) => Promise<boolean>,
 ): void {
   _statusSender = fn;
 }
@@ -499,7 +516,25 @@ export const workiMod = createMod<WorkiState>("worki", {
     if (!_rehydrated) {
       _rehydrated = true;
       for (const [id, p] of Object.entries(ctx.state.saved ?? {})) {
-        if (!pending.has(id)) pending.set(id, { ...p, directed: false, completedMs: ctx.nowMs });
+        if (pending.has(id)) continue;
+        // running-задача не переживает рестарт (in-flight промис умер вместе с процессом).
+        // Спросившему обещали результат → честно говорим, что прервалось, а не молчим.
+        if (p.status === "running") {
+          pending.set(id, {
+            ...p,
+            status: "error",
+            result: "прервалось рестартом — переспроси",
+            directed: false,
+            statusSending: false,
+            completedMs: ctx.nowMs,
+          });
+          log.warn("worki: running-задача прервана рестартом → отдам честную ошибку", {
+            id,
+            kind: p.kind,
+          });
+        } else {
+          pending.set(id, { ...p, directed: false, completedMs: ctx.nowMs });
+        }
       }
     }
     const now = ctx.nowMs;
@@ -530,6 +565,8 @@ export const workiMod = createMod<WorkiState>("worki", {
           _statusSender &&
           latest &&
           latest !== p.lastStatusText &&
+          // Не шлём дубль, пока предыдущая отправка ещё в полёте (async success/failure).
+          !p.statusSending &&
           // ЛС — живой темп; группа (отрицательный chat_id) — реже, чтобы не спамить.
           now - (p.lastStatusMs ?? 0) >
             (Number(p.askGraphId.split(":").pop()) < 0
@@ -550,15 +587,27 @@ export const workiMod = createMod<WorkiState>("worki", {
               /* топик опционален */
             }
             const lead = STATUS_LEADS[(p.statusCount ?? 0) % STATUS_LEADS.length];
-            try {
-              _statusSender(numeric, `${lead}${latest}`, topicId);
-              p.lastStatusMs = now;
-              p.lastStatusText = latest;
-              p.statusCount = (p.statusCount ?? 0) + 1;
-              log.debug("worki: статус отправлен", { id, latest });
-            } catch (err) {
-              log.warn("worki: статус не отправлен", { id, err: (err as Error).message });
-            }
+            // Отправка асинхронна: троттл/антидубль/счётчик двигаем ТОЛЬКО на success
+            // (раньше двигали безусловно, а .catch(()=>{}) в index.ts глотал сбой → строка
+            // терялась молча). Антидубль в полёте — флаг statusSending; на провале он снимается
+            // и при следующем тике строка будет переотправлена.
+            p.statusSending = true;
+            void _statusSender(numeric, `${lead}${latest}`, topicId)
+              .then((ok) => {
+                p.statusSending = false;
+                if (ok) {
+                  p.lastStatusMs = Date.now();
+                  p.lastStatusText = latest;
+                  p.statusCount = (p.statusCount ?? 0) + 1;
+                  log.debug("worki: статус отправлен", { id, latest });
+                } else {
+                  log.warn("worki: статус не доставлен (переотправлю)", { id, latest });
+                }
+              })
+              .catch((err) => {
+                p.statusSending = false;
+                log.warn("worki: статус не отправлен", { id, err: (err as Error).message });
+              });
           }
         }
         continue;
@@ -588,10 +637,14 @@ export const workiMod = createMod<WorkiState>("worki", {
         pending.delete(id);
       }
     }
-    // Персист готовых-недоставленных (running-промисы рестарт не переживают) → переживут рестарт.
+    // Персист недоставленных. ВКЛЮЧАЯ running: in-flight промис рестарт не переживёт, но мы
+    // обещали спросившему результат → сохраняем running, чтобы при регидрации честно сказать
+    // «прервалось рестартом», а не молчать (раньше running терялись бесследно).
     const saved: Record<string, Pending> = {};
     for (const [id, p] of pending) {
-      if ((p.status === "done" || p.status === "error") && !p.delivered) saved[id] = p;
+      if ((p.status === "done" || p.status === "error" || p.status === "running") && !p.delivered) {
+        saved[id] = p;
+      }
     }
     ctx.state.saved = saved;
     // Отметить чаты с активным worki-ревью → там анти-монолог ослаблен (timeline/presence),
