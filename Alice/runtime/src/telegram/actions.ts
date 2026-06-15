@@ -551,13 +551,15 @@ export async function sendSticker(
   client: TelegramClient,
   chatId: string | number,
   fileId: string,
-  options: { replyToMsgId?: number } = {},
+  options: { replyToMsgId?: number; topicId?: number } = {},
 ): Promise<number | undefined> {
   await globalLimiter.acquire();
   let sent: Message | undefined;
   try {
+    // Forum: маршрутизируем стикер в топик (current_topic_id), как sendText. Без этого стикер
+    // валится в General — баг: реагирует на активность в одном топике, а стикер летит в General.
     sent = await client.sendMedia(chatId, fileId, {
-      replyTo: options.replyToMsgId,
+      replyTo: options.replyToMsgId ?? options.topicId,
     });
   } catch (err) {
     rethrowTelegramActionFailure(err, "send_sticker", { chatId: String(chatId), fileId });

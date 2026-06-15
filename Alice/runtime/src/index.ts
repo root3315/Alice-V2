@@ -575,6 +575,7 @@ async function main() {
       }
       if (graphId && G.has(graphId)) {
         G.setDynamic(graphId, "last_outgoing_text", [...text].slice(0, 150).join(""));
+        G.setDynamic(graphId, "last_text_ms", Date.now()); // её текст → разблокирует следующий стикер
         dispatcher.dispatch("SEND_MESSAGE", { chatId: graphId, text, msgId });
         dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
       }
@@ -611,21 +612,22 @@ async function main() {
     },
     telegramSticker: async ({ chatId, sticker: keyword }) => {
       const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
-      // Запрос владельца: стикеры НЕ ограничены по числу, но «знать меру» — не слать второй стикер
-      // подряд, пока люди не ответили текстом после прошлого. Нужен живой отклик между стикерами,
-      // чтобы не было стикер→стикер→стикер в тишину. (Сравниваем last_incoming_ms с last_sticker_ms.)
+      // Запрос владельца: стикеры НЕ ограничены по числу, но НЕ слать второй стикер подряд со СВОЕЙ
+      // стороны — пока ОНА сама не напишет текст после прошлого стикера. Чужая болтовня в группе НЕ
+      // открывает гейт (раньше сравнивали last_incoming → в активной группе чужие сообщения его сбрасывали,
+      // и она слала стикер за стикером). Теперь сравниваем last_text_ms (ЕЁ собственный текст) с last_sticker_ms.
       const stickerGraphId = telegramChannelId(rawChatId);
       if (stickerGraphId && G.has(stickerGraphId)) {
         const ch = G.getChannel(stickerGraphId) as {
           last_sticker_ms?: number;
-          last_incoming_ms?: number;
+          last_text_ms?: number;
         };
         const lastStickerMs = Number(ch.last_sticker_ms ?? 0);
-        const lastIncomingMs = Number(ch.last_incoming_ms ?? 0);
-        // Её прошлый стикер — самое свежее событие (ответа людей после него не было) → второй не шлём.
-        if (lastStickerMs > 0 && lastIncomingMs <= lastStickerMs) {
+        const lastTextMs = Number(ch.last_text_ms ?? 0);
+        // Её прошлый вывод — стикер, а текста с ЕЁ стороны с тех пор не было → второй стикер не шлём.
+        if (lastStickerMs > 0 && lastTextMs <= lastStickerMs) {
           log.info(
-            "sticker skipped: no human reply since last sticker (owner: text needed between stickers)",
+            "sticker skipped: no own text since last sticker (owner: no back-to-back stickers)",
             {
               chatId: rawChatId,
             },
@@ -656,11 +658,16 @@ async function main() {
           `No sticker matches "${keyword}". Valid: ${available}`,
         );
       }
-      const msgId = await sendSticker(client, rawChatId, fileId);
+      // Forum: стикер уходит в ТЕКУЩИЙ топик (current_topic_id), как текст — не валится в General.
+      const stickerTopicId =
+        graphId && G.has(graphId)
+          ? (G.getChannel(graphId) as { current_topic_id?: number }).current_topic_id
+          : undefined;
+      const msgId = await sendSticker(client, rawChatId, fileId, { topicId: stickerTopicId });
       setTyping(client, rawChatId, true).catch(() => {});
       if (msgId != null && graphId) {
         cacheOutgoingMsg(graphId, msgId);
-        G.setDynamic(graphId, "last_sticker_ms", Date.now()); // старт кулдауна стикеров на этот чат
+        G.setDynamic(graphId, "last_sticker_ms", Date.now()); // старт анти-«стикер подряд» на этот чат
         dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
       }
       return { msgId: msgId ?? null };
@@ -691,6 +698,7 @@ async function main() {
       if (graphId && G.has(graphId)) {
         const summary = (title?.trim() || items[0] || "checklist").slice(0, 150);
         G.setDynamic(graphId, "last_outgoing_text", summary);
+        G.setDynamic(graphId, "last_text_ms", Date.now()); // содержательный вывод → разблокирует стикер
         dispatcher.dispatch("SEND_MESSAGE", {
           chatId: graphId,
           text: items.join("\n").trim() || title?.trim() || "checklist",
@@ -730,6 +738,7 @@ async function main() {
       if (graphId && G.has(graphId)) {
         const summary = (question?.trim() || options[0] || "poll").slice(0, 150);
         G.setDynamic(graphId, "last_outgoing_text", summary);
+        G.setDynamic(graphId, "last_text_ms", Date.now()); // содержательный вывод → разблокирует стикер
         dispatcher.dispatch("SEND_MESSAGE", {
           chatId: graphId,
           text: question?.trim() || options[0] || "poll",
@@ -765,6 +774,7 @@ async function main() {
       if (graphId && G.has(graphId)) {
         const summary = (title?.trim() || headers.join(" | ") || "table").slice(0, 150);
         G.setDynamic(graphId, "last_outgoing_text", summary);
+        G.setDynamic(graphId, "last_text_ms", Date.now()); // содержательный вывод → разблокирует стикер
         dispatcher.dispatch("SEND_MESSAGE", {
           chatId: graphId,
           // SEND_MESSAGE требует непустой text (Zod .min(1)). Таблица из одних строк (headers=[],
