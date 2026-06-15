@@ -32,6 +32,8 @@ export type CompletedAction =
   | { kind: "sent"; chatId: string; msgId: string; messageRef?: string }
   | { kind: "voice"; chatId: string; msgId: string }
   | { kind: "sticker"; chatId: string; msgId: string }
+  | { kind: "checklist"; chatId: string; msgId: string }
+  | { kind: "table"; chatId: string; msgId: string }
   | { kind: "react"; chatId: string; msgId: string; emoji?: string }
   | { kind: "sent-file"; chatId: string; msgId?: string; path?: string }
   | { kind: "forwarded"; fromChatId: string; toChatId: string; msgId: string }
@@ -259,6 +261,20 @@ export function decodeCompletedAction(raw: string): CompletedAction {
       if (typeof msgId !== "string") return msgId;
       return { kind: "sticker", chatId, msgId };
     }
+    case "checklist": {
+      const chatId = requireField(raw, fields, "chatId");
+      if (typeof chatId !== "string") return chatId;
+      const msgId = requireField(raw, fields, "msgId");
+      if (typeof msgId !== "string") return msgId;
+      return { kind: "checklist", chatId, msgId };
+    }
+    case "table": {
+      const chatId = requireField(raw, fields, "chatId");
+      if (typeof chatId !== "string") return chatId;
+      const msgId = requireField(raw, fields, "msgId");
+      if (typeof msgId !== "string") return msgId;
+      return { kind: "table", chatId, msgId };
+    }
     case "react": {
       const chatId = requireField(raw, fields, "chatId");
       if (typeof chatId !== "string") return chatId;
@@ -310,6 +326,10 @@ export function encodeCompletedAction(action: CompletedAction): string {
       return `voice:chatId=${action.chatId}:msgId=${action.msgId}`;
     case "sticker":
       return `sticker:chatId=${action.chatId}:msgId=${action.msgId}`;
+    case "checklist":
+      return `checklist:chatId=${action.chatId}:msgId=${action.msgId}`;
+    case "table":
+      return `table:chatId=${action.chatId}:msgId=${action.msgId}`;
     case "react":
       return `react:chatId=${action.chatId}:msgId=${action.msgId}${
         action.emoji ? `:emoji=${action.emoji}` : ""
@@ -350,6 +370,8 @@ export function isTelegramSideEffect(action: CompletedAction): boolean {
     action.kind === "sent" ||
     action.kind === "voice" ||
     action.kind === "sticker" ||
+    action.kind === "checklist" ||
+    action.kind === "table" ||
     action.kind === "react" ||
     action.kind === "sent-file" ||
     action.kind === "forwarded"

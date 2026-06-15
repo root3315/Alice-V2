@@ -76,8 +76,10 @@ import {
   joinChat,
   leaveChat,
   markRead,
+  sendChecklist,
   sendReaction,
   sendSticker,
+  sendTable,
   sendText,
   setTyping,
 } from "./telegram/actions.js";
@@ -623,6 +625,72 @@ async function main() {
       setTyping(client, rawChatId, true).catch(() => {});
       if (msgId != null && graphId) {
         cacheOutgoingMsg(graphId, msgId);
+        dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
+      }
+      return { msgId: msgId ?? null };
+    },
+    // Нативный tappable чеклист (To-Do list). Зеркалит telegramSticker: typing → resolve топика → sendChecklist.
+    telegramChecklist: async ({ chatId, title, items, replyTo }) => {
+      const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
+      try {
+        await setTyping(client, rawChatId);
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      } catch {
+        // ошибка typing не блокирует отправку
+      }
+      // Forum: отвечаем в топик канала (current_topic_id), если он известен.
+      const graphId = telegramChannelId(rawChatId);
+      const topicId =
+        graphId && G.has(graphId) ? G.getChannel(graphId).current_topic_id : undefined;
+      const msgId = await sendChecklist(client, rawChatId, {
+        title,
+        items,
+        topicId,
+        replyToMsgId: replyTo,
+      });
+      setTyping(client, rawChatId, true).catch(() => {});
+      if (msgId != null && graphId) {
+        cacheOutgoingMsg(graphId, msgId);
+      }
+      if (graphId && G.has(graphId)) {
+        const summary = (title?.trim() || items[0] || "checklist").slice(0, 150);
+        G.setDynamic(graphId, "last_outgoing_text", summary);
+        dispatcher.dispatch("SEND_MESSAGE", { chatId: graphId, text: items.join("\n"), msgId });
+        dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
+      }
+      return { msgId: msgId ?? null };
+    },
+    // Нативная прокручиваемая таблица (rich-message). Зеркалит telegramSticker: typing → resolve топика → sendTable.
+    telegramTable: async ({ chatId, title, headers, rows, replyTo }) => {
+      const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
+      try {
+        await setTyping(client, rawChatId);
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      } catch {
+        // ошибка typing не блокирует отправку
+      }
+      const graphId = telegramChannelId(rawChatId);
+      const topicId =
+        graphId && G.has(graphId) ? G.getChannel(graphId).current_topic_id : undefined;
+      const msgId = await sendTable(client, rawChatId, {
+        title,
+        headers,
+        rows,
+        topicId,
+        replyToMsgId: replyTo,
+      });
+      setTyping(client, rawChatId, true).catch(() => {});
+      if (msgId != null && graphId) {
+        cacheOutgoingMsg(graphId, msgId);
+      }
+      if (graphId && G.has(graphId)) {
+        const summary = (title?.trim() || headers.join(" | ") || "table").slice(0, 150);
+        G.setDynamic(graphId, "last_outgoing_text", summary);
+        dispatcher.dispatch("SEND_MESSAGE", {
+          chatId: graphId,
+          text: title ?? headers.join(" | "),
+          msgId,
+        });
         dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
       }
       return { msgId: msgId ?? null };

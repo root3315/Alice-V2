@@ -63,6 +63,8 @@ export const COMMAND_FIELDS = {
   reply: ["msgId", "chatId", "replyTo"] as const,
   react: ["success", "chatId", "msgId"] as const,
   sticker: ["msgId", "chatId"] as const,
+  checklist: ["msgId", "chatId"] as const,
+  table: ["msgId", "chatId"] as const,
   voice: ["msgId", "chatId"] as const,
   read: ["success"] as const,
   join: ["success", "chatId"] as const,

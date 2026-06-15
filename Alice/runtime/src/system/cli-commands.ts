@@ -28,6 +28,7 @@ import { ALLOWED_REACTIONS, normalizeReactionEmoji } from "../telegram/actions/s
 import { renderConfirm, renderHuman, truncate } from "./cli-bridge.js";
 import {
   type CliContext,
+  type CliErrorCode,
   type CliErrorDetail,
   CliExecutionError,
   makeDie,
@@ -452,6 +453,157 @@ export async function stickerCommand(ctx: CliContext, args: StickerArgs): Promis
   return {
     action,
     output: renderConfirm("Sent sticker", keyword),
+    rawResult: { msgId: result?.msgId, chatId },
+  };
+}
+
+// ── Checklist Command ──
+
+export interface ChecklistArgs {
+  json?: string;
+  in?: string;
+  /** JSON-массив строк-пунктов, например: '["купить хлеб","полить цветы"]'. */
+  items: string;
+  /** Опциональный заголовок над чеклистом. */
+  title?: string;
+  ref?: string;
+}
+
+/**
+ * Безопасно разбирает JSON-массив строк из CLI-аргумента.
+ * Robust к содержимому, генерируемому LLM (кавычки/запятые/переводы строк внутри элементов),
+ * потому что весь массив передаётся как один JSON-строковый аргумент.
+ */
+function parseJsonStringArray(
+  raw: string,
+  die: (msg: string, code?: CliErrorCode) => never,
+  label: string,
+): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    die(`${label} must be a JSON array of strings, e.g. '["a","b"]'`, "command_arg_format");
+  }
+  if (!Array.isArray(parsed) || !parsed.every((x) => typeof x === "string")) {
+    die(`${label} must be a JSON array of strings, e.g. '["a","b"]'`, "command_arg_format");
+  }
+  return parsed as string[];
+}
+
+/** Логика команды checklist — отправляет нативный tappable To-Do список. */
+export async function checklistCommand(
+  ctx: CliContext,
+  args: ChecklistArgs,
+): Promise<CommandResult> {
+  const die = makeDie(ctx.output, "irc");
+
+  const chatId = await ctx.resolveTarget(args.in);
+  const items = parseJsonStringArray(args.items ?? "", die, "items")
+    .map((s) => sanitizeOutgoingText(s))
+    .filter((s) => s.trim().length > 0);
+
+  if (items.length === 0) die("checklist requires at least one non-empty item", "command_missing_argument");
+  assertCurrentChatForSend(
+    ctx,
+    chatId,
+    die,
+    "irc.checklist",
+    args.ref ? { replyRef: args.ref } : undefined,
+  );
+
+  const title = args.title ? sanitizeOutgoingText(args.title) : undefined;
+  const body: Record<string, unknown> = { chatId, items };
+  if (title) body.title = title;
+  if (args.ref) body.replyTo = parseMsgId(args.ref);
+
+  const result = (await ctx.engine.post("/telegram/checklist", body)) as SendResult | null;
+
+  const action =
+    result?.msgId != null
+      ? actionLine({ kind: "checklist", chatId: String(chatId), msgId: String(result.msgId) })
+      : undefined;
+
+  return {
+    action,
+    output: renderConfirm("Sent checklist", `${items.length} item(s)`),
+    rawResult: { msgId: result?.msgId, chatId },
+  };
+}
+
+// ── Table Command ──
+
+export interface TableArgs {
+  json?: string;
+  in?: string;
+  /** JSON-массив строк-заголовков столбцов, например: '["Имя","Цена"]'. */
+  headers: string;
+  /** JSON-массив строк (каждая — массив ячеек), например: '[["A","1"],["B","2"]]'. */
+  rows: string;
+  /** Опциональный заголовок над таблицей. */
+  title?: string;
+  ref?: string;
+}
+
+/** Безопасно разбирает JSON-массив массивов строк (строки таблицы). */
+function parseJsonStringMatrix(
+  raw: string,
+  die: (msg: string, code?: CliErrorCode) => never,
+  label: string,
+): string[][] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    die(`${label} must be a JSON array of string arrays, e.g. '[["a","b"],["c","d"]]'`, "command_arg_format");
+  }
+  if (
+    !Array.isArray(parsed) ||
+    !parsed.every((row) => Array.isArray(row) && row.every((c) => typeof c === "string"))
+  ) {
+    die(`${label} must be a JSON array of string arrays, e.g. '[["a","b"],["c","d"]]'`, "command_arg_format");
+  }
+  return parsed as string[][];
+}
+
+/** Логика команды table — отправляет нативную прокручиваемую rich-таблицу. */
+export async function tableCommand(ctx: CliContext, args: TableArgs): Promise<CommandResult> {
+  const die = makeDie(ctx.output, "irc");
+
+  const chatId = await ctx.resolveTarget(args.in);
+  const headers = parseJsonStringArray(args.headers ?? "", die, "headers").map((s) =>
+    sanitizeOutgoingText(s),
+  );
+  const rows = parseJsonStringMatrix(args.rows ?? "", die, "rows").map((row) =>
+    row.map((c) => sanitizeOutgoingText(c)),
+  );
+
+  if (headers.length === 0 && rows.length === 0) {
+    die("table requires headers or rows", "command_missing_argument");
+  }
+  assertCurrentChatForSend(
+    ctx,
+    chatId,
+    die,
+    "irc.table",
+    args.ref ? { replyRef: args.ref } : undefined,
+  );
+
+  const title = args.title ? sanitizeOutgoingText(args.title) : undefined;
+  const body: Record<string, unknown> = { chatId, headers, rows };
+  if (title) body.title = title;
+  if (args.ref) body.replyTo = parseMsgId(args.ref);
+
+  const result = (await ctx.engine.post("/telegram/table", body)) as SendResult | null;
+
+  const action =
+    result?.msgId != null
+      ? actionLine({ kind: "table", chatId: String(chatId), msgId: String(result.msgId) })
+      : undefined;
+
+  return {
+    action,
+    output: renderConfirm("Sent table", `${headers.length} col(s) × ${rows.length} row(s)`),
     rawResult: { msgId: result?.msgId, chatId },
   };
 }

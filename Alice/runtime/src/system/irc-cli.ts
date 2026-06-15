@@ -6,6 +6,7 @@ import { parseMsgId, resolveTarget } from "./chat-client.js";
 import { renderConfirm } from "./cli-bridge.js";
 import {
   assertCurrentChatForSend,
+  checklistCommand,
   joinCommand,
   leaveCommand,
   motdCommand,
@@ -15,6 +16,7 @@ import {
   replyCommand,
   sayCommand,
   stickerCommand,
+  tableCommand,
   tailCommand,
   threadsCommand,
   voiceCommand,
@@ -175,6 +177,73 @@ const sticker = defineCommand({
     },
   },
   run: makeRunner("sticker", stickerCommand),
+});
+
+const checklist = defineCommand({
+  meta: {
+    name: "checklist",
+    description:
+      "Create/send a REAL tappable Telegram checklist (native To-Do list — each item is a live checkbox, not bullet text). Use when asked for a checklist / to-do list / step-by-step list with checkable items.",
+  },
+  args: {
+    ...jsonFlag,
+    in: inOption,
+    items: {
+      type: "string",
+      description:
+        'Checklist items as a JSON array of strings (robust to commas/quotes/newlines inside items). Example: \'["Купить хлеб","Полить цветы","Позвонить маме"]\'. Max 30 items, each ≤64 chars (clamped).',
+      required: true,
+      valueHint: '["item 1","item 2"]',
+    },
+    title: {
+      type: "string",
+      description: 'Optional title shown above the checklist (≤32 chars, clamped). Defaults to "Чеклист".',
+      valueHint: "title",
+    },
+    ref: {
+      type: "string",
+      description: "Visible current-chat message ID to reply to",
+      valueHint: "msgId",
+    },
+  },
+  run: makeRunner("checklist", checklistCommand),
+});
+
+const table = defineCommand({
+  meta: {
+    name: "table",
+    description:
+      "Create/send a scrollable rich Telegram table (real document-grade table with header row, not ASCII art / markdown pipes). Use when asked to show a table / comparison / structured grid.",
+  },
+  args: {
+    ...jsonFlag,
+    in: inOption,
+    headers: {
+      type: "string",
+      description:
+        'Column header cells as a JSON array of strings. Example: \'["Имя","Цена","Наличие"]\'.',
+      required: true,
+      valueHint: '["col 1","col 2"]',
+    },
+    rows: {
+      type: "string",
+      description:
+        'Body rows as a JSON array of string arrays (each inner array = one row, cells in column order). Example: \'[["Яблоко","50₽","да"],["Груша","80₽","нет"]]\'. Robust to commas/quotes/newlines inside cells.',
+      required: true,
+      valueHint: '[["a","b"],["c","d"]]',
+    },
+    title: {
+      type: "string",
+      description: "Optional title shown above the table",
+      valueHint: "title",
+    },
+    ref: {
+      type: "string",
+      description: "Visible current-chat message ID to reply to",
+      valueHint: "msgId",
+    },
+  },
+  run: makeRunner("table", tableCommand),
 });
 
 const voice = defineCommand({
@@ -498,6 +567,8 @@ export const ircSubCommands = {
   reply,
   react,
   sticker,
+  checklist,
+  table,
   voice,
   read,
   tail,

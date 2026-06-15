@@ -256,6 +256,18 @@ function classifyCommand(
         },
       };
     }
+    if (sub === "checklist") {
+      return {
+        kind: "action",
+        action: { type: "telegram", fn: "send_checklist", args: {}, executedAt },
+      };
+    }
+    if (sub === "table") {
+      return {
+        kind: "action",
+        action: { type: "telegram", fn: "send_table", args: {}, executedAt },
+      };
+    }
     if (sub === "send-file") {
       return {
         kind: "action",

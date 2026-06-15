@@ -5,6 +5,8 @@
  * POST /telegram/read    → { ok: true }
  * POST /telegram/react   → { ok: true }
  * POST /telegram/sticker → { msgId: number | null }
+ * POST /telegram/checklist → { msgId: number | null }   (native tappable To-Do list)
+ * POST /telegram/table   → { msgId: number | null }     (scrollable rich table)
  * POST /telegram/join    → { ok: true }
  * POST /telegram/leave   → { ok: true }
  * POST /telegram/forward → { forwardedMsgId: number | null }
@@ -304,6 +306,113 @@ export async function handleTelegramForward(
       res.end(JSON.stringify(result));
     } catch (err) {
       serverError(res, "sticker failed", err);
+    }
+    return;
+  }
+
+  if (action === "checklist") {
+    if (!deps.telegramChecklist) {
+      notConfigured(res, "checklist");
+      return;
+    }
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      badRequest(
+        res,
+        'body must be { "chatId": number, "items": string[], "title"?: string, "replyTo"?: number }',
+      );
+      return;
+    }
+    const { chatId, items, title, replyTo } = body as {
+      chatId?: number;
+      items?: unknown;
+      title?: unknown;
+      replyTo?: number;
+    };
+    if (
+      typeof chatId !== "number" ||
+      !Array.isArray(items) ||
+      items.length === 0 ||
+      !items.every((it) => typeof it === "string")
+    ) {
+      badRequest(
+        res,
+        'body must be { "chatId": number, "items": non-empty string[], "title"?: string, "replyTo"?: number }',
+      );
+      return;
+    }
+    if (title !== undefined && typeof title !== "string") {
+      badRequest(res, '"title" must be a string');
+      return;
+    }
+    if (!ensureTargetAllowed(res, deps, chatId)) return;
+    try {
+      const result = await deps.telegramChecklist({
+        chatId,
+        items: items as string[],
+        title: title as string | undefined,
+        replyTo,
+      });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      serverError(res, "checklist failed", err);
+    }
+    return;
+  }
+
+  if (action === "table") {
+    if (!deps.telegramTable) {
+      notConfigured(res, "table");
+      return;
+    }
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      badRequest(
+        res,
+        'body must be { "chatId": number, "headers": string[], "rows": string[][], "title"?: string, "replyTo"?: number }',
+      );
+      return;
+    }
+    const { chatId, headers, rows, title, replyTo } = body as {
+      chatId?: number;
+      headers?: unknown;
+      rows?: unknown;
+      title?: unknown;
+      replyTo?: number;
+    };
+    const headersOk = Array.isArray(headers) && headers.every((h) => typeof h === "string");
+    const rowsOk =
+      Array.isArray(rows) &&
+      rows.every((r) => Array.isArray(r) && r.every((c) => typeof c === "string"));
+    // Требуем хотя бы что-то наполняющее таблицу (заголовки или строки).
+    if (
+      typeof chatId !== "number" ||
+      !headersOk ||
+      !rowsOk ||
+      ((headers as string[]).length === 0 && (rows as string[][]).length === 0)
+    ) {
+      badRequest(
+        res,
+        'body must be { "chatId": number, "headers": string[], "rows": string[][], "title"?: string, "replyTo"?: number }',
+      );
+      return;
+    }
+    if (title !== undefined && typeof title !== "string") {
+      badRequest(res, '"title" must be a string');
+      return;
+    }
+    if (!ensureTargetAllowed(res, deps, chatId)) return;
+    try {
+      const result = await deps.telegramTable({
+        chatId,
+        headers: headers as string[],
+        rows: rows as string[][],
+        title: title as string | undefined,
+        replyTo,
+      });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      serverError(res, "table failed", err);
     }
     return;
   }

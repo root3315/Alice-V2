@@ -98,6 +98,21 @@ export interface EngineApiDeps {
     chatId: number;
     sticker: string;
   }) => Promise<{ msgId: number | null }>;
+  /** Telegram native tappable checklist (To-Do list) callback (`irc checklist`). */
+  telegramChecklist?: (params: {
+    chatId: number;
+    items: string[];
+    title?: string;
+    replyTo?: number;
+  }) => Promise<{ msgId: number | null }>;
+  /** Telegram scrollable rich table callback (`irc table`). */
+  telegramTable?: (params: {
+    chatId: number;
+    headers: string[];
+    rows: string[][];
+    title?: string;
+    replyTo?: number;
+  }) => Promise<{ msgId: number | null }>;
   /** Telegram download callback (`irc download`). */
   telegramDownload?: (params: {
     chatId: number;

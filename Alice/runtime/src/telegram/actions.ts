@@ -147,12 +147,29 @@ export async function sendText(
   return sent?.id;
 }
 
+// Лимиты нативного To-Do списка Telegram (server appConfig: todo_*).
+// Документированные значения по умолчанию: заголовок ≤32, пункт ≤64, не более 30 пунктов.
+// Клампим консервативно, чтобы запрос не отбрасывался сервером (TODO_*_INVALID).
+const TODO_TITLE_MAX = 32;
+const TODO_ITEM_MAX = 64;
+const TODO_ITEMS_MAX = 30;
+/** Заголовок по умолчанию, если вызывающий не передал его (title обязателен в InputMedia.todo). */
+const TODO_DEFAULT_TITLE = "Чеклист";
+
+/** Обрезает строку по числу кодовых точек (не разрывая surrogate pair emoji). */
+function clampCodePoints(text: string, max: number): string {
+  const cps = [...text];
+  return cps.length <= max ? text : cps.slice(0, max).join("");
+}
+
 /**
- * mtcute 0.30: отправляет НАСТОЯЩИЙ нативный чеклист Telegram (rich-message, layer 227).
- * Каждый пункт — tappable checkbox (Rich.listItem({ checkbox: true })), а не текстовый «• ».
+ * mtcute 0.30: отправляет НАСТОЯЩИЙ нативный tappable чеклист Telegram (To-Do list, layer 227).
+ * Каждый пункт — реальный нажимаемый checkbox (inputMediaTodo → todoList/todoItem), а НЕ статичный
+ * квадрат из rich page-block (прежняя ошибочная реализация на Rich.list давала нерабочие квадраты).
  *
- * Реализация: sendRichMessage с content type "blocks":
- *   [опц. Rich.heading(3, title)] + Rich.list([Rich.listItem(item, { checkbox: true })...])
+ * Реализация: client.sendMedia(InputMedia.todo({ title, items })).
+ * title обязателен и непуст — при отсутствии подставляем нейтральный TODO_DEFAULT_TITLE.
+ * title/пункты клампятся по лимитам Telegram (TODO_TITLE_MAX/TODO_ITEM_MAX/TODO_ITEMS_MAX).
  *
  * replyToMsgId/topicId маршрутизируются так же, как в sendText (replyTo = replyToMsgId ?? topicId).
  */
@@ -170,18 +187,19 @@ export async function sendChecklist(
   await globalLimiter.acquire();
 
   // Пустые пункты отбрасываем; вызывающий impl уже гарантирует непустой items.
-  const items = options.items.filter((s) => s != null && String(s).trim().length > 0);
+  // Клампим число пунктов и длину каждого под лимиты Telegram.
+  const items = options.items
+    .filter((s) => s != null && String(s).trim().length > 0)
+    .slice(0, TODO_ITEMS_MAX)
+    .map((s) => clampCodePoints(String(s).trim(), TODO_ITEM_MAX));
 
-  const blocks: InputPageBlock[] = [];
-  if (options.title?.trim()) {
-    blocks.push(Rich.heading(3, options.title.trim()));
-  }
-  blocks.push(Rich.list(items.map((text) => Rich.listItem(text, { checkbox: true }))));
+  // title обязателен в InputMedia.todo → дефолт при пустом + кламп длины.
+  const rawTitle = options.title?.trim();
+  const title = clampCodePoints(rawTitle && rawTitle.length > 0 ? rawTitle : TODO_DEFAULT_TITLE, TODO_TITLE_MAX);
 
   let sent: Message | undefined;
   try {
-    sent = await client.sendRichMessage(chatId, {
-      content: { type: "blocks", blocks },
+    sent = await client.sendMedia(chatId, InputMedia.todo({ title, items }), {
       replyTo: options.replyToMsgId ?? options.topicId,
     });
   } catch (err) {
