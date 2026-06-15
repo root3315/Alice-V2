@@ -282,7 +282,7 @@ describe("tierScore 互惠系数", () => {
     expect(withReciprocity).toBeCloseTo(withoutReciprocity, 10);
   });
 
-  it("Alice 发起 4× → 分数减半", () => {
+  it("Alice 发起 4× → 衰减 ТОЛЬКО частотный вклад (не весь score)", () => {
     const balanced = tierScore(
       base.interactionCount,
       base.tier,
@@ -307,8 +307,11 @@ describe("tierScore 互惠系数", () => {
       20,
       5,
     );
-    // reciprocity = sqrt(5/20) = 0.5
-    expect(asymmetric).toBeCloseTo(balanced * 0.5, 5);
+    // FIX: reciprocity = sqrt(5/20) = 0.5 множит ТОЛЬКО частотный вклад (не весь score).
+    // frequency = min(1, 3/1) = 1.0 → вклад частоты = 0.35*1.0; при recip 0.5 теряется 0.175.
+    // Quality/depth/trust сохраняются (раньше ошибочно умножался весь score → демоут близких связей).
+    expect(asymmetric).toBeCloseTo(balanced - 0.35 * 0.5, 5);
+    expect(asymmetric).toBeGreaterThan(balanced * 0.5);
   });
 
   it("对方发起更多 → reciprocity capped at 1.0（不过度加分）", () => {
@@ -366,8 +369,11 @@ describe("tierScore 互惠系数", () => {
     expect(coldStart).toBeCloseTo(noReciprocity, 10);
   });
 
-  it("Alice 单方面高频 → 升级被抑制", () => {
-    // 极端情况：Alice 发起 50 次，对方 0 次 → reciprocity = 0
+  it("Alice 单方面高频 → частотный вклад обнуляется, trust/quality/depth остаются", () => {
+    // Крайний случай: Alice инициирует 50, контакт 0 → reciprocity = sqrt(0/50) = 0.
+    // FIX: reciprocity=0 обнуляет ТОЛЬКО частотный вклад (0.35*freq*0) → промоушен по
+    // односторонней частоте подавлен; quality(0.75)/depth/trust(0.5) сохраняются (связь не стирается).
+    // = 0.25*0.75 + 0.25*0.19167 + 0.15*0.5 ≈ 0.3104 (прежде ошибочно было 0).
     const oneSided = tierScore(
       base.interactionCount,
       base.tier,
@@ -380,6 +386,8 @@ describe("tierScore 互惠系数", () => {
       50,
       0,
     );
-    expect(oneSided).toBe(0);
+    expect(oneSided).toBeCloseTo(0.3104, 3);
+    expect(oneSided).toBeLessThan(0.7); // не повышает tier по односторонней частоте
+    expect(oneSided).toBeGreaterThan(0); // но связь не обнуляется
   });
 });

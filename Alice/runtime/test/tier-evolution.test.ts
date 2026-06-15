@@ -450,4 +450,23 @@ describe("tierScore — G9 trust 影响", () => {
   });
 });
 
+describe("tierScore — reciprocity демпфирует ТОЛЬКО частоту (regression)", () => {
+  it("односторонняя инициация не обнуляет trust/quality/depth (близкую связь не демотит)", () => {
+    // Баг: владелец rv_trust=1.0, alice_init=32 vs contact_init=2 → reciprocity=sqrt(2/32)=0.25.
+    // Прежняя реализация умножала ВЕСЬ score на 0.25 → ≤ 0.3 (порог downgrade) → ошибочный демоут до 500.
+    // F=min(1,1/0.3)=1.0, freq*recip=0.25 → 0.35*0.25=0.0875; Q=(0+1)/2=0.5 → 0.125; D=0; T=1.0 → 0.15.
+    const score = tierScore(1, 150, 0, 0, 20, 0, 15, 1.0, 32, 2);
+    expect(score).toBeCloseTo(0.3625, 3);
+    expect(score).toBeGreaterThan(0.3); // TIER_DOWNGRADE_THRESHOLD — НЕ демотится
+  });
+
+  it("reciprocity всё ещё гасит одностороннюю ЧАСТОТУ (анти-инфляция tier сохранена)", () => {
+    // Без trust/quality/depth балл держится на частоте — и она по-прежнему гасится взаимностью:
+    // сбалансированная переписка (10/10 → recip=1.0) даёт больше, чем односторонняя (30/2).
+    const balanced = tierScore(1, 150, 0, 0, 20, 0, 15, 0.0, 10, 10);
+    const oneSided = tierScore(1, 150, 0, 0, 20, 0, 15, 0.0, 30, 2);
+    expect(balanced).toBeGreaterThan(oneSided);
+  });
+});
+
 // ADR-198: update_trust 测试已删除。trust 统一由 rv_trust（图属性）管理。

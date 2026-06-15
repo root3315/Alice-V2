@@ -662,8 +662,14 @@ export function tierScore(
     reciprocity = Math.min(1, Math.sqrt(contactInitiated / aliceInitiated));
   }
 
-  const rawScore = 0.35 * frequency + 0.25 * quality + 0.25 * normalizedDepth + 0.15 * trust;
-  return rawScore * reciprocity;
+  // FIX: reciprocity демпфирует ТОЛЬКО частотный вклад (как и задумано в комментарии выше —
+  // «частотный балл вдвое меньше»), а не весь score. Прежняя версия (rawScore * reciprocity)
+  // при односторонней переписке (Alice инициирует чаще, чем ей отвечают) рушила trust/quality/depth
+  // и ошибочно демотила даже самые близкие связи: владелец с rv_trust=1.0, alice_init=32 vs
+  // contact_init=2 → reciprocity=sqrt(2/32)=0.25 → весь score ≤ 0.3 → downgrade до tier 500.
+  const rawScore =
+    0.35 * (frequency * reciprocity) + 0.25 * quality + 0.25 * normalizedDepth + 0.15 * trust;
+  return rawScore;
 }
 
 /**
