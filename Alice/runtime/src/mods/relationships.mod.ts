@@ -2185,6 +2185,40 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         tracker.consecutiveLow = 0;
       }
 
+      // -- Trust-floor: высоко-доверенная связь не киснет в дальних слоях --
+      // Лечит «застрявший» демоут (middle-zone балл сам tier не повышает) и не даёт ронять близких.
+      // Пол по доверию: rv_trust ≥0.9 → tier 15 (close friend), ≥0.7 → tier 50 (friend); иначе пола нет.
+      // DUNBAR_TIERS=[500,150,50,15,5]: больший индекс = ближе.
+      const trustFloorIdx =
+        contactTrust >= 0.9
+          ? DUNBAR_TIERS.indexOf(15)
+          : contactTrust >= 0.7
+            ? DUNBAR_TIERS.indexOf(50)
+            : 0;
+      const curIdx = DUNBAR_TIERS.indexOf(currentTier);
+      if (trustFloorIdx > curIdx) {
+        // current дальше, чем допускает доверие → подтягиваем к полу
+        const floorTier = DUNBAR_TIERS[trustFloorIdx];
+        ctx.graph.updateContact(contactId, {
+          tier: floorTier,
+          tier_changed_ms: ctx.nowMs,
+          tier_direction: "upgrade",
+        });
+        ctx.graph.beliefs.update(contactId, "tier", floorTier, "structural", ctx.nowMs);
+        try {
+          emitConsciousness(getDb(), ctx.tick, ctx.nowMs, {
+            kind: "evolve:tier",
+            entityIds: [contactId],
+            summary: `${attrs.display_name ?? contactId} lifted to tier ${floorTier} (trust floor)`,
+          });
+        } catch {
+          /* non-critical */
+        }
+        tracker.consecutiveHigh = 0;
+        tracker.consecutiveLow = 0;
+        continue;
+      }
+
       // -- Повышение/понижение tier --
       if (tracker.consecutiveHigh >= TIER_CONSECUTIVE_REQUIRED) {
         const nextTier = nextCloserTier(currentTier);
@@ -2212,7 +2246,8 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
         tracker.consecutiveLow = 0;
       } else if (tracker.consecutiveLow >= TIER_DOWNGRADE_CONSECUTIVE) {
         const nextTier = nextFartherTier(currentTier);
-        if (nextTier !== null) {
+        // Trust-floor: не демотим ниже пола по доверию (близкую связь не роняем в «знакомые»).
+        if (nextTier !== null && DUNBAR_TIERS.indexOf(nextTier) >= trustFloorIdx) {
           ctx.graph.updateContact(contactId, {
             tier: nextTier,
             tier_changed_ms: ctx.nowMs,

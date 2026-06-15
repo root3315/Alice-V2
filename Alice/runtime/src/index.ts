@@ -598,6 +598,25 @@ async function main() {
     },
     telegramSticker: async ({ chatId, sticker: keyword }) => {
       const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
+      // Запрос владельца: стикеры НЕ ограничены по числу, но «знать меру» — не слать второй стикер
+      // подряд, пока люди не ответили текстом после прошлого. Нужен живой отклик между стикерами,
+      // чтобы не было стикер→стикер→стикер в тишину. (Сравниваем last_incoming_ms с last_sticker_ms.)
+      const stickerGraphId = telegramChannelId(rawChatId);
+      if (stickerGraphId && G.has(stickerGraphId)) {
+        const ch = G.getChannel(stickerGraphId) as {
+          last_sticker_ms?: number;
+          last_incoming_ms?: number;
+        };
+        const lastStickerMs = Number(ch.last_sticker_ms ?? 0);
+        const lastIncomingMs = Number(ch.last_incoming_ms ?? 0);
+        // Её прошлый стикер — самое свежее событие (ответа людей после него не было) → второй не шлём.
+        if (lastStickerMs > 0 && lastIncomingMs <= lastStickerMs) {
+          log.info("sticker skipped: no human reply since last sticker (owner: text needed between stickers)", {
+            chatId: rawChatId,
+          });
+          return { msgId: null };
+        }
+      }
       // Typing indicator (стикеры тоже требуют краткого "печатает" для естественности)
       try {
         await setTyping(client, rawChatId);
@@ -625,6 +644,7 @@ async function main() {
       setTyping(client, rawChatId, true).catch(() => {});
       if (msgId != null && graphId) {
         cacheOutgoingMsg(graphId, msgId);
+        G.setDynamic(graphId, "last_sticker_ms", Date.now()); // старт кулдауна стикеров на этот чат
         dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
       }
       return { msgId: msgId ?? null };
