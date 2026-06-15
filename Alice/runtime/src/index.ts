@@ -52,7 +52,7 @@ import { initProviders, selectProviderForFirstPass } from "./llm/client.js";
 import { closeGroupCache, initGroupCache } from "./llm/group-cache.js";
 import { closeMediaCache, initMediaCache } from "./llm/media-cache.js";
 import { onBreakerStateChange } from "./llm/resilience.js";
-import { isEmbeddingEnabled } from "./llm/embeddings.js";
+import { embedTexts, isEmbeddingEnabled } from "./llm/embeddings.js";
 import { getEmbeddingConfig, setEmbeddingConfig } from "./llm/semantic-recall-config.js";
 import { setDigestTarget } from "./mods/digest.mod.js";
 import { setExplorationTarget, setExplorationWorker } from "./mods/exploration.mod.js";
@@ -1116,6 +1116,35 @@ async function main() {
         dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
       }
       return { msgId: sent?.id ?? null };
+    },
+    // Живая проба сервера эмбеддингов для дашборда (семантическая память). РЕЗИЛЕНТНО:
+    // короткий таймаут, никогда не бросает — при сбое { reachable:false, reason }. Используем
+    // существующий резильентный embedTexts() (он сам молчит при отключении/недоступности и
+    // не трогает soft-breaker слишком агрессивно). Размерность берём из вернувшегося вектора.
+    embeddingProbe: async () => {
+      const cfg = getEmbeddingConfig();
+      if (!isEmbeddingEnabled(cfg)) {
+        return { reachable: false, dim: null, latencyMs: null, reason: "disabled" };
+      }
+      const started = Date.now();
+      try {
+        // Гонка с жёстким клиентским таймаутом: даже если транспорт зависнет, дашборд не ждёт.
+        const probe = embedTexts(["ping"], cfg);
+        const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000));
+        const vecs = await Promise.race([probe, timeout]);
+        const latencyMs = Date.now() - started;
+        if (vecs && Array.isArray(vecs) && vecs.length === 1 && Array.isArray(vecs[0])) {
+          return { reachable: true, dim: vecs[0].length, latencyMs, reason: null };
+        }
+        return { reachable: false, dim: null, latencyMs, reason: "unreachable" };
+      } catch (e) {
+        return {
+          reachable: false,
+          dim: null,
+          latencyMs: Date.now() - started,
+          reason: e instanceof Error ? e.message : "error",
+        };
+      }
     },
     dispatchInstruction: (instruction, args) => dispatcher.dispatch(instruction, args),
     query: (name, args) => dispatcher.query(name, args),

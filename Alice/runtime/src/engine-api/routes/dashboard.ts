@@ -20,11 +20,17 @@ import { getDb } from "../../db/connection.js";
 import {
   actionLog,
   auditEvents,
+  diaryEntries,
+  embeddingCache,
+  modStates,
   personalitySnapshots,
   silenceLog,
   tickLog,
 } from "../../db/schema.js";
 import { analyzeVoiceDiversity } from "../../diagnostics/diversity.js";
+import { isAnyProviderHealthy } from "../../llm/client.js";
+import { getEmbeddingConfig } from "../../llm/semantic-recall-config.js";
+import { isExploreEnabled, DEFAULT_DAILY_JOIN_CAP } from "../../mods/exploration.mod.js";
 import { safeDisplayName } from "../../graph/display.js";
 import { getWorkiSnapshot } from "../../mods/worki.mod.js";
 import { getSelfcheckData } from "../../telegram/apps/selfcheck.js";
@@ -80,6 +86,24 @@ function parseJson<T = unknown>(raw: unknown): T | null {
   try {
     return JSON.parse(raw) as T;
   } catch {
+    return null;
+  }
+}
+
+/**
+ * Безопасно читает персистентное состояние мода из mod_states (ADR-33) и парсит state_json.
+ * Read-only: мод-состояние пишется самим движком, дашборд только читает. Любой сбой → null.
+ */
+function readModState<T = Record<string, unknown>>(modName: string): T | null {
+  try {
+    const row = getDb()
+      .select({ stateJson: modStates.stateJson })
+      .from(modStates)
+      .where(eq(modStates.modName, modName))
+      .get();
+    return row ? parseJson<T>(row.stateJson) : null;
+  } catch (e) {
+    log.warn(`dashboard modState ${modName} failed`, { err: (e as Error).message });
     return null;
   }
 }
@@ -765,6 +789,299 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
     log.warn("dashboard auditFeed failed", { err: (e as Error).message });
   }
 
+  // ── Голоса (4) + режим/фокус/тик: «куда направлено внимание Алисы прямо сейчас» ──
+  // Веса голосов = вектор личности π (D/C/S/X), уже собран выше в `personality`. Текущий
+  // РЕЖИМ (patrol/conversation/consolidation/dormant) и ЦЕЛЬ фокуса НЕ зеркалятся в граф —
+  // надёжный read-only источник это последняя строка tick_log (mode/target). Так честнее,
+  // чем читать устаревший self-атрибут. Самопознание ядра НЕ трогаем (только читаем).
+  let voicesState: Record<string, unknown> | null = null;
+  try {
+    const weights = parseJson<number[]>(dyn(deps, "self", "personality_weights"));
+    let mode: string | null = null;
+    let focusTarget: string | null = null;
+    let focusTargetName: string | null = null;
+    try {
+      const d = getDb();
+      const row = d
+        .select({ mode: tickLog.mode, target: tickLog.target, tick: tickLog.tick })
+        .from(tickLog)
+        .orderBy(desc(tickLog.id))
+        .limit(1)
+        .get();
+      if (row) {
+        mode = row.mode ?? null;
+        focusTarget = row.target ?? null;
+        if (focusTarget) {
+          try {
+            focusTargetName = G.has(focusTarget) ? safeDisplayName(G, focusTarget) : focusTarget;
+          } catch {
+            focusTargetName = focusTarget;
+          }
+        }
+      }
+    } catch (e) {
+      log.warn("dashboard voicesState tick_log failed", { err: (e as Error).message });
+    }
+    // thinking_target на self — намерение текущего слота планировщика (ADR-act/scheduler).
+    const thinking = dyn(deps, "self", "thinking_target");
+    voicesState = {
+      // Веса 4 голосов с расшифровкой (доли вклада в выбор поведения).
+      labels: VOICES.map((v) => ({ id: v.id, short: v.short, display: v.display })),
+      weights: weights ?? null,
+      mode,
+      focusTarget: focusTargetName,
+      thinkingTarget: thinking ?? null,
+    };
+  } catch (e) {
+    log.warn("dashboard voicesState failed", { err: (e as Error).message });
+  }
+
+  // ── Аффект: активные эмоции (полный список из emotion_state) + valence/arousal ──
+  // emotion_state уже распарсен в `emotion` (dominant/secondary). Здесь собираем список
+  // «активных эмоций» как [dominant, secondary] без null — для портрета (что она чувствует).
+  let affect: Record<string, unknown> | null = null;
+  try {
+    const active: Array<Record<string, unknown>> = [];
+    if (emotion) {
+      const dom = (emotion as { dominant?: Record<string, unknown> | null }).dominant;
+      const sec = (emotion as { secondary?: Record<string, unknown> | null }).secondary;
+      if (dom) active.push({ ...dom, role: "доминирует" });
+      if (sec) active.push({ ...sec, role: "фон" });
+    }
+    affect = {
+      valence: self ? (self as Record<string, unknown>).valence ?? null : null,
+      arousal: self ? (self as Record<string, unknown>).arousal ?? null : null,
+      mood: self ? (self as Record<string, unknown>).mood ?? null : null,
+      energy: self ? (self as Record<string, unknown>).energy ?? null : null,
+      active,
+      updatedAtMs: emotion ? (emotion as { updatedAtMs?: number }).updatedAtMs ?? null : null,
+    };
+  } catch (e) {
+    log.warn("dashboard affect failed", { err: (e as Error).message });
+  }
+
+  // ── Каналы / исследование: подписки, флаг ALICE_CHANNEL_EXPLORE, дневной кап join'ов ──
+  // Состояние exploration-мода персистится в mod_states (joinDayKey/joinsToday/lastExploreMs).
+  // Кап join'ов в сутки — экспортируемая константа DEFAULT_DAILY_JOIN_CAP (запрос владельца: 1/сутки).
+  let explore: Record<string, unknown> | null = null;
+  try {
+    const st = readModState<{
+      joinDayKey?: string;
+      joinsToday?: number;
+      lastExploreMs?: number;
+      inFlight?: boolean;
+      notices?: Array<{ channelName?: string; topic?: string; ts?: number }>;
+    }>("exploration");
+    const todayKey = new Date().toISOString().slice(0, 10);
+    // Счётчик обнуляется при смене суток: показываем 0, если день не совпал.
+    const joinsToday = st && st.joinDayKey === todayKey ? Number(st.joinsToday ?? 0) : 0;
+    let enabled: boolean | null = null;
+    try {
+      enabled = isExploreEnabled();
+    } catch {
+      enabled = null;
+    }
+    let joinedChannels = 0;
+    try {
+      joinedChannels = G.getEntitiesByType("channel").length;
+    } catch {
+      joinedChannels = 0;
+    }
+    explore = {
+      enabled, // ALICE_CHANNEL_EXPLORE: разрешено ли автономно подписываться на новые каналы
+      joinedChannels, // сколько каналов всего в её графе (подписки + наблюдаемые)
+      dailyCap: DEFAULT_DAILY_JOIN_CAP, // лимит автоподписок в сутки
+      joinsToday, // сколько уже подписалась сегодня
+      lastExploreMs: st && st.lastExploreMs ? Number(st.lastExploreMs) : null, // когда последний раз исследовала
+      inFlight: st ? Boolean(st.inFlight) : false, // идёт ли попытка прямо сейчас
+      notices: Array.isArray(st?.notices)
+        ? st!.notices.slice(0, 8).map((n) => ({
+            channelName: n.channelName ?? "?",
+            topic: n.topic ?? null,
+            ts: n.ts ?? null,
+          }))
+        : [],
+    };
+  } catch (e) {
+    log.warn("dashboard explore failed", { err: (e as Error).message });
+  }
+
+  // ── Обязательства (follow-through): открытые/выполненные ──────────────────────
+  // commitment-мод хранит лёгкий список обещаний в mod_states. status: pending|ripe|asked.
+  // «asked» = уже вернулась к обещанию (закрыто), остальные — открыты.
+  let commitments: Record<string, unknown> | null = null;
+  try {
+    const st = readModState<{
+      commitments?: Array<{ what?: string; who?: string; status?: string; softWhenMs?: number }>;
+    }>("commitment");
+    const list = Array.isArray(st?.commitments) ? st!.commitments : [];
+    const open = list.filter((c) => c.status !== "asked");
+    const done = list.filter((c) => c.status === "asked");
+    commitments = {
+      open: open.length,
+      done: done.length,
+      total: list.length,
+      items: open.slice(0, 12).map((c) => {
+        let whoName: string | null = null;
+        if (c.who) {
+          try {
+            whoName = G.has(c.who) ? safeDisplayName(G, c.who) : c.who;
+          } catch {
+            whoName = c.who;
+          }
+        }
+        return {
+          what: c.what ?? "",
+          who: whoName,
+          status: c.status ?? null,
+          softWhenMs: c.softWhenMs && c.softWhenMs > 0 ? c.softWhenMs : null,
+        };
+      }),
+    };
+  } catch (e) {
+    log.warn("dashboard commitments failed", { err: (e as Error).message });
+  }
+
+  // ── Память: счётчики фактов/дневника/KB + недавние записи дневника ────────────
+  // Факты живут в графе (getEntitiesByType('fact')); дневник — отдельная таблица diary_entries.
+  // KB = факты с пометкой темы (kb) — считаем по графу, если атрибут доступен; иначе пропускаем.
+  let memory: Record<string, unknown> | null = null;
+  try {
+    let factCount = 0;
+    let kbCount = 0;
+    try {
+      const factIds = G.getEntitiesByType("fact");
+      factCount = factIds.length;
+      // KB-факты: пытаемся посчитать по атрибуту fact_type==='kb' (если есть на узле).
+      for (const id of factIds) {
+        try {
+          const ft = G.getDynamic(id, "fact_type");
+          if (ft === "kb") kbCount++;
+        } catch {
+          /* узел без атрибута — пропускаем */
+        }
+      }
+    } catch {
+      factCount = 0;
+    }
+
+    let diaryCount: number | null = null;
+    let recentDiary: Array<Record<string, unknown>> = [];
+    try {
+      const d = getDb();
+      diaryCount = d.select({ c: sql<number>`count(*)` }).from(diaryEntries).get()?.c ?? 0;
+      const rows = d
+        .select({
+          id: diaryEntries.id,
+          tick: diaryEntries.tick,
+          content: diaryEntries.content,
+          about: diaryEntries.about,
+          createdAt: diaryEntries.createdAt,
+        })
+        .from(diaryEntries)
+        .orderBy(desc(diaryEntries.id))
+        .limit(12)
+        .all();
+      recentDiary = rows.map((r) => {
+        let aboutName: string | null = null;
+        if (r.about) {
+          try {
+            aboutName = G.has(r.about) ? safeDisplayName(G, r.about) : r.about;
+          } catch {
+            aboutName = r.about;
+          }
+        }
+        return {
+          id: r.id,
+          tick: Number(r.tick ?? 0),
+          content: typeof r.content === "string" ? r.content : "",
+          about: aboutName,
+          atMs: r.createdAt instanceof Date ? r.createdAt.getTime() : null,
+        };
+      });
+    } catch (e) {
+      log.warn("dashboard diary failed", { err: (e as Error).message });
+    }
+
+    memory = {
+      facts: factCount,
+      kb: kbCount, // самопознание/знания (факты-kb); 0 если атрибут не отслеживается
+      diary: diaryCount,
+      threads: graph ? Number((graph as Record<string, unknown>).threads ?? 0) : null,
+      conversations: graph ? Number((graph as Record<string, unknown>).conversations ?? 0) : null,
+      recentDiary,
+    };
+  } catch (e) {
+    log.warn("dashboard memory failed", { err: (e as Error).message });
+  }
+
+  // ── Статус LLM/API + health-watch аномалии ───────────────────────────────────
+  // isAnyProviderHealthy(): есть ли хоть один провайдер с НЕ-открытым circuit-breaker'ом.
+  // false = все провайдеры в обрыве (LLM временно недоступна) ИЛИ ни один не инициализирован.
+  let llmStatus: Record<string, unknown> | null = null;
+  try {
+    let healthy: boolean | null = null;
+    try {
+      healthy = isAnyProviderHealthy();
+    } catch {
+      healthy = null;
+    }
+    // health-watch держит «висящие» алерты в mod_states (pending).
+    const hw = readModState<{ pending?: Array<{ type?: string; message?: string; ts?: number }> }>(
+      "health_watch",
+    );
+    const pending = Array.isArray(hw?.pending) ? hw!.pending : [];
+    llmStatus = {
+      llmHealthy: healthy, // true=норма, false=обрыв/нет провайдеров, null=неизвестно
+      healthWatchPending: pending.length,
+      healthWatchAlerts: pending.slice(0, 8).map((p) => ({
+        type: p.type ?? "?",
+        message: p.message ?? "",
+        ts: p.ts ?? null,
+      })),
+    };
+  } catch (e) {
+    log.warn("dashboard llmStatus failed", { err: (e as Error).message });
+  }
+
+  // ── Эмбеддинги / семантическая память (СТАТИЧЕСКАЯ часть для /dashboard/data) ──
+  // Живая проба TEI (достижимость + размерность) делается ОТДЕЛЬНО в /dashboard/embeddings
+  // (async, короткий таймаут), чтобы не задерживать 5-секундный поллинг. Здесь — дешёвые
+  // факты: включено ли, модель, base_url, размер кеша, состояние мягкого выключателя.
+  let embeddings: Record<string, unknown> | null = null;
+  try {
+    const cfg = getEmbeddingConfig();
+    const enabled = !!cfg.embeddingBaseUrl.trim() && !!cfg.embeddingModel.trim();
+    let cacheRows = 0;
+    let cachedDim: number | null = null;
+    let cachedModels = 0;
+    try {
+      const d = getDb();
+      cacheRows = d.select({ c: sql<number>`count(*)` }).from(embeddingCache).get()?.c ?? 0;
+      cachedModels =
+        d
+          .select({ c: sql<number>`count(distinct ${embeddingCache.model})` })
+          .from(embeddingCache)
+          .get()?.c ?? 0;
+      // Размерность выводим из любой кешированной строки (если ещё ни одной пробы не было).
+      const one = d.select({ dim: embeddingCache.dim }).from(embeddingCache).limit(1).get();
+      cachedDim = one ? Number(one.dim) : null;
+    } catch (e) {
+      log.warn("dashboard embedding_cache count failed", { err: (e as Error).message });
+    }
+    embeddings = {
+      enabled,
+      model: cfg.embeddingModel || null,
+      baseUrl: cfg.embeddingBaseUrl || null,
+      hasApiKey: !!cfg.embeddingApiKey,
+      cacheRows, // сколько текстов уже векторизовано (строк в embedding_cache)
+      cachedModels, // сколько разных моделей встречается в кеше
+      cachedDim, // размерность из кеша (если пусто — определит живая проба)
+    };
+  } catch (e) {
+    log.warn("dashboard embeddings(static) failed", { err: (e as Error).message });
+  }
+
   // ── Аптайм процесса движка (дешёвая дополнительная метрика) ─────────────────
   let uptimeSec: number | null = null;
   try {
@@ -809,6 +1126,15 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
       workiUndelivered: worki.filter((w) => w.delivered !== true).length,
       anomalies: anomalies.length,
       anomalyErrors: anomalies.filter((a) => a.level === "error").length,
+      commitmentsOpen: commitments ? Number((commitments as Record<string, unknown>).open ?? 0) : 0,
+      diary: memory ? (memory as Record<string, unknown>).diary ?? null : null,
+      llmHealthy: llmStatus ? (llmStatus as Record<string, unknown>).llmHealthy ?? null : null,
+      embeddingsEnabled: embeddings
+        ? Boolean((embeddings as Record<string, unknown>).enabled)
+        : false,
+      embeddingCacheRows: embeddings
+        ? Number((embeddings as Record<string, unknown>).cacheRows ?? 0)
+        : 0,
     },
     channels: channels.slice(0, 60),
     contacts: contacts.slice(0, 40),
@@ -828,6 +1154,14 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
     actionFeed,
     anomalies,
     auditFeed,
+    // Новые блоки портрета «всё об Алисе» (read-only, каждый защищён try/catch выше).
+    voicesState,
+    affect,
+    explore,
+    commitments,
+    memory,
+    llmStatus,
+    embeddings,
   };
 }
 
@@ -1123,6 +1457,70 @@ async function handleStickerImage(
   }
 }
 
+/**
+ * GET /dashboard/embeddings → семантическая память + ЖИВАЯ проба TEI.
+ *
+ * Объединяет дешёвые статические факты (включено/модель/base_url/размер кеша/мягкий выключатель)
+ * с ЖИВОЙ проверкой достижимости сервера эмбеддингов (deps.embeddingProbe → эмбед крошечной строки
+ * с коротким таймаутом ~4с). РЕЗИЛЕНТНО: проба никогда не бросает; при сбое возвращаем
+ * reachable:false + причину, дашборд покажет «недоступен». Отдельный endpoint (не в /data),
+ * чтобы сетевая проба не задерживала 5-секундный поллинг основного payload'а.
+ */
+async function handleEmbeddings(res: ServerResponse, deps: EngineApiDeps): Promise<void> {
+  // Статика (как в collectData.embeddings) — дёшево и без сети.
+  const cfg = getEmbeddingConfig();
+  const enabled = !!cfg.embeddingBaseUrl.trim() && !!cfg.embeddingModel.trim();
+  let cacheRows = 0;
+  let cachedDim: number | null = null;
+  let cachedModels = 0;
+  try {
+    const d = getDb();
+    cacheRows = d.select({ c: sql<number>`count(*)` }).from(embeddingCache).get()?.c ?? 0;
+    cachedModels =
+      d
+        .select({ c: sql<number>`count(distinct ${embeddingCache.model})` })
+        .from(embeddingCache)
+        .get()?.c ?? 0;
+    const one = d.select({ dim: embeddingCache.dim }).from(embeddingCache).limit(1).get();
+    cachedDim = one ? Number(one.dim) : null;
+  } catch (e) {
+    log.warn("dashboard embeddings cache count failed", { err: (e as Error).message });
+  }
+
+  // Живая проба достижимости TEI. Полностью резильентна — never throws.
+  let probe: {
+    reachable: boolean;
+    dim?: number | null;
+    latencyMs?: number | null;
+    reason?: string | null;
+  } = { reachable: false, dim: null, latencyMs: null, reason: enabled ? "no-probe" : "disabled" };
+  try {
+    if (deps.embeddingProbe) {
+      probe = await deps.embeddingProbe();
+    }
+  } catch (e) {
+    probe = { reachable: false, dim: null, latencyMs: null, reason: (e as Error).message };
+  }
+
+  // Размерность: предпочитаем живую пробу, иначе кеш.
+  const dim = probe.dim ?? cachedDim ?? null;
+
+  const payload = {
+    enabled, // включена ли семантическая память (base_url + model заданы)
+    model: cfg.embeddingModel || null,
+    baseUrl: cfg.embeddingBaseUrl || null,
+    hasApiKey: !!cfg.embeddingApiKey,
+    dim, // размерность вектора (из живой пробы или из кеша)
+    cacheRows, // строк в embedding_cache (сколько текстов векторизовано)
+    cachedModels, // сколько разных моделей встречается в кеше
+    reachable: probe.reachable, // ЖИВАЯ достижимость TEI-сервера
+    probeLatencyMs: probe.latencyMs ?? null,
+    probeReason: probe.reason ?? null, // причина недоступности (disabled/timeout/HTTP/…)
+  };
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(payload));
+}
+
 /** Читает JSON из тела запроса (лимит 1 МБ); пустое тело → {}. */
 function readBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -1194,6 +1592,18 @@ export async function handleDashboard(
     } catch (e) {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: (e as Error).message }));
+    }
+    return;
+  }
+  if (sub === "embeddings") {
+    try {
+      await handleEmbeddings(res, deps);
+    } catch (e) {
+      // Подстраховка: даже неожиданный сбой не должен дать 500 без тела.
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(
+        JSON.stringify({ enabled: false, reachable: false, probeReason: (e as Error).message }),
+      );
     }
     return;
   }
@@ -1459,6 +1869,58 @@ const DASHBOARD_HTML = `<!doctype html>
     </div>
   </section>
 
+  <!-- ════════ ПОРТРЕТ (всё об Алисе) ════════ -->
+  <section class="tabpage" data-tab="portrait">
+    <div class="cards" id="portraitCards"></div>
+    <div class="grid">
+      <div class="panel">
+        <h2>Голоса и внимание <span class="hint">4 голоса (веса π) · текущий режим · на что направлено внимание</span></h2>
+        <div id="prtVoices"></div>
+      </div>
+      <div class="panel">
+        <h2>Аффект <span class="hint">что Алиса сейчас чувствует: настроение + активные эмоции</span></h2>
+        <div id="prtAffect"></div>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="panel">
+        <h2>Исследование каналов <span class="hint">автоподписки на новые каналы (ALICE_CHANNEL_EXPLORE) и дневной лимит</span></h2>
+        <div id="prtExplore"></div>
+      </div>
+      <div class="panel">
+        <h2>Статус LLM / API <span class="hint">доступность провайдеров (circuit-breaker) + алерты health-watch</span></h2>
+        <div id="prtLlm"></div>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="panel">
+        <h2>Обязательства <span class="hint">обещания, к которым она сама вернётся (follow-through)</span></h2>
+        <div id="prtCommit"></div>
+      </div>
+      <div class="panel">
+        <h2>Память <span class="hint">факты · знания (KB) · дневник</span></h2>
+        <div id="prtMemory"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Дневник <span class="hint">недавние записи дневника Алисы (что она сама зафиксировала)</span></h2>
+      <div id="prtDiary"></div>
+    </div>
+  </section>
+
+  <!-- ════════ СЕМАНТИКА (эмбеддинги / семантическая память) ════════ -->
+  <section class="tabpage" data-tab="embeddings">
+    <div class="cards" id="embCards"></div>
+    <div class="panel">
+      <h2>Семантическая память <span class="hint">векторные эмбеддинги для recall «по смыслу» · живая проверка сервера</span></h2>
+      <div class="ctlbar">
+        <button class="ctlbtn" id="embRefresh">Проверить сервер</button>
+        <span class="ctlmsg" id="embMsg"></span>
+      </div>
+      <div id="embDetail"><div class="empty">загрузка…</div></div>
+    </div>
+  </section>
+
   <!-- ════════ ЗДОРОВЬЕ (аномалии + аудит) ════════ -->
   <section class="tabpage" data-tab="health">
     <div class="panel">
@@ -1530,10 +1992,12 @@ function upsert(id, type, data, options){
 /* ── Вкладки ── */
 const TABS = [
   { id:'overview',  label:'Обзор',      badge:null },
+  { id:'portrait',  label:'Алиса',      badge:null },
   { id:'cognition', label:'Когниция',   badge:null },
   { id:'social',    label:'Социальное', badge:d=>d&&d.summary?d.summary.channels:null },
   { id:'activity',  label:'Активность', badge:d=>d&&d.db?d.db.actions:null },
   { id:'memory',    label:'Память',     badge:d=>d&&d.summary?d.summary.facts:null },
+  { id:'embeddings',label:'Семантика',  badge:null },
   { id:'worki',     label:'Worki',      badge:d=>d&&d.summary?d.summary.worki:null },
   { id:'stickers',  label:'Стикеры',    badge:null },
   { id:'health',    label:'Здоровье',   badge:d=>d&&d.summary?d.summary.anomalies:null },
@@ -2017,7 +2481,7 @@ function stickerCell(r){
   const em=r.emoji?esc(r.emoji):'🏷️';
   const star=r.signature?'<span class="stk-star" title="значимый стикер">⭐</span>':'';
   const img='<img loading="lazy" src="/dashboard/sticker-image?id='+encodeURIComponent(r.id)+'" '+
-    "onerror=\"this.style.display='none';this.nextElementSibling.style.display='block'\" />"+
+    "onerror=\\\"this.style.display='none';this.nextElementSibling.style.display='block'\\\" />"+
     '<span class="fallback" style="display:none">'+em+'</span>';
   return '<div class="stk-cell'+(r.disabled?' off':'')+(r.signature?' sig':'')+'">'+
     '<div class="img">'+star+img+'</div>'+
@@ -2039,7 +2503,182 @@ async function ctl2(url, payload){
 }
 function renderStickers(_d){ loadStickerPacks(false); }
 
-const RENDERERS = { overview:renderOverview, cognition:renderCognition, social:renderSocial, activity:renderActivity, memory:renderMemory, worki:renderWorki, stickers:renderStickers, health:renderHealth, selfcheck:renderSelfcheck };
+/* ── Хелпер: список «ключ→значение» с подсказкой (title) для каждой метрики. ──
+   tip — короткое объяснение, всплывает по наведению (чтобы ничего не угадывать). */
+function kvList(rows){
+  return '<div class="kv">'+rows.map(r=>{
+    const t = r[2]?(' title="'+esc(r[2])+'"'):'';
+    const cls = r[3]?(' '+r[3]):'';
+    return '<div class="item"'+t+'><div class="k">'+esc(r[0])+'</div><div class="v'+cls+'">'+r[1]+'</div></div>';
+  }).join('')+'</div>';
+}
+
+/* ════════ ПОРТРЕТ: всё об Алисе (русский, каждая метрика с подсказкой title=) ════════ */
+function renderPortrait(d){
+  const vs=d.voicesState||{}; const af=d.affect||{}; const ex=d.explore||{}; const cm=d.commitments||{};
+  const mem=d.memory||{}; const ls=d.llmStatus||{}; const emb=d.embeddings||{};
+  const modeLbl={patrol:'патруль',conversation:'разговор',consolidation:'консолидация',dormant:'спит'}[vs.mode]||(vs.mode||'—');
+
+  // Карточки-сводка портрета.
+  $('portraitCards').innerHTML=[
+    card('Режим', esc(modeLbl), vs.focusTarget?('фокус: '+esc(vs.focusTarget)):'нет фокуса'),
+    card('Настроение', fmtN(af.mood!=null?af.mood:af.valence), 'arousal '+fmtN(af.arousal)),
+    card('Обязательств', fmtInt(cm.open), cm.done!=null?('закрыто: '+fmtInt(cm.done)):''),
+    card('Каналов', fmtInt(ex.joinedChannels), ex.enabled===false?'исследование выкл':(ex.enabled===true?'исследование вкл':'')),
+    card('Фактов', fmtInt(mem.facts), mem.kb!=null?('знаний (KB): '+fmtInt(mem.kb)):''),
+    card('Дневник', fmtInt(mem.diary), 'записей'),
+    card('LLM/API', ls.llmHealthy===true?'норма':(ls.llmHealthy===false?'обрыв':'—'), ls.healthWatchPending?('алертов: '+fmtInt(ls.healthWatchPending)):''),
+    card('Семантика', emb.enabled?'вкл':'выкл', emb.cacheRows!=null?('кеш: '+fmtInt(emb.cacheRows)):''),
+  ].join('');
+
+  // Голоса (4) + режим/фокус.
+  if(vs.labels&&vs.labels.length){
+    const w=vs.weights||[];
+    const voiceRu={diligence:'Усердие',curiosity:'Любопытство',sociability:'Общительность',caution:'Осторожность'};
+    const tip={diligence:'Доводить дела до конца, выполнять обязательства',curiosity:'Тянуться к новому, исследовать, узнавать',sociability:'Тянуться к людям, общению, теплу',caution:'Осторожность, оценка рисков, сдержанность'};
+    const rows=vs.labels.map((l,i)=>[voiceRu[l.id]||l.display, fmtN(w[i]), tip[l.id]||('Голос '+l.display)]);
+    rows.push(['Режим', esc(modeLbl), 'patrol=обходит чаты, conversation=погружена в один диалог, consolidation=осмысляет, dormant=спит']);
+    rows.push(['Фокус', esc(vs.focusTarget||'—'), 'Цель, на которой сосредоточено внимание в текущем тике (из tick_log)']);
+    if(vs.thinkingTarget) rows.push(['Думает о', esc(vs.thinkingTarget), 'Цель текущего слота планировщика (thinking_target)']);
+    $('prtVoices').innerHTML=kvList(rows);
+  } else $('prtVoices').innerHTML='<div class="empty">нет данных по голосам</div>';
+
+  // Аффект: настроение + активные эмоции.
+  const aff=[
+    ['Valence', fmtN(af.valence), 'Тон настроения: −1 неприятно … +1 приятно', (af.valence>0?'pos':(af.valence<0?'neg':''))],
+    ['Arousal', fmtN(af.arousal), 'Возбуждение/энергия аффекта: 0 спокойно … 1 взвинчено'],
+    ['Энергия', af.energy!=null?fmtN(af.energy):'—', 'Внутренний ресурс активности'],
+  ];
+  let affHtml=kvList(aff);
+  const acts=af.active||[];
+  if(acts.length){
+    affHtml+='<div style="margin-top:10px">'+acts.map(e=>
+      '<div class="item" style="margin-bottom:6px" title="Активная эмоция: интенсивность с учётом затухания/восстановления">'+
+      '<div class="k">'+esc(e.role||'эмоция')+': '+esc(e.kind||'?')+'</div>'+
+      '<div class="v">инт '+fmtN(e.intensity)+'</div>'+
+      '<div class="sub">val '+fmtN(e.valence)+' · ar '+fmtN(e.arousal)+'</div>'+
+      (e.summary?'<div class="sub" style="margin-top:3px">'+esc(e.summary)+'</div>':'')+
+      '</div>').join('')+'</div>';
+  } else affHtml+='<div class="sub" style="margin-top:8px">активных эмоций нет (нейтральное состояние)</div>';
+  $('prtAffect').innerHTML=affHtml;
+
+  // Исследование каналов.
+  if(d.explore){
+    const enLbl = ex.enabled===true?'<span class="pill r-close_friend">вкл</span>':(ex.enabled===false?'<span class="pill risk-high">выкл</span>':'—');
+    const rows=[
+      ['Исследование', enLbl, 'ALICE_CHANNEL_EXPLORE: разрешено ли ей самой подписываться на новые каналы'],
+      ['Каналов в графе', fmtInt(ex.joinedChannels), 'Сколько каналов всего ей известно (подписки + наблюдаемые)'],
+      ['Лимит/сутки', fmtInt(ex.dailyCap), 'Максимум автоподписок в сутки'],
+      ['Подписалась сегодня', fmtInt(ex.joinsToday), 'Сколько новых каналов добавила за сегодня'],
+      ['Последнее иссл.', ex.lastExploreMs?fmtAgo(ex.lastExploreMs):'—', 'Когда последний раз искала новый канал'],
+      ['Идёт сейчас', ex.inFlight?'да':'нет', 'Выполняется ли попытка исследования прямо сейчас'],
+    ];
+    let h=kvList(rows);
+    const nt=ex.notices||[];
+    if(nt.length) h+='<div style="margin-top:10px">'+nt.map(n=>'<span class="tag" title="Найденный канал по интересу её людей">'+esc(n.channelName)+(n.topic?(' · '+esc(n.topic)):'')+'</span>').join(' ')+'</div>';
+    $('prtExplore').innerHTML=h;
+  } else $('prtExplore').innerHTML='<div class="empty">нет данных исследования</div>';
+
+  // LLM/API статус.
+  if(d.llmStatus){
+    const llmLbl=ls.llmHealthy===true?'<span class="pill r-close_friend">норма</span>':(ls.llmHealthy===false?'<span class="pill risk-high">обрыв / нет провайдеров</span>':'—');
+    let h=kvList([
+      ['LLM-провайдеры', llmLbl, 'Есть ли хоть один провайдер с не-открытым circuit-breaker (false = временно недоступна)'],
+      ['Алертов health-watch', fmtInt(ls.healthWatchPending), 'Висящие предупреждения сторожа здоровья системы'],
+    ]);
+    const al=ls.healthWatchAlerts||[];
+    if(al.length) h+='<table style="margin-top:10px"><tr><th>Тип</th><th>Сообщение</th><th>Когда</th></tr>'+
+      al.map(a=>'<tr><td><span class="tag">'+esc(a.type)+'</span></td><td class="feed-text">'+esc(a.message)+'</td><td class="num">'+(a.ts?fmtAgo(a.ts):'—')+'</td></tr>').join('')+'</table>';
+    $('prtLlm').innerHTML=h;
+  } else $('prtLlm').innerHTML='<div class="empty">нет данных LLM</div>';
+
+  // Обязательства.
+  if(d.commitments){
+    let h=kvList([
+      ['Открытых', fmtInt(cm.open), 'Обещания, к которым она ещё вернётся (pending/ripe)'],
+      ['Закрытых', fmtInt(cm.done), 'Обещания, по которым уже напомнила (asked)'],
+      ['Всего', fmtInt(cm.total), 'Всего живых обещаний в памяти'],
+    ]);
+    const it=cm.items||[];
+    if(it.length) h+='<table style="margin-top:10px"><tr><th>Кому</th><th>Что</th><th>Статус</th><th>Срок</th></tr>'+
+      it.map(c=>'<tr><td>'+esc(c.who||'—')+'</td><td class="feed-text">'+esc(c.what)+'</td><td><span class="tag">'+esc(c.status||'?')+'</span></td><td class="num">'+(c.softWhenMs?new Date(Number(c.softWhenMs)).toLocaleDateString('ru'):'—')+'</td></tr>').join('')+'</table>';
+    else h+='<div class="sub" style="margin-top:8px">открытых обязательств нет</div>';
+    $('prtCommit').innerHTML=h;
+  } else $('prtCommit').innerHTML='<div class="empty">нет данных обязательств</div>';
+
+  // Память (счётчики).
+  if(d.memory){
+    $('prtMemory').innerHTML=kvList([
+      ['Факты', fmtInt(mem.facts), 'Узлы-факты в графе памяти (то, что она знает о мире/людях)'],
+      ['Знания (KB)', fmtInt(mem.kb), 'Факты-знания (kb): её база знаний / самопознание'],
+      ['Дневник', fmtInt(mem.diary), 'Записей дневника (что она сама зафиксировала)'],
+      ['Потоки', fmtInt(mem.threads), 'Нарративные потоки (длящиеся сюжеты)'],
+      ['Диалоги', fmtInt(mem.conversations), 'Узлы-диалоги в графе'],
+    ]);
+  } else $('prtMemory').innerHTML='<div class="empty">нет данных памяти</div>';
+
+  // Дневник (недавние записи).
+  const dr=(mem.recentDiary)||[];
+  $('prtDiary').innerHTML = dr.length
+    ? '<div class="scrollbox"><table><thead><tr><th>Тик</th><th>Запись</th><th>О ком</th><th>Когда</th></tr></thead><tbody>'+
+      dr.map(e=>'<tr><td class="num">'+esc(e.tick)+'</td><td class="feed-text" style="max-width:520px">'+esc(e.content)+'</td><td>'+esc(e.about||'—')+'</td><td class="num">'+(e.atMs?fmtAgo(e.atMs):'—')+'</td></tr>').join('')+'</tbody></table></div>'
+    : '<div class="empty">дневник пуст</div>';
+}
+
+/* ════════ СЕМАНТИКА: эмбеддинги + ЖИВАЯ проба TEI (отдельный endpoint). ════════
+   Статику берём из /dashboard/data (d.embeddings); живую достижимость — из /dashboard/embeddings. */
+let embLive = null; // последний ответ живой пробы
+function renderEmbeddingsDetail(stat){
+  const live = embLive;
+  const enabled = (live&&live.enabled!=null)?live.enabled:(stat?stat.enabled:false);
+  // Карточки.
+  const reach = live ? (live.reachable?'<span style="color:var(--good)">доступен</span>':'<span style="color:var(--bad)">недоступен</span>') : '…';
+  $('embCards').innerHTML=[
+    card('Семантика', enabled?'включена':'выключена', enabled?'recall ранжирует по смыслу':'recall только по ключам'),
+    card('TEI сервер', live?(live.reachable?'OK':'нет'):'…', live&&live.probeLatencyMs!=null?(live.probeLatencyMs+' мс'):''),
+    card('Размерность', live&&live.dim?fmtInt(live.dim):(stat&&stat.cachedDim?fmtInt(stat.cachedDim):'—'), 'длина вектора'),
+    card('Кеш векторов', fmtInt(stat?stat.cacheRows:(live?live.cacheRows:null)), 'строк в embedding_cache'),
+  ].join('');
+
+  const baseUrl = (live&&live.baseUrl)||(stat&&stat.baseUrl)||null;
+  const model = (live&&live.model)||(stat&&stat.model)||null;
+  const dim = (live&&live.dim)||(stat&&stat.cachedDim)||null;
+  const cacheRows = stat?stat.cacheRows:(live?live.cacheRows:null);
+  const models = (stat&&stat.cachedModels!=null)?stat.cachedModels:(live&&live.cachedModels!=null?live.cachedModels:null);
+  const reasonRu={disabled:'отключено в конфиге','no-probe':'проба недоступна (нет deps)',unreachable:'сервер не ответил вектором'};
+
+  $('embDetail').innerHTML=kvList([
+    ['Включено', enabled?'<span class="pill r-close_friend">да</span>':'<span class="pill risk-high">нет</span>', 'Семантическая память активна, если заданы base_url и модель'],
+    ['Модель', esc(model||'—'), 'Имя модели эмбеддинга (например bge-m3)'],
+    ['Base URL', esc(baseUrl||'—'), 'Адрес OpenAI-совместимого /v1/embeddings сервера'],
+    ['API-ключ', (live&&live.hasApiKey)||(stat&&stat.hasApiKey)?'есть':'нет (keyless)', 'Шлётся ли заголовок Authorization (для локального обычно нет)'],
+    ['TEI доступен', live?(live.reachable?'<span class="pill r-close_friend">да</span>':'<span class="pill risk-high">нет</span>'+(live.probeReason?(' — '+esc(reasonRu[live.probeReason]||live.probeReason)):'')):'проверяю…', 'Живая проба: эмбед крошечной строки с коротким таймаутом (~4с)'],
+    ['Латентность пробы', live&&live.probeLatencyMs!=null?(fmtInt(live.probeLatencyMs)+' мс'):'—', 'Сколько занял живой запрос к серверу эмбеддингов'],
+    ['Размерность', dim?fmtInt(dim):'—', 'Длина вектора (из живой пробы или из кеша)'],
+    ['Кеш (строк)', fmtInt(cacheRows), 'Сколько текстов уже векторизовано в embedding_cache'],
+    ['Моделей в кеше', models!=null?fmtInt(models):'—', 'Сколько разных моделей встречается в кеше (смена модели самоинвалидирует старое)'],
+  ]);
+}
+async function loadEmbeddingsLive(){
+  ctlMsg('embMsg','проверяю сервер…');
+  try {
+    embLive = await (await fetch('/dashboard/embeddings')).json();
+    ctlMsg('embMsg', embLive.reachable?'сервер доступен':'сервер недоступен', embLive.reachable?'ok':'err');
+  } catch(e){
+    embLive = { enabled:false, reachable:false, probeReason:e.message };
+    ctlMsg('embMsg','ошибка проверки: '+e.message,'err');
+  }
+  renderEmbeddingsDetail(lastData?lastData.embeddings:null);
+}
+let _embWired=false;
+function renderEmbeddings(d){
+  renderEmbeddingsDetail(d?d.embeddings:null);
+  if(!_embWired){ _embWired=true; const b=$('embRefresh'); if(b) b.addEventListener('click', loadEmbeddingsLive); }
+  // Живую пробу делаем один раз при первом открытии вкладки (не на каждом 5с поллинге).
+  if(embLive===null) loadEmbeddingsLive();
+}
+
+const RENDERERS = { overview:renderOverview, portrait:renderPortrait, cognition:renderCognition, social:renderSocial, activity:renderActivity, memory:renderMemory, embeddings:renderEmbeddings, worki:renderWorki, stickers:renderStickers, health:renderHealth, selfcheck:renderSelfcheck };
 function renderTab(id, d){ try { (RENDERERS[id]||(()=>{}))(d); } catch(e){ console.error('render '+id, e); } }
 
 async function refresh(){

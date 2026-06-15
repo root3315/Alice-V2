@@ -166,6 +166,22 @@ export interface EngineApiDeps {
     emotion?: string;
     replyTo?: number;
   }) => Promise<{ msgId: number | null; deliveredAs?: "voice" | "text"; fallbackReason?: string }>;
+  /**
+   * Живая проба сервера эмбеддингов (TEI / OpenAI-совместимый /v1/embeddings) для дашборда.
+   * Эмбеддит крошечную строку с КОРОТКИМ таймаутом и сообщает достижимость + размерность.
+   * РЕЗИЛЕНТНО: никогда не бросает — при сбое возвращает { reachable:false }.
+   * Реализуется в index.ts поверх getEmbeddingConfig()/embedOne (зеркалит прочие deps).
+   */
+  embeddingProbe?: () => Promise<{
+    /** Достижим ли сервер (успешный эмбед крошечной строки). */
+    reachable: boolean;
+    /** Размерность вернувшегося вектора (если удалось) — иначе null. */
+    dim?: number | null;
+    /** Латентность пробы в мс (для диагностики), если измерена. */
+    latencyMs?: number | null;
+    /** Короткая причина недоступности (таймаут/HTTP/отключено), если есть. */
+    reason?: string | null;
+  }>;
   /** Dispatcher syscall bridge. */
   dispatchInstruction?: (
     instruction: string,
