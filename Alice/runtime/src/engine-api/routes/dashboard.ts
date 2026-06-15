@@ -19,6 +19,7 @@ import { getDb } from "../../db/connection.js";
 import { actionLog, personalitySnapshots, silenceLog, tickLog } from "../../db/schema.js";
 import { analyzeVoiceDiversity } from "../../diagnostics/diversity.js";
 import { safeDisplayName } from "../../graph/display.js";
+import { getWorkiSnapshot } from "../../mods/worki.mod.js";
 import { getSelfcheckData } from "../../telegram/apps/selfcheck.js";
 import { VOICES } from "../../voices/personality.js";
 import { createLogger } from "../../utils/logger.js";
@@ -603,6 +604,28 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
     log.warn("dashboard selfcheck failed", { err: (e as Error).message });
   }
 
+  // ── Worki: in-flight + недоставленные задачи (read-only снимок очереди) ──────
+  // Снимок без секретов/каналов — только статус-факты (kind/task/status/progress/delivered).
+  let worki: Array<Record<string, unknown>> = [];
+  try {
+    const snap = getWorkiSnapshot();
+    if (Array.isArray(snap)) {
+      worki = snap.map((w) => ({
+        id: w.id,
+        kind: w.kind,
+        task: w.task,
+        status: w.status,
+        latestProgress: w.latestProgress ?? null,
+        project: w.project ?? null,
+        createdMs: w.createdMs ?? null,
+        completedMs: w.completedMs ?? null,
+        delivered: Boolean(w.delivered),
+      }));
+    }
+  } catch (e) {
+    log.warn("dashboard worki failed", { err: (e as Error).message });
+  }
+
   // ── Аптайм процесса движка (дешёвая дополнительная метрика) ─────────────────
   let uptimeSec: number | null = null;
   try {
@@ -642,6 +665,9 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
       reminders: reminders.length,
       episodes: episodes.length,
       crisisChannels: crisisChannels.length,
+      worki: worki.length,
+      workiRunning: worki.filter((w) => w.status === "running").length,
+      workiUndelivered: worki.filter((w) => w.delivered !== true).length,
     },
     channels: channels.slice(0, 60),
     contacts: contacts.slice(0, 40),
@@ -657,6 +683,7 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
     db,
     voices,
     selfcheck,
+    worki,
   };
 }
 
@@ -1039,6 +1066,19 @@ const DASHBOARD_HTML = `<!doctype html>
     </div>
   </section>
 
+  <!-- ════════ WORKI ════════ -->
+  <section class="tabpage" data-tab="worki">
+    <div class="cards" id="workiCards"></div>
+    <div class="panel">
+      <h2>В работе <span class="hint">текущие задачи worki (read-only)</span></h2>
+      <div id="workiActive"></div>
+    </div>
+    <div class="panel">
+      <h2>Недавние <span class="hint">завершённые / недоставленные</span></h2>
+      <div id="workiRecent"></div>
+    </div>
+  </section>
+
 </div>
 <script>
 const charts = {};
@@ -1086,6 +1126,7 @@ const TABS = [
   { id:'social',    label:'Социальное', badge:d=>d&&d.summary?d.summary.channels:null },
   { id:'activity',  label:'Активность', badge:d=>d&&d.db?d.db.actions:null },
   { id:'memory',    label:'Память',     badge:d=>d&&d.summary?d.summary.facts:null },
+  { id:'worki',     label:'Worki',      badge:d=>d&&d.summary?d.summary.worki:null },
   { id:'selfcheck', label:'Self-report',badge:d=>d&&d.selfcheck&&d.selfcheck.sections?d.selfcheck.sections.length:null },
 ];
 let activeTab = (location.hash||'').replace('#','') || 'overview';
@@ -1131,6 +1172,10 @@ function renderHeader(d){
   const fails = (d.summary&&d.summary.failedActionTypes)||0;
   const badA = $('badge-activity');
   if(badA){ if(fails>0){ badA.classList.add('alert'); } else badA.classList.remove('alert'); }
+  // Алерт-бейдж: недоставленные результаты worki → вкладка Worki.
+  const undel = (d.summary&&d.summary.workiUndelivered)||0;
+  const badW = $('badge-worki');
+  if(badW){ if(undel>0){ badW.classList.add('alert'); } else badW.classList.remove('alert'); }
 }
 
 /* ════════ Рендеры по вкладкам ════════ */
@@ -1341,6 +1386,38 @@ function renderMemory(d){
   ].map(x=>'<div class="item"><div class="k">'+x[0]+'</div><div class="v">'+x[1]+'</div></div>').join('')+'</div>';
 }
 
+/* ── Worki: read-only очередь задач (in-flight + недавние). Без управления здесь. ── */
+function workiStatusPill(st){
+  const cls = st==='running' ? 'risk-medium' : st==='error' ? 'risk-high' : 'r-close_friend';
+  const lbl = st==='running' ? 'в работе' : st==='error' ? 'ошибка' : st==='done' ? 'готово' : (st||'?');
+  return '<span class="pill '+cls+'">'+esc(lbl)+'</span>';
+}
+function workiTable(rows){
+  if(!rows.length) return null;
+  return '<table><tr><th>Вид</th><th>Задача</th><th>Статус</th><th>Прогресс</th><th>Доставлено</th><th>Возраст</th></tr>'+
+    rows.map(w=>'<tr>'+
+      '<td><span class="tag">'+esc(w.kind)+'</span></td>'+
+      '<td>'+esc(w.task)+(w.project?'<br><span class="tag">'+esc(w.project)+'</span>':'')+'</td>'+
+      '<td>'+workiStatusPill(w.status)+'</td>'+
+      '<td>'+(w.latestProgress?'<span style="color:#8b97a7">'+esc(w.latestProgress)+'</span>':'<span class="empty">—</span>')+'</td>'+
+      '<td>'+(w.delivered?'<span class="pill r-close_friend">да</span>':'<span class="pill risk-high">нет</span>')+'</td>'+
+      '<td class="num">'+(w.completedMs?fmtAgo(w.completedMs):(w.createdMs?fmtAgo(w.createdMs):'—'))+'</td>'+
+    '</tr>').join('')+'</table>';
+}
+function renderWorki(d){
+  const wk = d.worki||[];
+  const running = wk.filter(w=>w.status==='running');
+  const recent = wk.filter(w=>w.status!=='running');
+  const undel = wk.filter(w=>!w.delivered).length;
+  $('workiCards').innerHTML = [
+    card('Всего задач', fmtInt(wk.length), ''),
+    card('В работе', fmtInt(running.length), ''),
+    card('Недоставлено', fmtInt(undel), undel>0?'ждут отдачи':''),
+  ].join('');
+  $('workiActive').innerHTML = workiTable(running) || '<div class="empty">нет задач в работе</div>';
+  $('workiRecent').innerHTML = workiTable(recent) || '<div class="empty">нет недавних задач</div>';
+}
+
 /* Локальный self-report для on-demand selfcheck-кнопок (минует автообновляемые lastData). */
 let scOverride = null;
 function renderSelfcheckSections(sec){
@@ -1380,7 +1457,7 @@ function wireControls(){
   });
 }
 
-const RENDERERS = { overview:renderOverview, cognition:renderCognition, social:renderSocial, activity:renderActivity, memory:renderMemory, selfcheck:renderSelfcheck };
+const RENDERERS = { overview:renderOverview, cognition:renderCognition, social:renderSocial, activity:renderActivity, memory:renderMemory, worki:renderWorki, selfcheck:renderSelfcheck };
 function renderTab(id, d){ try { (RENDERERS[id]||(()=>{}))(d); } catch(e){ console.error('render '+id, e); } }
 
 async function refresh(){

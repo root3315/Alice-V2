@@ -25,6 +25,10 @@ import { soulMod } from "../mods/soul.mod.js";
 import { strategyMod } from "../mods/strategy.mod.js";
 import { threadsMod } from "../mods/threads.mod.js";
 import { workiMod } from "../mods/worki.mod.js";
+import { recallMod } from "../mods/recall.mod.js";
+import { kbMod } from "../mods/kb.mod.js";
+import { digestMod } from "../mods/digest.mod.js";
+import { devOfferMod } from "../mods/dev-offer.mod.js";
 import type { ModDefinition } from "./types.js";
 
 /**
@@ -57,5 +61,9 @@ export function loadAllMods(): ModDefinition[] {
     episodeMod, // ADR-215: причинно-следственный граф когнитивных эпизодов — после diary
     workiMod, // code_ask/code_fix/code_pr: чистые агенты по коду Worki (async, через прокси)
     healthWatchMod, // проактивный инцидент-алёрт: замечает свои error-аномалии → говорит владельцу в личку
+    recallMod, // cross-chat recall: «что мы решили по X» (факты+дневник+эпизоды, read-only query)
+    kbMod, // KB-ingestion: «запомни про проект …» (стойкое незатухающее знание)
+    digestMod, // раз в сутки самосочинённая сводка дня в личку владельца
+    devOfferMod, // очень сдержанный нудж «предложить глянуть код» в рабочем чате
   ];
 }

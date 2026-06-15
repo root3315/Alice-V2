@@ -21,6 +21,7 @@ import { TRAIT_BELIEF_DECAY } from "./belief/types.js";
 import { loadConfig } from "./config.js";
 import { checkToolSurfaceCompleteness } from "./core/d3-completeness.js";
 import { createAliceDispatcher } from "./core/dispatcher.js";
+import { setDigestTarget } from "./mods/digest.mod.js";
 import { setHealthWatchTarget } from "./mods/health-watch.mod.js";
 import { setWorkiStatusSender } from "./mods/worki.mod.js";
 import { loadAllMods } from "./core/mod-loader.js";
@@ -152,6 +153,9 @@ async function main() {
 
   // Инцидент-алёрт: Алиса сама пишет о своих сбоях (error-аномалиях) в ЛИЧКУ владельца.
   if (config.telegramAdmin) setHealthWatchTarget(telegramChannelId(config.telegramAdmin));
+
+  // Дайджест: раз в сутки Алиса сама рассказывает владельцу в ЛС, как прошёл день.
+  if (config.telegramAdmin) setDigestTarget(telegramChannelId(config.telegramAdmin));
 
   // ADR-33 Phase 2: одноразовая миграция со старых graph_snapshots на graph_nodes/graph_edges
   migrateFromSnapshots();
