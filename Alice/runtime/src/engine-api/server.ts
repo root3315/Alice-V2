@@ -194,9 +194,10 @@ export function routeRequest(
   const segments = pathname.split("/").filter(Boolean);
 
   // --- dashboard (read-only stats UI; /dashboard — 1 сегмент, обрабатываем ДО гейта length<2) ---
-  if (segments[0] === "dashboard" && method === "GET") {
-    handleDashboard(segments[1], req, res, deps);
-    return;
+  // GET — страница + /dashboard/data JSON. POST /dashboard/control — небольшой control-plane
+  // (cancel/dismiss/selfcheck/feeds-pause), сознательно БЕЗ авторизации (решение владельца).
+  if (segments[0] === "dashboard" && (method === "GET" || method === "POST")) {
+    return handleDashboard(segments[1], method, req, res, deps);
   }
 
   if (segments.length < 2) {

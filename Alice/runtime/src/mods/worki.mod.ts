@@ -1,9 +1,17 @@
 /**
  * Worki Mod — анализ и фикс кода Worki через ЧИСТЫЕ агенты, всё АСИНХРОННО.
  *
- * - code_ask: read-only разбор кода (прокси /v1/code-analyze, агент в read-only клоне).
- * - code_fix: правит баг + узкий тест + ветка+коммит локально (прокси /v1/code-fix). Без push.
- * - code_pr:  пушит ветку фикса в worki-alice + открывает PR (Node: git push + GitHub API).
+ * - code_ask:  read-only разбор кода (прокси /v1/code-analyze, агент в read-only клоне).
+ * - code_fix:  правит баг + узкий тест + ветка+коммит локально (прокси /v1/code-fix). Без push.
+ * - code_test: гоняет относящиеся тесты в чистом клоне (прокси /v1/code-test) → pass/fail.
+ * - code_run:  ограниченная команда build/lint/test (прокси /v1/code-run, allowlist) → exit+хвост.
+ * - code_pr:   пушит ветку фикса в worki-alice + открывает PR (Node: git push + GitHub API).
+ *
+ * Все code_*-инструкции АСИНХРОННЫ по одной схеме: impl ставит Pending в `pending` и сразу
+ * возвращается, runX дёргает прокси с task_id (live-прогресс), результат доставляется в
+ * спросивший канал через направленное давление. Опциональный `project` пробрасывается в тело
+ * запроса (omit = текущий единственный проект, полная обратная совместимость).
+ * `getWorkiSnapshot()` — read-only снимок очереди для дашборда.
  *
  * ДОСТАВКА (после аудита async-delivery): результат привязан к спросившему каналу
  * (`askGraphId`, захват TARGET_CHAT через deriveParams). На завершении `onTickEnd`
@@ -34,6 +42,8 @@ const execFileP = promisify(execFile);
 const PROXY = process.env.PROXY_BASE_URL ?? "http://127.0.0.1:8787";
 const CODE_ANALYZE_URL = process.env.PROXY_CODE_ANALYZE_URL ?? `${PROXY}/v1/code-analyze`;
 const CODE_FIX_URL = process.env.PROXY_CODE_FIX_URL ?? `${PROXY}/v1/code-fix`;
+const CODE_TEST_URL = process.env.PROXY_CODE_TEST_URL ?? `${PROXY}/v1/code-test`;
+const CODE_RUN_URL = process.env.PROXY_CODE_RUN_URL ?? `${PROXY}/v1/code-run`;
 const CODE_PROGRESS_BASE = process.env.PROXY_CODE_PROGRESS_URL ?? `${PROXY}/v1/code-progress/`;
 const DEFAULT_TIMEOUT_MIN = 5;
 const MAX_TIMEOUT_MIN = 20;
@@ -73,13 +83,15 @@ function clampTimeoutMin(raw: unknown): number {
   return Math.max(1, Math.min(Number.isFinite(n) && n > 0 ? n : DEFAULT_TIMEOUT_MIN, MAX_TIMEOUT_MIN));
 }
 
-type Kind = "ask" | "fix" | "pr";
+type Kind = "ask" | "fix" | "pr" | "test" | "run";
 interface Pending {
   kind: Kind;
   task: string;
   status: "running" | "done" | "error";
   result: string;
   branch?: string;
+  /** Опциональный проект (если песочница станет мульти-проектной); по умолч. omit = текущий. */
+  project?: string;
   /** Канал, КУДА вернуть ответ ("channel:telegram:<id>"); захвачен на старте. */
   askGraphId?: string;
   createdMs: number;
@@ -122,6 +134,45 @@ interface WorkiState {
 // (приемлемо: статус-строки идемпотентны по антидублю, доставка — по wall-clock и delivered).
 const pending = new Map<string, Pending>();
 let _rehydrated = false;
+
+/** Read-only снимок одной задачи для дашборда (без секретов/каналов — только статус-факты). */
+export interface WorkiTaskSnapshot {
+  id: string;
+  kind: Kind;
+  task: string;
+  status: "running" | "done" | "error";
+  /** Последняя строка прогресса worki-агента (если была). */
+  latestProgress?: string;
+  project?: string;
+  createdMs: number;
+  completedMs?: number;
+  delivered: boolean;
+}
+
+/**
+ * READ-ONLY снимок текущих in-flight + недоставленных задач worki — для дашборда.
+ * Возвращает простые сериализуемые объекты (никаких ссылок на внутренние Pending),
+ * чтобы потребитель не мог случайно мутировать живое состояние доставки.
+ */
+export function getWorkiSnapshot(): WorkiTaskSnapshot[] {
+  const out: WorkiTaskSnapshot[] = [];
+  for (const [id, p] of pending) {
+    out.push({
+      id,
+      kind: p.kind,
+      task: p.task,
+      status: p.status,
+      latestProgress: p.progress?.latest,
+      project: p.project,
+      createdMs: p.createdMs,
+      completedMs: p.completedMs,
+      delivered: Boolean(p.delivered),
+    });
+  }
+  // Стабильный порядок: свежие сверху — удобнее для дашборда.
+  out.sort((a, b) => b.createdMs - a.createdMs);
+  return out;
+}
 
 /**
  * Прямая отправка статус-строк (подключается из index.ts телеграм-клиентом). Живые фразы, её стиль.
@@ -250,11 +301,26 @@ async function pollProgress(id: string): Promise<void> {
   }
 }
 
-async function runAnalysis(id: string, task: string, model: string, timeoutSec: number): Promise<void> {
+/** Тело запроса к прокси: общая база + опциональный project (omit = текущий единственный проект). */
+function withProject(body: Record<string, unknown>, project?: string): Record<string, unknown> {
+  return project ? { ...body, project } : body;
+}
+
+async function runAnalysis(
+  id: string,
+  task: string,
+  model: string,
+  timeoutSec: number,
+  project?: string,
+): Promise<void> {
   const e = pending.get(id);
   if (!e) return;
   try {
-    const data = await postJson(CODE_ANALYZE_URL, { task, persona: SOUL_BRIEF, model, timeout_s: timeoutSec, task_id: id }, timeoutSec);
+    const data = await postJson(
+      CODE_ANALYZE_URL,
+      withProject({ task, persona: SOUL_BRIEF, model, timeout_s: timeoutSec, task_id: id }, project),
+      timeoutSec,
+    );
     const a = String(data.analysis ?? "").trim();
     e.status = "done"; // пустой ответ на HTTP 200 — не ошибка (LOW-20)
     e.result = a || "разбор вышел пустой — попроси переспросить конкретнее";
@@ -267,11 +333,21 @@ async function runAnalysis(id: string, task: string, model: string, timeoutSec: 
   e.completedMs = Date.now();
 }
 
-async function runFix(id: string, task: string, model: string, timeoutSec: number): Promise<void> {
+async function runFix(
+  id: string,
+  task: string,
+  model: string,
+  timeoutSec: number,
+  project?: string,
+): Promise<void> {
   const e = pending.get(id);
   if (!e) return;
   try {
-    const data = await postJson(CODE_FIX_URL, { task, persona: SOUL_BRIEF, model, timeout_s: timeoutSec, task_id: id }, timeoutSec);
+    const data = await postJson(
+      CODE_FIX_URL,
+      withProject({ task, persona: SOUL_BRIEF, model, timeout_s: timeoutSec, task_id: id }, project),
+      timeoutSec,
+    );
     const r = String(data.report ?? "").trim();
     e.result = r || "fix-агент вернул пустой отчёт";
     e.status = r ? "done" : "error";
@@ -290,6 +366,84 @@ async function runFix(id: string, task: string, model: string, timeoutSec: numbe
     e.status = "error";
     e.result = classifyErr(err);
     log.warn("code-fix failed", { id, err: (err as Error).message });
+  }
+  e.completedMs = Date.now();
+}
+
+async function runTest(
+  id: string,
+  task: string,
+  model: string,
+  timeoutSec: number,
+  project?: string,
+): Promise<void> {
+  const e = pending.get(id);
+  if (!e) return;
+  try {
+    const data = await postJson(
+      CODE_TEST_URL,
+      withProject({ task, persona: SOUL_BRIEF, model, timeout_s: timeoutSec, task_id: id }, project),
+      timeoutSec,
+    );
+    // Прокси гоняет тесты в чистом клоне и возвращает pass/fail + отчёт. Уважаем явный
+    // флаг `passed`, если он есть; иначе считаем пустой отчёт за ошибку прогона.
+    const report = String(data.report ?? data.analysis ?? "").trim();
+    const passed = data.passed === true ? true : data.passed === false ? false : undefined;
+    if (passed === false) {
+      e.status = "done"; // прогон состоялся — это валидный результат «упали тесты»
+      e.result = report ? `тесты КРАСНЫЕ:\n${report}` : "тесты не прошли (отчёт пустой)";
+    } else if (passed === true) {
+      e.status = "done";
+      e.result = report ? `тесты ЗЕЛЁНЫЕ:\n${report}` : "тесты прошли — всё зелёное";
+    } else {
+      e.status = report ? "done" : "error";
+      e.result = report || "тест-агент вернул пустой отчёт";
+    }
+    log.info("code-test done", { id, passed, len: e.result.length });
+  } catch (err) {
+    e.status = "error";
+    e.result = classifyErr(err);
+    log.warn("code-test failed", { id, task, err: (err as Error).message });
+  }
+  e.completedMs = Date.now();
+}
+
+async function runCommand(
+  id: string,
+  command: string,
+  timeoutSec: number,
+  project?: string,
+): Promise<void> {
+  const e = pending.get(id);
+  if (!e) return;
+  try {
+    // Прокси держит allowlist (build/lint/test и т.п.) и сам режет всё остальное — мы лишь
+    // передаём команду. Возвращает exit-код + хвост вывода.
+    const data = await postJson(
+      CODE_RUN_URL,
+      withProject({ command, timeout_s: timeoutSec, task_id: id }, project),
+      timeoutSec,
+    );
+    const code = Number(data.exit_code ?? data.code ?? data.exitCode);
+    const tail = String(data.output ?? data.tail ?? data.stdout ?? "").trim();
+    if (data.rejected === true || data.allowed === false) {
+      e.status = "error";
+      e.result = `команда не из allowlist — не запускаю: ${String(data.error ?? command)}`;
+    } else {
+      const ok = Number.isFinite(code) ? code === 0 : true;
+      e.status = "done"; // команда отработала (даже с ненулевым кодом — это валидный результат)
+      const head = Number.isFinite(code)
+        ? ok
+          ? `готово (exit ${code})`
+          : `упало (exit ${code})`
+        : "готово";
+      e.result = tail ? `${head}:\n${tail}` : head;
+    }
+    log.info("code-run done", { id, code: Number.isFinite(code) ? code : "?" });
+  } catch (err) {
+    e.status = "error";
+    e.result = classifyErr(err);
+    log.warn("code-run failed", { id, command, err: (err as Error).message });
   }
   e.completedMs = Date.now();
 }
@@ -346,11 +500,18 @@ async function runPr(id: string, branch: string, title: string): Promise<void> {
 const TIMEOUT_DESC = "Таймаут в минутах (по умолч. 5). Подними, если просят дольше — напр. 10 или 15.";
 const MODEL_DESC = "Модель: sonnet (по умолч., быстро) / opus (глубже, дольше) / haiku. Ставь opus, если просят «на опусе».";
 const REPLY_CHAT_DESC = "служебный — НЕ заполняй, проставляется автоматически (чат, куда вернуть ответ).";
+const PROJECT_DESC = "Проект (необязательно). По умолчанию — текущий единственный (Worki); указывай, только если просят явно другой.";
 const deriveReplyChat = { _reply_chat: (cv: Record<string, unknown>) => cv.TARGET_CHAT };
+
+/** Опциональный проект из аргументов: пустую строку трактуем как omit (= текущий проект). */
+function projectFromArgs(args: Record<string, unknown>): string | undefined {
+  const p = args.project != null ? String(args.project).trim() : "";
+  return p ? p : undefined;
+}
 
 export const workiMod = createMod<WorkiState>("worki", {
   category: "mechanic",
-  description: "Анализ и фикс кода Worki чистыми агентами (async): code_ask / code_fix / code_pr",
+  description: "Анализ/фикс/тесты/запуск кода Worki чистыми агентами (async): code_ask / code_fix / code_test / code_run / code_pr",
   topics: ["worki"],
   initialState: { saved: {} },
 })
@@ -359,6 +520,7 @@ export const workiMod = createMod<WorkiState>("worki", {
       task: z.coerce.string().trim().min(1).describe('Вопрос/задача по коду Worki своими словами (напр. "какие парсеры и что делает tg-парсер")'),
       model: z.coerce.string().optional().describe(MODEL_DESC),
       timeout_min: z.coerce.number().optional().describe(TIMEOUT_DESC),
+      project: z.coerce.string().optional().describe(PROJECT_DESC),
       _reply_chat: z.coerce.number().optional().describe(REPLY_CHAT_DESC),
     }),
     deriveParams: deriveReplyChat,
@@ -376,10 +538,11 @@ export const workiMod = createMod<WorkiState>("worki", {
       }
       const model = normalizeModel(args.model as string | undefined);
       const tmin = clampTimeoutMin(args.timeout_min);
+      const project = projectFromArgs(args);
       const id = `ask-${randomUUID()}`;
-      pending.set(id, { kind: "ask", task, status: "running", result: "", askGraphId: askGraphFromArgs(args), createdMs: ctx.nowMs });
-      void runAnalysis(id, task, model, tmin * 60);
-      log.info("code-ask started", { id, model, tmin });
+      pending.set(id, { kind: "ask", task, status: "running", result: "", project, askGraphId: askGraphFromArgs(args), createdMs: ctx.nowMs });
+      void runAnalysis(id, task, model, tmin * 60, project);
+      log.info("code-ask started", { id, model, tmin, project });
       return { success: true, message: `Разбор запущен (${model}, до ${tmin} мин) — приду с ответом в этот чат. Скажи, что смотришь код, и живи дальше.` };
     },
   })
@@ -388,6 +551,7 @@ export const workiMod = createMod<WorkiState>("worki", {
       task: z.coerce.string().trim().min(1).describe("Что починить, своими словами (опиши баг и желаемую правку). Только ПОСЛЕ одобрения человека."),
       model: z.coerce.string().optional().describe(MODEL_DESC),
       timeout_min: z.coerce.number().optional().describe(TIMEOUT_DESC),
+      project: z.coerce.string().optional().describe(PROJECT_DESC),
       _reply_chat: z.coerce.number().optional().describe(REPLY_CHAT_DESC),
     }),
     deriveParams: deriveReplyChat,
@@ -405,11 +569,72 @@ export const workiMod = createMod<WorkiState>("worki", {
       }
       const model = normalizeModel(args.model as string | undefined);
       const tmin = clampTimeoutMin(args.timeout_min);
+      const project = projectFromArgs(args);
       const id = `fix-${randomUUID()}`;
-      pending.set(id, { kind: "fix", task, status: "running", result: "", askGraphId: askGraphFromArgs(args), createdMs: ctx.nowMs });
-      void runFix(id, task, model, tmin * 60);
-      log.info("code-fix started", { id, model, tmin });
+      pending.set(id, { kind: "fix", task, status: "running", result: "", project, askGraphId: askGraphFromArgs(args), createdMs: ctx.nowMs });
+      void runFix(id, task, model, tmin * 60, project);
+      log.info("code-fix started", { id, model, tmin, project });
       return { success: true, message: `Фикс запущен (${model}, до ${tmin} мин): правлю + тесты + ветка. Результат придёт в этот чат; не пушу — спросишь «открыть PR?».` };
+    },
+  })
+  .instruction("code_test", {
+    params: z.object({
+      task: z.coerce.string().trim().min(1).describe('Что прогнать тестами, своими словами (напр. "прогони тесты по парсеру tg" или "все тесты воркера")'),
+      model: z.coerce.string().optional().describe(MODEL_DESC),
+      timeout_min: z.coerce.number().optional().describe(TIMEOUT_DESC),
+      project: z.coerce.string().optional().describe(PROJECT_DESC),
+      _reply_chat: z.coerce.number().optional().describe(REPLY_CHAT_DESC),
+    }),
+    deriveParams: deriveReplyChat,
+    description: "Прогнать тесты по коду Worki в чистом клоне: агент находит и гоняет относящиеся тесты, шлёт pass/fail АСИНХРОННО в этот чат.",
+    affordance: {
+      priority: "capability",
+      category: "memory",
+      whenToUse: "Когда просят «прогони тесты по <X>» / проверить, зелено ли. Фоновый прогон в чистом клоне, СРАЗУ возвращается — сама ничего не запускай. Результат (красное/зелёное + хвост) придёт в этот чат. ПРОАКТИВНО: после своего же фикса не грех самой прогнать тесты, прежде чем звать PR.",
+      whenNotToUse: "Не про тесты Worki; для чтения/разбора кода это code_ask, для правки — code_fix",
+    },
+    impl(ctx, args): unknown {
+      const task = String(args.task);
+      if (isBusy("test")) {
+        return { success: true, message: "Уже гоняю тесты — погоди, pass/fail вот-вот придёт в этот чат. Повторно не запускай." };
+      }
+      const model = normalizeModel(args.model as string | undefined);
+      const tmin = clampTimeoutMin(args.timeout_min);
+      const project = projectFromArgs(args);
+      const id = `test-${randomUUID()}`;
+      pending.set(id, { kind: "test", task, status: "running", result: "", project, askGraphId: askGraphFromArgs(args), createdMs: ctx.nowMs });
+      void runTest(id, task, model, tmin * 60, project);
+      log.info("code-test started", { id, model, tmin, project });
+      return { success: true, message: `Гоняю тесты (${model}, до ${tmin} мин) по «${task}» — приду с красным/зелёным в этот чат. Скажи коротко «погнала тесты» и живи дальше.` };
+    },
+  })
+  .instruction("code_run", {
+    params: z.object({
+      command: z.coerce.string().trim().min(1).describe('Команда из allowlist — build / lint / тест и т.п. (напр. "npm run build", "npm run lint"). Прокси сам режет всё, чего нет в списке.'),
+      timeout_min: z.coerce.number().optional().describe(TIMEOUT_DESC),
+      project: z.coerce.string().optional().describe(PROJECT_DESC),
+      _reply_chat: z.coerce.number().optional().describe(REPLY_CHAT_DESC),
+    }),
+    deriveParams: deriveReplyChat,
+    description: "Запустить ограниченную команду (build/lint/test) в клоне Worki через прокси-allowlist. Async: exit-код + хвост вывода придут в этот чат.",
+    affordance: {
+      priority: "capability",
+      category: "memory",
+      whenToUse: "Когда просят «запусти <команда>» — собрать, прогнать линтер или тест-скрипт. Команды БОЗОПАСНЫ и ограничены: прокси держит белый список (build/lint/test), всё постороннее не запустится. Фоном, СРАЗУ возвращается; exit-код и хвост лога придут в этот чат.",
+      whenNotToUse: "Произвольные/опасные команды (их прокси всё равно отклонит); осмысленный прогон тестов «по теме» удобнее через code_test",
+    },
+    impl(ctx, args): unknown {
+      const command = String(args.command);
+      if (isBusy("run")) {
+        return { success: true, message: "Уже выполняю команду — дождись её вывода, потом следующую (общий клон)." };
+      }
+      const tmin = clampTimeoutMin(args.timeout_min);
+      const project = projectFromArgs(args);
+      const id = `run-${randomUUID()}`;
+      pending.set(id, { kind: "run", task: command, status: "running", result: "", project, askGraphId: askGraphFromArgs(args), createdMs: ctx.nowMs });
+      void runCommand(id, command, tmin * 60, project);
+      log.info("code-run started", { id, command, tmin, project });
+      return { success: true, message: `Запускаю \`${command}\` (до ${tmin} мин, в рамках allowlist) — exit-код и хвост лога придут в этот чат.` };
     },
   })
   .instruction("code_pr", {
@@ -490,6 +715,10 @@ export const workiMod = createMod<WorkiState>("worki", {
       } else if (p.kind === "fix") {
         const prHint = p.branch ? `\nЕсли ок и человек одобрит — открой PR: self code-pr --branch ${p.branch}` : "";
         ready.push(`Готов фикс по «${p.task}» (перескажи в чат, где просили, + спроси «открыть PR?»):\n${p.result}${prHint}`);
+      } else if (p.kind === "test") {
+        ready.push(`Тесты по «${p.task}» отработали (скажи в чат, где просили, красное/зелёное своими словами):\n${p.result}`);
+      } else if (p.kind === "run") {
+        ready.push(`Команда «${p.task}» отработала (доложи в чат, где просили, exit-код и суть вывода):\n${p.result}`);
       } else {
         ready.push(p.result); // pr: "PR открыт: <url>"
       }

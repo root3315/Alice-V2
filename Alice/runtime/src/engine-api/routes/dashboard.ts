@@ -14,10 +14,12 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { asc, desc, eq, sql } from "drizzle-orm";
+import { writeAuditEvent } from "../../db/audit.js";
 import { getDb } from "../../db/connection.js";
 import { actionLog, personalitySnapshots, silenceLog, tickLog } from "../../db/schema.js";
 import { analyzeVoiceDiversity } from "../../diagnostics/diversity.js";
 import { safeDisplayName } from "../../graph/display.js";
+import { getSelfcheckData } from "../../telegram/apps/selfcheck.js";
 import { VOICES } from "../../voices/personality.js";
 import { createLogger } from "../../utils/logger.js";
 import type { EngineApiDeps } from "../server.js";
@@ -591,6 +593,16 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
     log.warn("dashboard voices failed", { err: (e as Error).message });
   }
 
+  // ── Self-report (selfcheck-зеркало: настроение/социальность/личность/давление/действия) ──
+  // Read-only семантический самоотчёт — те же данные, что видит сама Алиса в /engine/selfcheck.
+  let selfcheck: Record<string, unknown> | null = null;
+  try {
+    const data = getSelfcheckData(G, Date.now(), tick ?? 0);
+    selfcheck = { sections: data.sections };
+  } catch (e) {
+    log.warn("dashboard selfcheck failed", { err: (e as Error).message });
+  }
+
   // ── Аптайм процесса движка (дешёвая дополнительная метрика) ─────────────────
   let uptimeSec: number | null = null;
   try {
@@ -644,16 +656,193 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
     crisisChannels,
     db,
     voices,
+    selfcheck,
   };
 }
 
-/** Маршрут: /dashboard (страница) и /dashboard/data (JSON). */
-export function handleDashboard(
-  sub: string | undefined,
-  _req: IncomingMessage,
+/**
+ * Control-plane дашборда (POST /dashboard/control).
+ *
+ * Небольшой набор безопасных управляющих действий, проброшенных в существующий dispatcher.
+ * Сознательно БЕЗ авторизации — дашборд остаётся localhost-style, решение владельца.
+ * Каждое действие пишется в auditEvents (best-effort, сбой аудита не роняет ответ).
+ *
+ *   { action: "cancel_task",    taskId }   → dispatch cancel_task   (отменить запланированную задачу)
+ *   { action: "dismiss_worki",  id }       → dispatch worki_dismiss (снять зависший/недоставленный результат)
+ *   { action: "selfcheck",      focus? }   → пересобрать self-report on-demand
+ *   { action: "feeds_pause" | "feeds_resume" } → dispatch feeds_set_polling (пауза/возобновление поллинга)
+ */
+async function handleControl(
+  body: unknown,
   res: ServerResponse,
   deps: EngineApiDeps,
-): void {
+): Promise<void> {
+  const sendJson = (code: number, payload: Record<string, unknown>): void => {
+    res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(payload));
+  };
+
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    sendJson(400, { ok: false, error: "body must be a JSON object" });
+    return;
+  }
+  const action = String((body as Record<string, unknown>).action ?? "").trim();
+  const tick = (() => {
+    try {
+      return deps.getTick ? deps.getTick() : deps.G.tick;
+    } catch {
+      return -1;
+    }
+  })();
+
+  // Мост к dispatcher: instruction может быть не зарегистрирована (mod выключен) —
+  // undefined трактуем как "не поддержано", __dispatchError — как сбой impl.
+  const dispatch = async (
+    instruction: string,
+    args: Record<string, unknown>,
+  ): Promise<{ ok: boolean; result?: unknown; error?: string; unsupported?: boolean }> => {
+    if (!deps.dispatchInstruction) return { ok: false, error: "dispatch not configured" };
+    try {
+      const r = await deps.dispatchInstruction(instruction, args);
+      if (r === undefined || r === null) {
+        return { ok: false, unsupported: true, error: `instruction "${instruction}" not available` };
+      }
+      if (typeof r === "object" && "__dispatchError" in (r as Record<string, unknown>)) {
+        return { ok: false, error: String((r as { __dispatchError: unknown }).__dispatchError) };
+      }
+      if (typeof r === "object" && (r as { success?: unknown }).success === false) {
+        return { ok: false, result: r, error: String((r as { error?: unknown }).error ?? "failed") };
+      }
+      return { ok: true, result: r };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  };
+
+  const audit = (ok: boolean, detail: Record<string, unknown>): void => {
+    try {
+      writeAuditEvent(
+        tick,
+        ok ? "warn" : "error",
+        "dashboard",
+        `control:${action} ${ok ? "ok" : "failed"}`,
+        detail,
+      );
+    } catch {
+      // аудит best-effort
+    }
+  };
+
+  try {
+    switch (action) {
+      case "cancel_task": {
+        const taskId = Number((body as Record<string, unknown>).taskId);
+        if (!Number.isFinite(taskId) || taskId <= 0) {
+          sendJson(400, { ok: false, error: "taskId must be a positive number" });
+          return;
+        }
+        const r = await dispatch("cancel_task", { taskId });
+        audit(r.ok, { taskId, error: r.error });
+        sendJson(r.ok ? 200 : r.unsupported ? 501 : 500, r);
+        return;
+      }
+      case "dismiss_worki": {
+        const id = String((body as Record<string, unknown>).id ?? "").trim();
+        if (!id) {
+          sendJson(400, { ok: false, error: "id required" });
+          return;
+        }
+        const r = await dispatch("worki_dismiss", { id });
+        audit(r.ok, { id, error: r.error });
+        sendJson(r.ok ? 200 : r.unsupported ? 501 : 500, r);
+        return;
+      }
+      case "feeds_pause":
+      case "feeds_resume": {
+        const polling = action === "feeds_resume";
+        const r = await dispatch("feeds_set_polling", { polling });
+        audit(r.ok, { polling, error: r.error });
+        sendJson(r.ok ? 200 : r.unsupported ? 501 : 500, r);
+        return;
+      }
+      case "selfcheck": {
+        const validFocus = ["mood", "social", "personality", "pressure", "actions"];
+        const rawFocus = String((body as Record<string, unknown>).focus ?? "")
+          .trim()
+          .toLowerCase();
+        const focus = validFocus.includes(rawFocus)
+          ? (rawFocus as "mood" | "social" | "personality" | "pressure" | "actions")
+          : undefined;
+        const data = getSelfcheckData(deps.G, Date.now(), tick < 0 ? 0 : tick, focus);
+        audit(true, { focus: focus ?? "all", sections: data.sections.length });
+        sendJson(200, { ok: true, result: { sections: data.sections } });
+        return;
+      }
+      default:
+        sendJson(400, { ok: false, error: `unknown control action "${action}"` });
+        return;
+    }
+  } catch (e) {
+    audit(false, { error: (e as Error).message });
+    sendJson(500, { ok: false, error: (e as Error).message });
+  }
+}
+
+/** Читает JSON из тела запроса (лимит 1 МБ); пустое тело → {}. */
+function readBody(req: IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    req.on("data", (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > 1024 * 1024) {
+        req.destroy();
+        reject(new Error("body too large"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      try {
+        const raw = Buffer.concat(chunks).toString("utf-8");
+        resolve(raw.length > 0 ? JSON.parse(raw) : {});
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+/**
+ * Маршрут: GET /dashboard (страница), GET /dashboard/data (JSON),
+ * POST /dashboard/control (control-plane, без авторизации — решение владельца).
+ */
+export async function handleDashboard(
+  sub: string | undefined,
+  method: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: EngineApiDeps,
+): Promise<void> {
+  if (method === "POST") {
+    if (sub !== "control") {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "not found" }));
+      return;
+    }
+    let body: unknown;
+    try {
+      body = await readBody(req);
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "invalid JSON body" }));
+      return;
+    }
+    await handleControl(body, res, deps);
+    return;
+  }
+
   if (sub === "data") {
     try {
       const data = collectData(deps);
@@ -733,6 +922,19 @@ const DASHBOARD_HTML = `<!doctype html>
   .kv .item .v { font-size:16px; font-weight:600; margin-top:2px; }
   .kv .item .v.pos { color:var(--good); } .kv .item .v.neg { color:var(--bad); }
   .tag { display:inline-block; background:#0e1116; border:1px solid var(--line); border-radius:6px; padding:1px 6px; font-size:11px; color:var(--mut); margin:2px 2px 0 0; }
+  /* ── Control-plane (без авторизации — решение владельца) ── */
+  .ctlbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:12px; }
+  .ctlbtn { background:#1f6feb22; border:1px solid #1f6feb55; color:var(--acc); border-radius:8px; font:inherit; font-size:12px; padding:5px 12px; cursor:pointer; }
+  .ctlbtn:hover { background:#1f6feb44; }
+  .ctlbtn:disabled { opacity:.5; cursor:default; }
+  .ctlbtn.sm { padding:2px 9px; font-size:11px; }
+  .ctlbtn.danger { background:#f8514922; border-color:#f8514955; color:#ff8a80; }
+  .ctlbtn.danger:hover { background:#f8514944; }
+  .ctlmsg { color:var(--mut); font-size:12px; }
+  .ctlmsg.ok { color:var(--good); } .ctlmsg.err { color:var(--bad); }
+  .sc-section { margin-bottom:14px; }
+  .sc-section .sc-label { color:var(--acc); font-size:12px; text-transform:uppercase; letter-spacing:.5px; margin-bottom:5px; }
+  .sc-section .sc-line { color:var(--tx); font-size:13px; padding:2px 0; white-space:pre-wrap; }
 </style>
 </head>
 <body>
@@ -804,9 +1006,37 @@ const DASHBOARD_HTML = `<!doctype html>
     <div class="panel"><h2>Память графа <span class="hint">узлы / рёбра / типы</span></h2><div id="graphmem"></div></div>
     <div class="grid">
       <div class="panel"><h2>Недавние эпизоды</h2><div id="episodes"></div></div>
-      <div class="panel"><h2>Напоминания / задачи</h2><div id="reminders"></div></div>
+      <div class="panel">
+        <h2>Напоминания / задачи <span class="hint">кнопка отменяет задачу (cancel_task)</span></h2>
+        <div id="reminders"></div>
+      </div>
     </div>
     <div class="panel"><h2>Состояние / режим <span class="hint">self-узел</span></h2><div id="state"></div></div>
+  </section>
+
+  <!-- ════════ SELF-REPORT (selfcheck) ════════ -->
+  <section class="tabpage" data-tab="selfcheck">
+    <div class="panel">
+      <h2>Self-report <span class="hint">семантическое зеркало — то, что Алиса видит в /selfcheck (read-only)</span></h2>
+      <div class="ctlbar">
+        <button class="ctlbtn" data-sc="">Пересобрать всё</button>
+        <button class="ctlbtn" data-sc="mood">Настроение</button>
+        <button class="ctlbtn" data-sc="social">Социальное</button>
+        <button class="ctlbtn" data-sc="personality">Личность</button>
+        <button class="ctlbtn" data-sc="pressure">Давление</button>
+        <button class="ctlbtn" data-sc="actions">Действия</button>
+        <span class="ctlmsg" id="scMsg"></span>
+      </div>
+      <div id="selfcheck"></div>
+    </div>
+    <div class="panel">
+      <h2>Управление фидами <span class="hint">пауза/возобновление интернет-восприятия</span></h2>
+      <div class="ctlbar">
+        <button class="ctlbtn" data-feed="pause">Пауза поллинга</button>
+        <button class="ctlbtn" data-feed="resume">Возобновить</button>
+        <span class="ctlmsg" id="feedMsg"></span>
+      </div>
+    </div>
   </section>
 
 </div>
@@ -822,6 +1052,22 @@ function fmtDur(sec){ if(sec==null) return '—'; sec=Math.floor(sec); const d=M
 function fmtAgo(ms){ if(!ms) return '—'; const s=Math.floor((Date.now()-Number(ms))/1000); if(s<0) return 'скоро'; if(s<60) return s+'с назад'; const m=Math.floor(s/60); if(m<60) return m+'м назад'; const h=Math.floor(m/60); if(h<24) return h+'ч назад'; return Math.floor(h/24)+'д назад'; }
 function esc(s){ return String(s==null?'':s).replace(/[<>&"']/g,m=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[m])); }
 const ax = { color:'#8b97a7' };
+
+/* ── Control-plane: POST /dashboard/control. Без авторизации (решение владельца). ──
+   Возвращает разобранный JSON; кидает с .message при не-2xx, чтобы вызвавший показал ошибку. */
+async function ctl(payload){
+  const r = await fetch('/dashboard/control', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+  let j = {}; try { j = await r.json(); } catch(e){}
+  if(!r.ok || j.ok===false){ const e=new Error(j.error||('HTTP '+r.status)); e.payload=j; throw e; }
+  return j;
+}
+/* Показывает короткий статус в элементе .ctlmsg и гасит его через паузу. */
+function ctlMsg(id, text, kind){
+  const el=$(id); if(!el) return;
+  el.textContent=text; el.className='ctlmsg'+(kind?(' '+kind):'');
+  if(el._t) clearTimeout(el._t);
+  el._t=setTimeout(()=>{ el.textContent=''; el.className='ctlmsg'; }, 6000);
+}
 
 /* Создаёт/обновляет график. Возвращает экземпляр (или null). Создаём ТОЛЬКО если
    контейнер виден (offsetParent != null) — иначе Chart.js нарисует 0×0 при display:none. */
@@ -840,6 +1086,7 @@ const TABS = [
   { id:'social',    label:'Социальное', badge:d=>d&&d.summary?d.summary.channels:null },
   { id:'activity',  label:'Активность', badge:d=>d&&d.db?d.db.actions:null },
   { id:'memory',    label:'Память',     badge:d=>d&&d.summary?d.summary.facts:null },
+  { id:'selfcheck', label:'Self-report',badge:d=>d&&d.selfcheck&&d.selfcheck.sections?d.selfcheck.sections.length:null },
 ];
 let activeTab = (location.hash||'').replace('#','') || 'overview';
 if(!TABS.some(t=>t.id===activeTab)) activeTab = 'overview';
@@ -1074,9 +1321,18 @@ function renderMemory(d){
     : '<div class="empty">нет недавних эпизодов</div>';
 
   const rm=d.reminders||[];
-  $('reminders').innerHTML = rm.length ? '<table><tr><th>#</th><th>Тип</th><th>Действие</th><th>Цель</th><th>Когда</th></tr>'+
-    rm.map(r=>'<tr><td>'+(r.id??'')+'</td><td>'+esc(r.type)+'</td><td>'+esc(r.action)+'</td><td>'+esc(r.target??'')+'</td><td class="num">'+(r.targetMs?new Date(Number(r.targetMs)).toLocaleString('ru'):(r.intervalMs?('каждые '+fmtDur(Number(r.intervalMs)/1000)):'—'))+'</td></tr>').join('')+'</table>'
+  $('reminders').innerHTML = rm.length ? '<table><tr><th>#</th><th>Тип</th><th>Действие</th><th>Цель</th><th>Когда</th><th></th></tr>'+
+    rm.map(r=>'<tr><td>'+(r.id??'')+'</td><td>'+esc(r.type)+'</td><td>'+esc(r.action)+'</td><td>'+esc(r.target??'')+'</td><td class="num">'+(r.targetMs?new Date(Number(r.targetMs)).toLocaleString('ru'):(r.intervalMs?('каждые '+fmtDur(Number(r.intervalMs)/1000)):'—'))+'</td><td>'+(r.id!=null?'<button class="ctlbtn sm danger" data-cancel-task="'+esc(r.id)+'">отменить</button>':'')+'</td></tr>').join('')+'</table><div class="ctlmsg" id="rmMsg"></div>'
     : '<div class="empty">нет активных напоминаний</div>';
+  // Делегируем клики по кнопкам отмены задач (cancel_task).
+  $('reminders').querySelectorAll('button[data-cancel-task]').forEach(b=>{
+    b.addEventListener('click', async ()=>{
+      const taskId=Number(b.getAttribute('data-cancel-task'));
+      b.disabled=true;
+      try { await ctl({action:'cancel_task', taskId}); ctlMsg('rmMsg','задача '+taskId+' отменена','ok'); setTimeout(refresh, 400); }
+      catch(e){ b.disabled=false; ctlMsg('rmMsg','не вышло: '+e.message,'err'); }
+    });
+  });
 
   const s=d.self||{};
   $('state').innerHTML='<div class="kv">'+[
@@ -1085,7 +1341,46 @@ function renderMemory(d){
   ].map(x=>'<div class="item"><div class="k">'+x[0]+'</div><div class="v">'+x[1]+'</div></div>').join('')+'</div>';
 }
 
-const RENDERERS = { overview:renderOverview, cognition:renderCognition, social:renderSocial, activity:renderActivity, memory:renderMemory };
+/* Локальный self-report для on-demand selfcheck-кнопок (минует автообновляемые lastData). */
+let scOverride = null;
+function renderSelfcheckSections(sec){
+  if(!sec || !sec.length) return '<div class="empty">нет данных self-report</div>';
+  return sec.map(s=>'<div class="sc-section"><div class="sc-label">'+esc(s.label||s.dimension||'')+'</div>'+
+    (Array.isArray(s.lines)&&s.lines.length ? s.lines.map(l=>'<div class="sc-line">'+esc(l)+'</div>').join('') : '<div class="sc-line" style="color:#8b97a7">—</div>')+
+    '</div>').join('');
+}
+function renderSelfcheck(d){
+  const sc = scOverride || d.selfcheck || null;
+  $('selfcheck').innerHTML = renderSelfcheckSections(sc && sc.sections);
+}
+
+/* Одноразовая привязка статичных кнопок управления (self-report focus + фиды). */
+let _ctlWired = false;
+function wireControls(){
+  if(_ctlWired) return; _ctlWired = true;
+  // Кнопки selfcheck-фокуса → пересобрать on-demand и показать сразу.
+  document.querySelectorAll('button[data-sc]').forEach(b=>{
+    b.addEventListener('click', async ()=>{
+      const focus=b.getAttribute('data-sc')||'';
+      document.querySelectorAll('button[data-sc]').forEach(x=>x.disabled=true);
+      try { const j=await ctl({action:'selfcheck', focus}); scOverride=j.result; renderSelfcheck(lastData||{}); ctlMsg('scMsg','обновлено'+(focus?(' · '+focus):''),'ok'); }
+      catch(e){ ctlMsg('scMsg','не вышло: '+e.message,'err'); }
+      finally { document.querySelectorAll('button[data-sc]').forEach(x=>x.disabled=false); }
+    });
+  });
+  // Кнопки управления фидами (пауза/возобновление поллинга).
+  document.querySelectorAll('button[data-feed]').forEach(b=>{
+    b.addEventListener('click', async ()=>{
+      const op=b.getAttribute('data-feed');
+      document.querySelectorAll('button[data-feed]').forEach(x=>x.disabled=true);
+      try { await ctl({action: op==='pause'?'feeds_pause':'feeds_resume'}); ctlMsg('feedMsg', op==='pause'?'поллинг на паузе':'поллинг возобновлён','ok'); }
+      catch(e){ ctlMsg('feedMsg','не поддержано/ошибка: '+e.message,'err'); }
+      finally { document.querySelectorAll('button[data-feed]').forEach(x=>x.disabled=false); }
+    });
+  });
+}
+
+const RENDERERS = { overview:renderOverview, cognition:renderCognition, social:renderSocial, activity:renderActivity, memory:renderMemory, selfcheck:renderSelfcheck };
 function renderTab(id, d){ try { (RENDERERS[id]||(()=>{}))(d); } catch(e){ console.error('render '+id, e); } }
 
 async function refresh(){
@@ -1097,6 +1392,7 @@ async function refresh(){
 }
 
 buildTabs();
+wireControls();           // привязка статичных кнопок управления (self-report + фиды)
 selectTab(activeTab);     // выставляет active-классы + первый рендер (после первого fetch)
 refresh();
 setInterval(refresh, 5000);

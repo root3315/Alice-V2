@@ -32,6 +32,7 @@ import asyncio
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import threading
@@ -99,6 +100,37 @@ WORKI_DEV_CLONE = os.getenv("PROXY_WORKI_DEV_CLONE", r"C:\Users\sozda\alice-work
 # code-fix дольше (правка + тесты): дефолт 10 мин.
 CODE_FIX_TIMEOUT_S = int(os.getenv("PROXY_CODE_FIX_TIMEOUT_S", "600"))
 WORKI_BASE_BRANCH = os.getenv("PROXY_WORKI_BASE_BRANCH", "main")
+
+# Таймаут для прямого прогона команд (code-test / code-run): дефолт 10 мин. Это
+# обычные subprocess-команды (npm/pytest/...), а не агентный claude — но тоже bounded.
+CODE_CMD_TIMEOUT_S = int(os.getenv("PROXY_CODE_CMD_TIMEOUT_S", "600"))
+
+# Мультипроект: карта name -> {clone, baseBranch, testCmd} из env JSON. БЕЗ проекта
+# (default) всё указывает на одиночный WORKI_DEV_CLONE — полная обратная совместимость.
+#   PROXY_WORKI_PROJECTS='{"hh":{"clone":"C:\\...\\hh-dev","baseBranch":"main","testCmd":"npm test"}}'
+def _load_projects() -> dict[str, dict]:
+    raw = os.getenv("PROXY_WORKI_PROJECTS", "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        log.warning("PROXY_WORKI_PROJECTS не распарсился как JSON — игнорирую")
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for name, cfg in data.items():
+        if isinstance(cfg, dict) and cfg.get("clone"):
+            out[str(name)] = {
+                "clone": str(cfg.get("clone")),
+                "baseBranch": str(cfg.get("baseBranch") or WORKI_BASE_BRANCH),
+                "testCmd": (str(cfg["testCmd"]) if cfg.get("testCmd") else None),
+            }
+    return out
+
+
+WORKI_PROJECTS = _load_projects()
 
 # На Max-подписке ключ должен быть пустым, иначе CLI уйдёт на платный API.
 # Подчищаем окружение дочернего процесса от ключа на всякий случай.
@@ -382,6 +414,105 @@ def _run_claude_streaming_progress(
     if result is None:
         raise RuntimeError(f"streaming: нет result-event (rc={proc.returncode})")
     return result
+
+
+# ─────────────────────── мультипроект + прямой прогон команд ─────────────────────
+# /v1/code-test и /v1/code-run гоняют команды (npm/pytest/...) НАПРЯМУЮ в dev-клоне —
+# без агента claude. Те же инварианты: bounded timeout + общий _worki_sem (не отъедать
+# слоты разговорных тиков Alice). Команда строго allowlist-нута по первому токену.
+
+# Первый токен команды → разрешён ли. rm/curl/wget/etc. — нет. git только read-only.
+_RUN_ALLOWLIST = frozenset({
+    "npm", "pnpm", "npx", "node", "python", "pytest",
+    "ruff", "tsc", "eslint", "biome", "git", "ls",
+})
+# Подкоманды git, которые НЕ меняют дерево/историю и безопасны для прогона.
+_GIT_SAFE_SUBCMDS = frozenset({"status", "diff", "log"})
+# Метасимволы шелла, которыми можно вырваться из клона или сцепить команды.
+_SHELL_METACHARS = ("&", "|", ";", ">", "<", "`", "$(", "${", "\n", "\r")
+
+
+def _resolve_project(name: str | None) -> tuple[str, str, str | None]:
+    """name → (clone, baseBranch, testCmd|None). Без name (или 'default') —
+    одиночный WORKI_DEV_CLONE для полной обратной совместимости. Бросает KeyError
+    на неизвестный проект."""
+    nm = (name or "").strip()
+    if not nm or nm == "default":
+        return WORKI_DEV_CLONE, WORKI_BASE_BRANCH, None
+    cfg = WORKI_PROJECTS.get(nm)
+    if not cfg:
+        raise KeyError(nm)
+    return cfg["clone"], cfg["baseBranch"], cfg.get("testCmd")
+
+
+def _default_test_cmd(clone: str, project_test_cmd: str | None) -> str:
+    """Дефолтная тест-команда: из конфига проекта, иначе по содержимому клона
+    (package.json → npm test; pyproject/pytest → pytest), иначе npm test."""
+    if project_test_cmd:
+        return project_test_cmd
+    try:
+        if os.path.isfile(os.path.join(clone, "package.json")):
+            return "npm test"
+        if (os.path.isfile(os.path.join(clone, "pyproject.toml"))
+                or os.path.isfile(os.path.join(clone, "pytest.ini"))
+                or os.path.isfile(os.path.join(clone, "setup.cfg"))):
+            return "python -m pytest -q"
+    except OSError:
+        pass
+    return "npm test"
+
+
+def _check_command_allowed(command: str) -> tuple[list[str] | None, str | None]:
+    """Валидирует одиночную allowlist-команду. Возвращает (argv, None) если ок,
+    либо (None, причина-ошибки). Запрещает сцепку/редиректы/подстановку шелла."""
+    if not command or not command.strip():
+        return None, "empty command"
+    if any(ch in command for ch in _SHELL_METACHARS):
+        return None, "command contains shell metacharacters (chaining/redirect/substitution not allowed)"
+    try:
+        # posix=False: корректный разбор Windows-путей с обратными слешами.
+        argv = shlex.split(command, posix=False)
+    except ValueError as e:
+        return None, f"cannot parse command: {e}"
+    if not argv:
+        return None, "empty command"
+    head = argv[0].strip().strip('"').lower()
+    # Снять возможное .cmd/.exe-расширение (npm.cmd и т.п.).
+    head_base = os.path.splitext(os.path.basename(head))[0]
+    if head_base not in _RUN_ALLOWLIST:
+        return None, f"command '{head_base}' is not allowed (allowed: {', '.join(sorted(_RUN_ALLOWLIST))})"
+    if head_base == "git":
+        sub = (argv[1].strip().strip('"').lower() if len(argv) > 1 else "")
+        if sub not in _GIT_SAFE_SUBCMDS:
+            return None, f"git subcommand '{sub or '(none)'}' not allowed (only: {', '.join(sorted(_GIT_SAFE_SUBCMDS))})"
+    return argv, None
+
+
+def _run_bounded_command(argv: list[str], cwd: str, timeout_s: int) -> dict:
+    """Прогон одной команды в cwd с bounded timeout. Возвращает
+    {exitCode, output_tail, timed_out}. Хвост stdout+stderr (последние ~6000 симв.)."""
+    try:
+        proc = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=_CHILD_ENV,
+            cwd=cwd,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired as e:
+        def _as_text(v: Any) -> str:
+            if v is None:
+                return ""
+            return v.decode("utf-8", "replace") if isinstance(v, bytes) else str(v)
+        parts = [p for p in (_as_text(e.stdout), _as_text(e.stderr)) if p]
+        return {"exitCode": None, "output_tail": "\n".join(parts)[-6000:], "timed_out": True}
+    combined = (proc.stdout or "")
+    if proc.stderr:
+        combined += ("\n" if combined else "") + proc.stderr
+    return {"exitCode": proc.returncode, "output_tail": combined[-6000:], "timed_out": False}
 
 
 async def call_claude(
@@ -729,3 +860,112 @@ async def code_fix(request: Request):
         msg = envelope.get("result") or envelope.get("subtype") or "claude error"
         return JSONResponse(status_code=502, content={"error": {"message": str(msg)}})
     return JSONResponse(content={"report": envelope.get("result") or "", "usage": envelope.get("usage")})
+
+
+@app.post("/v1/code-test")
+async def code_test(request: Request):
+    """Гоняет тест-набор проекта в dev-клоне и отдаёт pass/fail.
+
+    Тело: {task_id?, project?, test_cmd?}. Клон/тест-команда резолвятся из
+    мультипроект-карты (без project — одиночный WORKI_DEV_CLONE). test_cmd, если
+    передан, проходит тот же allowlist, что и /v1/code-run. Прогон — bounded
+    subprocess под общим _worki_sem (как code-analyze/code-fix). Возвращает
+    {ok, exitCode, output_tail, summary}.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"error": {"message": "invalid JSON body"}})
+    try:
+        clone, _base, project_test_cmd = _resolve_project(body.get("project"))
+    except KeyError as e:
+        return JSONResponse(status_code=404, content={"error": {"message": f"unknown project: {e}"}})
+    if not clone or not os.path.isdir(clone):
+        return JSONResponse(status_code=503, content={"error": {"message": f"dev clone unavailable: {clone}"}})
+
+    req_cmd = (body.get("test_cmd") or "").strip()
+    if req_cmd:
+        argv, err = _check_command_allowed(req_cmd)
+        if err:
+            return JSONResponse(status_code=400, content={"error": {"message": err}})
+        cmd_str = req_cmd
+    else:
+        cmd_str = _default_test_cmd(clone, project_test_cmd)
+        argv, err = _check_command_allowed(cmd_str)
+        if err:
+            return JSONResponse(status_code=400, content={"error": {"message": f"default test cmd rejected: {err}"}})
+
+    task_id = (body.get("task_id") or "").strip()
+    if task_id:
+        _set_progress(task_id, f"запускаю тесты: {cmd_str[:50]}")
+    try:
+        async with _worki_sem:
+            res = await asyncio.to_thread(_run_bounded_command, argv, clone, CODE_CMD_TIMEOUT_S)
+    except Exception as e:  # noqa: BLE001
+        log.exception("ошибка code-test")
+        return JSONResponse(status_code=502, content={"error": {"message": str(e)}})
+    finally:
+        if task_id:
+            _clear_progress(task_id)
+
+    if res.get("timed_out"):
+        return JSONResponse(status_code=504, content={
+            "ok": False, "exitCode": None, "output_tail": res.get("output_tail", ""),
+            "summary": f"test timeout after {CODE_CMD_TIMEOUT_S}s",
+        })
+    ok = res["exitCode"] == 0
+    summary = "tests passed" if ok else f"tests failed (exit {res['exitCode']})"
+    return JSONResponse(content={
+        "ok": ok, "exitCode": res["exitCode"],
+        "output_tail": res["output_tail"], "summary": summary,
+    })
+
+
+@app.post("/v1/code-run")
+async def code_run(request: Request):
+    """Гоняет ОДНУ bounded allowlist-команду в dev-клоне.
+
+    Тело: {command, project?, task_id?}. Первый токен должен быть в allowlist
+    (npm/pnpm/npx/node/python/pytest/ruff/tsc/eslint/biome/git[status|diff|log]/ls).
+    Сцепка (&&/;/|), редиректы и подстановки шелла запрещены. Возвращает
+    {ok, exitCode, output_tail}.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"error": {"message": "invalid JSON body"}})
+    command = (body.get("command") or "").strip()
+    if not command:
+        return JSONResponse(status_code=400, content={"error": {"message": "missing 'command'"}})
+    try:
+        clone, _base, _test = _resolve_project(body.get("project"))
+    except KeyError as e:
+        return JSONResponse(status_code=404, content={"error": {"message": f"unknown project: {e}"}})
+    if not clone or not os.path.isdir(clone):
+        return JSONResponse(status_code=503, content={"error": {"message": f"dev clone unavailable: {clone}"}})
+
+    argv, err = _check_command_allowed(command)
+    if err:
+        return JSONResponse(status_code=400, content={"error": {"message": err}})
+
+    task_id = (body.get("task_id") or "").strip()
+    if task_id:
+        _set_progress(task_id, f"запускаю: {command[:50]}")
+    try:
+        async with _worki_sem:
+            res = await asyncio.to_thread(_run_bounded_command, argv, clone, CODE_CMD_TIMEOUT_S)
+    except Exception as e:  # noqa: BLE001
+        log.exception("ошибка code-run")
+        return JSONResponse(status_code=502, content={"error": {"message": str(e)}})
+    finally:
+        if task_id:
+            _clear_progress(task_id)
+
+    if res.get("timed_out"):
+        return JSONResponse(status_code=504, content={
+            "ok": False, "exitCode": None, "output_tail": res.get("output_tail", ""),
+        })
+    return JSONResponse(content={
+        "ok": res["exitCode"] == 0, "exitCode": res["exitCode"],
+        "output_tail": res["output_tail"],
+    })
