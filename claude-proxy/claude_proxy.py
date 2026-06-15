@@ -95,6 +95,11 @@ WORKI_CLONE = os.getenv("PROXY_WORKI_CLONE", r"C:\Users\sozda\alice-readonly\wor
 CODE_ANALYZE_MODEL = os.getenv("PROXY_CODE_ANALYZE_MODEL", "sonnet")
 # Дефолтный таймаут code-analyze (сек, 5 мин). Запрос может прислать свой timeout_s.
 CODE_ANALYZE_TIMEOUT_S = int(os.getenv("PROXY_CODE_ANALYZE_TIMEOUT_S", "300"))
+# Web-research (/v1/research): keyless веб через Max — claude сам ходит WebFetch/WebSearch
+# в ЧИСТОЙ папке (cwd=CLEAN_CWD), это НЕ репозиторий. Модель/таймаут как у code-analyze.
+RESEARCH_MODEL = os.getenv("PROXY_RESEARCH_MODEL", "sonnet")
+# Дефолтный таймаут research (сек, 5 мин). Запрос может прислать свой timeout_s.
+RESEARCH_TIMEOUT_S = int(os.getenv("PROXY_RESEARCH_TIMEOUT_S", "300"))
 # Писчий dev-клон для code-fix (агент правит+тестит+коммитит здесь). НЕ read-only клон.
 WORKI_DEV_CLONE = os.getenv("PROXY_WORKI_DEV_CLONE", r"C:\Users\sozda\alice-worki-dev")
 # code-fix дольше (правка + тесты): дефолт 10 мин.
@@ -772,6 +777,75 @@ async def code_analyze(request: Request):
         msg = envelope.get("result") or envelope.get("subtype") or "claude error"
         return JSONResponse(status_code=502, content={"error": {"message": str(msg)}})
     return JSONResponse(content={"analysis": envelope.get("result") or "", "usage": envelope.get("usage")})
+
+
+@app.post("/v1/research")
+async def research(request: Request):
+    """Keyless веб-ресёрч через Max-подписку.
+
+    Зеркало /v1/code-analyze, НО это веб-исследование, а не репозиторий: cwd=CLEAN_CWD
+    (чистая папка, НИКОГДА не worki-клон). claude сам ходит в сеть своими веб-инструментами
+    (WebSearch/WebFetch — keyless через Max) + Read и возвращает сводку простым текстом.
+    Тело: {"task": "<URL или тема>", "task_id"?, "model"?, "persona"?, "timeout_s"?}.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"error": {"message": "invalid JSON body"}})
+    task = (body.get("task") or body.get("prompt") or "").strip()
+    if not task:
+        return JSONResponse(status_code=400, content={"error": {"message": "missing 'task'"}})
+
+    persona = (body.get("persona") or "").strip()
+    # Модель/таймаут по запросу (Alice кладёт по просьбе пользователя), иначе дефолты.
+    req_model = (body.get("model") or "").strip().lower()
+    model = req_model if req_model in ("sonnet", "opus", "haiku") else RESEARCH_MODEL
+    try:
+        timeout_s = int(body.get("timeout_s") or RESEARCH_TIMEOUT_S)
+    except (TypeError, ValueError):
+        timeout_s = RESEARCH_TIMEOUT_S
+    timeout_s = max(30, min(timeout_s, 1200))
+    researcher = (
+        "Изучи заданный URL или тему своими веб-инструментами: WebFetch — читать страницы и "
+        "ходить по ссылкам, WebSearch — искать. Верни КОНКРЕТНУЮ полезную сводку простым текстом "
+        "для чата: ключевые факты, что там, твоё мнение. По-русски, кратко, без markdown-выделения "
+        "и без воды."
+    )
+    # persona (краткая «душа» от Alice) — чтобы ответ был в её голосе. Без неё — нейтрально.
+    system = f"{persona}\n\n{researcher}" if persona else researcher
+    prompt = f"{system}\n\nЗАДАЧА: {task}"
+    task_id = (body.get("task_id") or "").strip()
+    out_fmt = (
+        ["--output-format", "stream-json", "--verbose"]
+        if task_id
+        else ["--output-format", "json"]
+    )
+    argv = [
+        CLAUDE_CLI, "-p",
+        "--model", model,
+        "--allowedTools", "WebSearch", "WebFetch", "Read",
+        *out_fmt,
+    ]
+    try:
+        async with _worki_sem:
+            if task_id:
+                envelope = await asyncio.to_thread(
+                    _run_claude_streaming_progress, argv, prompt, timeout_s, CLEAN_CWD, task_id
+                )
+            else:
+                envelope = await asyncio.to_thread(
+                    _run_claude_sync, argv, prompt, timeout_s, CLEAN_CWD
+                )
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=504, content={"error": {"message": "research timeout"}})
+    except Exception as e:  # noqa: BLE001
+        log.exception("ошибка research")
+        return JSONResponse(status_code=502, content={"error": {"message": str(e)}})
+
+    if envelope.get("is_error"):
+        msg = envelope.get("result") or envelope.get("subtype") or "claude error"
+        return JSONResponse(status_code=502, content={"error": {"message": str(msg)}})
+    return JSONResponse(content={"research": envelope.get("result") or "", "usage": envelope.get("usage")})
 
 
 @app.get("/v1/code-progress/{task_id}")

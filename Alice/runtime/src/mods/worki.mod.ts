@@ -44,6 +44,7 @@ const CODE_ANALYZE_URL = process.env.PROXY_CODE_ANALYZE_URL ?? `${PROXY}/v1/code
 const CODE_FIX_URL = process.env.PROXY_CODE_FIX_URL ?? `${PROXY}/v1/code-fix`;
 const CODE_TEST_URL = process.env.PROXY_CODE_TEST_URL ?? `${PROXY}/v1/code-test`;
 const CODE_RUN_URL = process.env.PROXY_CODE_RUN_URL ?? `${PROXY}/v1/code-run`;
+const CODE_RESEARCH_URL = process.env.PROXY_RESEARCH_URL ?? `${PROXY}/v1/research`;
 const CODE_PROGRESS_BASE = process.env.PROXY_CODE_PROGRESS_URL ?? `${PROXY}/v1/code-progress/`;
 const DEFAULT_TIMEOUT_MIN = 5;
 const MAX_TIMEOUT_MIN = 20;
@@ -83,7 +84,7 @@ function clampTimeoutMin(raw: unknown): number {
   return Math.max(1, Math.min(Number.isFinite(n) && n > 0 ? n : DEFAULT_TIMEOUT_MIN, MAX_TIMEOUT_MIN));
 }
 
-type Kind = "ask" | "fix" | "pr" | "test" | "run";
+type Kind = "ask" | "fix" | "pr" | "test" | "run" | "research";
 interface Pending {
   kind: Kind;
   task: string;
@@ -333,6 +334,34 @@ async function runAnalysis(
   e.completedMs = Date.now();
 }
 
+async function runResearch(
+  id: string,
+  task: string,
+  model: string,
+  timeoutSec: number,
+): Promise<void> {
+  const e = pending.get(id);
+  if (!e) return;
+  try {
+    // Веб-ресёрч — это НЕ репозиторий: project не пробрасываем (прокси ходит в сеть из
+    // чистой папки). Прокси сам держит keyless WebSearch/WebFetch через Max-подписку.
+    const data = await postJson(
+      CODE_RESEARCH_URL,
+      { task, persona: SOUL_BRIEF, model, timeout_s: timeoutSec, task_id: id },
+      timeoutSec,
+    );
+    const r = String(data.research ?? "").trim();
+    e.status = "done"; // пустой ответ на HTTP 200 — не ошибка (как в code-ask)
+    e.result = r || "ничего толкового не нашла — попроси уточнить, что искать";
+    log.info("research done", { id, len: e.result.length });
+  } catch (err) {
+    e.status = "error";
+    e.result = classifyErr(err);
+    log.warn("research failed", { id, task, err: (err as Error).message });
+  }
+  e.completedMs = Date.now();
+}
+
 async function runFix(
   id: string,
   task: string,
@@ -546,6 +575,35 @@ export const workiMod = createMod<WorkiState>("worki", {
       return { success: true, message: `Разбор запущен (${model}, до ${tmin} мин) — приду с ответом в этот чат. Скажи, что смотришь код, и живи дальше.` };
     },
   })
+  .instruction("research", {
+    params: z.object({
+      task: z.coerce.string().trim().min(1).describe('Ссылка или тема, своими словами (напр. "изучи https://… что там" или "поищи про релиз X")'),
+      model: z.coerce.string().optional().describe(MODEL_DESC),
+      timeout_min: z.coerce.number().optional().describe(TIMEOUT_DESC),
+      _reply_chat: z.coerce.number().optional().describe(REPLY_CHAT_DESC),
+    }),
+    deriveParams: deriveReplyChat,
+    description: "Изучить ссылку/тему в сети — сама схожу по веб-инструментам (читаю страницы, иду по ссылкам, ищу) и пришлю сводку АСИНХРОННО в этот чат.",
+    affordance: {
+      priority: "capability",
+      category: "memory",
+      whenToUse: "Когда кто-то кидает ссылку и просит «глянь/изучи, что там», или просит «поищи про <тему>». Я реально хожу в сеть: читаю страницы, иду по ссылкам, ищу — и возвращаюсь со сводкой. Фоном, СРАЗУ возвращается; сама ничего не открывай — ответ придёт в этот чат. ПРОАКТИВНО: если в разговоре всплыла ссылка/новость, про которую толком никто не в курсе — могу сама предложить «давай гляну».",
+      whenNotToUse: "Ерунда, которую и так знаю наизусть — не лезу в сеть ради банальностей.",
+    },
+    impl(ctx, args): unknown {
+      const task = String(args.task);
+      if (isBusy("research")) {
+        return { success: true, message: "Уже копаюсь в сети — погоди, сводка вот-вот придёт в этот чат. Повторно не запускай." };
+      }
+      const model = normalizeModel(args.model as string | undefined);
+      const tmin = clampTimeoutMin(args.timeout_min);
+      const id = `research-${randomUUID()}`;
+      pending.set(id, { kind: "research", task, status: "running", result: "", askGraphId: askGraphFromArgs(args), createdMs: ctx.nowMs });
+      void runResearch(id, task, model, tmin * 60);
+      log.info("research started", { id, model, tmin });
+      return { success: true, message: `Гляну в сети по «${task}» (${model}, до ${tmin} мин) — приду с тем, что нашла, в этот чат. Скажи коротко «гляну» и живи дальше.` };
+    },
+  })
   .instruction("code_fix", {
     params: z.object({
       task: z.coerce.string().trim().min(1).describe("Что починить, своими словами (опиши баг и желаемую правку). Только ПОСЛЕ одобрения человека."),
@@ -719,6 +777,8 @@ export const workiMod = createMod<WorkiState>("worki", {
         ready.push(`Тесты по «${p.task}» отработали (скажи в чат, где просили, красное/зелёное своими словами):\n${p.result}`);
       } else if (p.kind === "run") {
         ready.push(`Команда «${p.task}» отработала (доложи в чат, где просили, exit-код и суть вывода):\n${p.result}`);
+      } else if (p.kind === "research") {
+        ready.push(`Изучила «${p.task}» — расскажи им, что нашла, своими словами в чат, где спросили:\n${p.result}`);
       } else {
         ready.push(p.result); // pr: "PR открыт: <url>"
       }
