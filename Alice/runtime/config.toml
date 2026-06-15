@@ -106,6 +106,26 @@ base_url = "http://127.0.0.1:5124/v1"
 api_key_env = "ASR_API_KEY"
 model = "whisper-1"
 
+[embedding]
+# Семантическая память (ADDITIVE): локальный OpenAI-совместимый /v1/embeddings.
+# Обогащает ТОЛЬКО retrieval (recall находит память «по смыслу»). НЕ меняет личность,
+# голоса, tick-loop, принятие решений.
+#
+# OFF BY DEFAULT: пока base_url И model пусты — семантика отключена, recall работает
+# байт-в-байт как раньше (keyword + recency + graph). Если сервер сконфигурирован, но
+# недоступен/падает — recall МОЛЧА откатывается к keyword-поведению (никогда не ломается).
+#
+# Рекомендация (keyless/local, через Docker): HuggingFace TEI + bge-m3.
+#   docker run -d --name tei-bge-m3 -p 8080:80 -v tei-data:/data \
+#     ghcr.io/huggingface/text-embeddings-inference:cpu-latest --model-id BAAI/bge-m3
+#   base_url = "http://127.0.0.1:8080/v1"   # TEI отдаёт OpenAI-совместимый /v1/embeddings
+#   model    = "bge-m3"
+# api_key_env можно не задавать (локальный TEI ключ не требует).
+# (Альтернатива без Docker: Ollama — `ollama pull bge-m3`, base_url 127.0.0.1:11434/v1.)
+base_url = ""
+api_key_env = ""
+model = ""
+
 [services]
 # 外部搜索。空 secret 时禁用 browse。
 exa_api_key_env = "EXA_API_KEY"

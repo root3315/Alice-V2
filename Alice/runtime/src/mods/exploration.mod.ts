@@ -136,8 +136,8 @@ export function isExploreEnabled(): boolean {
 export const EXPLORE_THROTTLE_MS = 4 * 60 * 60_000;
 /** Прогрев: первую попытку не делаем сразу после старта (мс). */
 const WARMUP_MS = 30 * 60_000;
-/** Дневной кап join'ов по умолчанию. Персистится в state.joinsToday + state.joinDayKey. */
-export const DEFAULT_DAILY_JOIN_CAP = 2;
+/** Дневной кап join'ов по умолчанию (запрос владельца: 1 канал/сутки). Персистится в state.joinsToday + state.joinDayKey. */
+export const DEFAULT_DAILY_JOIN_CAP = 1;
 /** Порог давления: при «занятости» (активная переписка) не уходим исследовать. */
 const PRESSURE_GATE = 0.5;
 /** Сколько держим уведомление «на виду» в её контексте, пока она не расскажет (мс). */

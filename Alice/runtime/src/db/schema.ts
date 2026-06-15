@@ -1167,3 +1167,35 @@ export const episodes = sqliteTable(
   },
   (t) => [index("idx_episodes_tick").on(t.tickStart), index("idx_episodes_target").on(t.target)],
 );
+
+/**
+ * Семантическая память (ADDITIVE retrieval enrichment): кэш эмбеддингов текста.
+ *
+ * Назначение: хранить векторы эмбеддингов фактов/мыслей/эпизодов/запросов, чтобы
+ * recall мог дополнительно ранжировать память ПО СМЫСЛУ (косинусная близость),
+ * НЕ переписывая существующий keyword/recency/graph-скоринг.
+ *
+ * Ключ — хеш нормализованного текста: одинаковый текст НЕ переэмбеддится повторно
+ * (кэш, экономия вызовов локального сервера эмбеддингов). Вектор хранится как BLOB
+ * (Float32Array). Модель/размерность записываются, чтобы при смене модели старые
+ * векторы можно было игнорировать (несовпадение dim/model → cache miss).
+ *
+ * Полностью ОПЦИОНАЛЬНО: если эмбеддинги не сконфигурированы, таблица просто пустует
+ * и recall ведёт себя байт-в-байт как раньше (только keyword/recency/graph).
+ */
+export const embeddingCache = sqliteTable(
+  "embedding_cache",
+  {
+    /** sha256(нормализованный текст) — стабильный ключ кэша. */
+    textHash: text("text_hash").primaryKey(),
+    /** Имя модели эмбеддинга (для инвалидации при смене модели). */
+    model: text("model").notNull(),
+    /** Размерность вектора (для валидации/инвалидации). */
+    dim: integer("dim").notNull(),
+    /** Вектор как BLOB Float32Array little-endian. */
+    vec: text("vec", { mode: "json" }).$type<number[]>().notNull(),
+    /** Время последнего обращения (мс) — для LRU-вытеснения при контроле ёмкости. */
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => [index("idx_embedding_cache_updated").on(t.updatedAt)],
+);

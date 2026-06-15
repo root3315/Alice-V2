@@ -29,6 +29,8 @@ import { PromptBuilder } from "../core/prompt-style.js";
 import type { ContributionItem, ModContext } from "../core/types.js";
 import { header, readModState } from "../core/types.js";
 import { ensureChannelId, ensureContactId } from "../graph/constants.js";
+import { warmEmbeddingOnIngest } from "../llm/embedding-store.js";
+import { getEmbeddingConfig } from "../llm/semantic-recall-config.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("diary");
@@ -281,7 +283,8 @@ function formatTimeAgo(ageMs: number): string {
 
 export const diaryMod = createMod<DiaryState>("diary", {
   category: "mechanic",
-  description: "Рабочая память Алисы — эмоциональные воспоминания + желания + инерция настроения (слоты мыслей фиксированной ёмкости)",
+  description:
+    "Рабочая память Алисы — эмоциональные воспоминания + желания + инерция настроения (слоты мыслей фиксированной ёмкости)",
   topics: ["diary"],
   initialState: { turnWriteCount: 0, thoughts: [] },
 })
@@ -290,8 +293,15 @@ export const diaryMod = createMod<DiaryState>("diary", {
       // Схема НЕ режет жёстко: impl сам аккуратно обрезает >MAX_ENTRY_LENGTH и
       // нормализует about. coerce → number/прочее не валят валидацию (была частая
       // ошибка "content max 200" / "about expected string, received number").
-      content: z.coerce.string().trim().min(1).describe("Текст записи (свободная форма; длинное аккуратно обрежется)"),
-      about: z.coerce.string().optional().describe("@id связанной сущности (необязательно, например @7785440246)"),
+      content: z.coerce
+        .string()
+        .trim()
+        .min(1)
+        .describe("Текст записи (свободная форма; длинное аккуратно обрежется)"),
+      about: z.coerce
+        .string()
+        .optional()
+        .describe("@id связанной сущности (необязательно, например @7785440246)"),
     }),
     description: "Сделать личную запись в дневнике",
     affordance: {
@@ -334,6 +344,10 @@ export const diaryMod = createMod<DiaryState>("diary", {
       // Запись: слияние или выделение слота
       const { evolved } = writeThought(ctx.state, trimmed, about, ctx.nowMs);
       ctx.state.turnWriteCount++;
+
+      // Семантическая память (ADDITIVE): фоновый прогрев эмбеддинга мысли.
+      // No-op при отключённых эмбеддингах; никогда не блокирует/не бросает.
+      warmEmbeddingOnIngest(trimmed, getEmbeddingConfig(), ctx.nowMs);
 
       return { success: true, evolved };
     },

@@ -139,6 +139,16 @@ const RuntimeTomlSchema = z.object({
       model: z.string().default("whisper-1"),
     })
     .default({}),
+  // Семантическая память (ADDITIVE): локальный OpenAI-совместимый /v1/embeddings.
+  // OFF BY DEFAULT — пустой base_url ⇒ семантический recall полностью отключён,
+  // recall работает байт-в-байт как раньше (keyword/recency/graph).
+  embedding: z
+    .object({
+      base_url: z.string().default(""),
+      api_key_env: OptionalEnvNameSchema,
+      model: z.string().default(""),
+    })
+    .default({}),
   services: z
     .object({
       exa_api_key_env: OptionalEnvNameSchema,
@@ -493,6 +503,14 @@ export interface Config {
   /** Название ASR-модели (например whisper-1). */
   asrModel: string;
 
+  // Семантическая память (ADDITIVE retrieval enrichment) — локальный /v1/embeddings.
+  /** Base URL OpenAI-совместимого сервера эмбеддингов. Пусто = семантический recall ОТКЛЮЧЁН (recall ведёт себя как раньше). */
+  embeddingBaseUrl: string;
+  /** API key сервера эмбеддингов (для локального/keyless обычно пустой). */
+  embeddingApiKey: string;
+  /** Название модели эмбеддинга (например bge-m3). Пусто (вместе с base_url) = отключено. */
+  embeddingModel: string;
+
   /** ADR-117 D7: Exa API key (поиск внешних знаний). Пустая строка = browse отключён. */
   exaApiKey: string;
   /** ADR-132 Wave 3: base URL музыкального API (совместимый с NeteaseCloudMusicApi). Пусто = отключено. */
@@ -766,6 +784,10 @@ export function loadConfig(): Config {
     asrBaseUrl: toml.asr.base_url,
     asrApiKey: secretFromEnv(toml.asr.api_key_env, "asr.api_key_env"),
     asrModel: toml.asr.model,
+
+    embeddingBaseUrl: toml.embedding.base_url,
+    embeddingApiKey: secretFromEnv(toml.embedding.api_key_env, "embedding.api_key_env"),
+    embeddingModel: toml.embedding.model,
 
     exaApiKey: secretFromEnv(toml.services.exa_api_key_env, "services.exa_api_key_env"),
     musicApiBaseUrl: toml.services.music_api_base_url,

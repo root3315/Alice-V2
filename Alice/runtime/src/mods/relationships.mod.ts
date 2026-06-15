@@ -56,6 +56,8 @@ import {
   readVelocity,
 } from "../graph/relationship-vector.js";
 import type { WorldModel } from "../graph/world-model.js";
+import { warmEmbeddingOnIngest } from "../llm/embedding-store.js";
+import { getEmbeddingConfig } from "../llm/semantic-recall-config.js";
 import { estimateEventMs } from "../pressure/clock.js";
 import { effectiveObligation } from "../pressure/signal-decay.js";
 import { ChatTarget } from "../prompt/types.js";
@@ -842,7 +844,8 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
       contactId: z.string().min(1).describe("ID контакта"),
       hour: z.number().int().min(0).max(23).describe("Наблюдаемый сейчас час активности (0-23)"),
     }),
-    description: "Записать текущий час активности контакта (EMA-обновление 24-часовой гистограммы активности)",
+    description:
+      "Записать текущий час активности контакта (EMA-обновление 24-часовой гистограммы активности)",
     affordance: {
       whenToUse: "Note when a contact is actively chatting to track their active hours pattern",
       whenNotToUse: "When you've already noted their activity this session",
@@ -891,7 +894,12 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
   .instruction("tag_interest", {
     params: z.object({
       who: z.string().min(1).describe("Имя контакта или название группы"),
-      interest: z.string().trim().min(1).max(50).describe("Метка интереса/темы (коротко, например 'AI', 'фотография')"),
+      interest: z
+        .string()
+        .trim()
+        .min(1)
+        .max(50)
+        .describe("Метка интереса/темы (коротко, например 'AI', 'фотография')"),
     }),
     deriveParams: {
       who: (cv: Record<string, unknown>) => cv.TARGET_CONTACT ?? cv.TARGET_CHAT,
@@ -1089,6 +1097,10 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
       });
       ctx.graph.addRelation(contactId, "knows", iid);
 
+      // Семантическая память (ADDITIVE): фоновый прогрев эмбеддинга нового факта.
+      // No-op при отключённых эмбеддингах; никогда не блокирует/не бросает.
+      warmEmbeddingOnIngest(content, getEmbeddingConfig(), ctx.nowMs);
+
       // Контроль ёмкости: self — 50 записей, остальные — 20. При превышении вытесняется узел с наименьшим R.
       // В непрерывном спектре стабильности R значим для всех fact_type: высокостабильные факты
       // имеют более высокий R и защищены от вытеснения; низкостабильные + старые — более низкий R, вытесняются первыми.
@@ -1173,10 +1185,14 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
   .instruction("update_fact", {
     params: z.object({
       contactId: z.string().min(1).describe("ID контакта ('self' = сама Алиса)"),
-      oldContent: z.string().min(1).describe("Содержание факта, который нужно изменить (нормализованное сопоставление)"),
+      oldContent: z
+        .string()
+        .min(1)
+        .describe("Содержание факта, который нужно изменить (нормализованное сопоставление)"),
       newContent: z.string().trim().min(1).max(500).describe("Новое содержание факта"),
     }),
-    description: "Изменить содержание уже записанного факта. Сохраняет stability, обновляет содержание и last_access.",
+    description:
+      "Изменить содержание уже записанного факта. Сохраняет stability, обновляет содержание и last_access.",
     affordance: {
       whenToUse: "Correct or update a previously remembered fact",
       whenNotToUse: "When the existing fact is still accurate",
@@ -1228,7 +1244,10 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
   .instruction("delete_fact", {
     params: z.object({
       contactId: z.string().min(1).describe("ID контакта"),
-      content: z.string().min(1).describe("Содержание факта, который нужно удалить (нормализованное сопоставление)"),
+      content: z
+        .string()
+        .min(1)
+        .describe("Содержание факта, который нужно удалить (нормализованное сопоставление)"),
     }),
     description: "Удалить записанный факт. Для очистки устаревшей или ошибочной информации.",
     affordance: {
@@ -1272,7 +1291,12 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
   .instruction("synthesize_portrait", {
     params: z.object({
       contactId: z.string().min(1).describe("ID контакта"),
-      portrait: z.string().trim().min(1).max(2000).describe("Сводное впечатление (2-3 предложения естественным языком)"),
+      portrait: z
+        .string()
+        .trim()
+        .min(1)
+        .max(2000)
+        .describe("Сводное впечатление (2-3 предложения естественным языком)"),
     }),
     description: "Сформировать сводное впечатление о контакте (Living Portrait)",
     affordance: {
@@ -1341,7 +1365,11 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
   })
   .query("contact_profile", {
     params: z.object({
-      contactId: z.string().min(1).optional().describe("ID контакта (если опущен — текущий контакт)"),
+      contactId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("ID контакта (если опущен — текущий контакт)"),
     }),
     deriveParams: {
       contactId: (cv: Record<string, unknown>) => cv.TARGET_CONTACT,
@@ -1468,7 +1496,11 @@ export const relationshipsMod = createMod<RelationshipsState>("relationships", {
   })
   .query("language_of", {
     params: z.object({
-      contactId: z.string().min(1).optional().describe("ID контакта (если опущен — текущий контакт)"),
+      contactId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("ID контакта (если опущен — текущий контакт)"),
     }),
     deriveParams: {
       contactId: (cv: Record<string, unknown>) => cv.TARGET_CONTACT,

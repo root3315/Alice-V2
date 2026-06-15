@@ -52,6 +52,7 @@ import { initProviders, selectProviderForFirstPass } from "./llm/client.js";
 import { closeGroupCache, initGroupCache } from "./llm/group-cache.js";
 import { closeMediaCache, initMediaCache } from "./llm/media-cache.js";
 import { onBreakerStateChange } from "./llm/resilience.js";
+import { setEmbeddingConfig } from "./llm/semantic-recall-config.js";
 import { setDigestTarget } from "./mods/digest.mod.js";
 import { setExplorationTarget, setExplorationWorker } from "./mods/exploration.mod.js";
 import { setHealthWatchTarget } from "./mods/health-watch.mod.js";
@@ -520,6 +521,11 @@ async function main() {
 
   // D5: инициализация цепочки fallback провайдеров (ADR-123 §D5)
   initProviders(config);
+
+  // Семантическая память (ADDITIVE, OFF BY DEFAULT): передаём адрес/модель локального
+  // сервера эмбеддингов в recall.mod. Пустой base_url/model ⇒ семантика отключена,
+  // recall ведёт себя байт-в-байт как раньше (keyword/recency/graph).
+  setEmbeddingConfig(config);
 
   // ADR-263: теневой судья Ax group reception — только параллельная диагностика, не перехватывает evidence/control.
   const { initGroupReceptionShadowJudge } = await import("./mods/observer/group-reception.js");

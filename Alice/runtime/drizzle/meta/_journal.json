@@ -197,6 +197,13 @@
       "when": 1777885003646,
       "tag": "0028_social_feedback_authority",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1778000000000,
+      "tag": "0029_embedding_cache",
+      "breakpoints": true
     }
   ]
 }

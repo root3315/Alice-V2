@@ -133,9 +133,14 @@ describe("exploration: daily-cap gate", () => {
 
   it("под капом → можно; на капе → нельзя", () => {
     const key = dayKey(t0);
+    // нулевой счётчик всегда под капом (кап >= 1)
     expect(canJoinToday({ joinDayKey: key, joinsToday: 0 }, t0)).toBe(true);
-    expect(canJoinToday({ joinDayKey: key, joinsToday: 1 }, t0)).toBe(true);
+    // на единицу ниже капа → можно (cap-agnostic)
+    expect(canJoinToday({ joinDayKey: key, joinsToday: DEFAULT_DAILY_JOIN_CAP - 1 }, t0)).toBe(true);
+    // ровно на капе → нельзя
     expect(canJoinToday({ joinDayKey: key, joinsToday: DEFAULT_DAILY_JOIN_CAP }, t0)).toBe(false);
+    // сверх капа → нельзя
+    expect(canJoinToday({ joinDayKey: key, joinsToday: DEFAULT_DAILY_JOIN_CAP + 1 }, t0)).toBe(false);
   });
 
   it("счётчик прошлых суток игнорируется (день сменился → обнуление)", () => {

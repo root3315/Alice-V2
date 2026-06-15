@@ -26,10 +26,9 @@ import { z } from "zod";
 import { createMod } from "../core/mod-builder.js";
 import { ALICE_SELF, ensureChannelId } from "../graph/constants.js";
 import type { FactAttrs } from "../graph/entities.js";
-import {
-  getContactFacts,
-  normalizeFactContent,
-} from "./relationships.mod.js";
+import { warmEmbeddingOnIngest } from "../llm/embedding-store.js";
+import { getEmbeddingConfig } from "../llm/semantic-recall-config.js";
+import { getContactFacts, normalizeFactContent } from "./relationships.mod.js";
 
 /**
  * fact_type-метка долговечного знания. Отличает kb-факты от обычных заметок
@@ -79,7 +78,9 @@ export const kbMod = createMod<{}>("kb", {
         .trim()
         .min(1)
         .max(MAX_KB_LENGTH)
-        .describe("Знание, которое нужно сохранить надолго (например 'по проекту X решили делать Y')"),
+        .describe(
+          "Знание, которое нужно сохранить надолго (например 'по проекту X решили делать Y')",
+        ),
       topic: z
         .string()
         .trim()
@@ -90,9 +91,7 @@ export const kbMod = createMod<{}>("kb", {
     perTurnCap: 3,
     description:
       "Запомнить устойчивое знание надолго (не затухает со временем) — для договорённостей, решений, стабильных фактов.",
-    examples: [
-      'note_kb({ text: "по проекту Орбита решили релиз 1 сентября", topic: "Орбита" })',
-    ],
+    examples: ['note_kb({ text: "по проекту Орбита решили релиз 1 сентября", topic: "Орбита" })'],
     affordance: {
       priority: "capability",
       category: "memory",
@@ -112,14 +111,10 @@ export const kbMod = createMod<{}>("kb", {
       // но kb-знание считается общим (recall показывает его везде).
       const relState = ctx.getModState<{ targetNodeId: string | null }>("relationships");
       const targetNode = relState?.targetNodeId ?? null;
-      const sourceChannel = targetNode
-        ? ensureChannelId(targetNode) ?? targetNode
-        : undefined;
+      const sourceChannel = targetNode ? (ensureChannelId(targetNode) ?? targetNode) : undefined;
 
       // Дедупликация (нестрогая: lowercase + collapse whitespace) среди kb-фактов self.
-      const selfFacts = ctx.graph.has(ALICE_SELF)
-        ? getContactFacts(ctx.graph, ALICE_SELF)
-        : [];
+      const selfFacts = ctx.graph.has(ALICE_SELF) ? getContactFacts(ctx.graph, ALICE_SELF) : [];
       const normalized = normalizeFactContent(content);
       const kbFacts = getKbFacts(selfFacts);
       const existing = kbFacts.find(
@@ -163,6 +158,10 @@ export const kbMod = createMod<{}>("kb", {
         // нейтральное знание — без эмоциональной реактивности.
       });
       ctx.graph.addRelation(ALICE_SELF, "knows", id);
+
+      // Семантическая память (ADDITIVE): фоновый прогрев эмбеддинга нового знания.
+      // No-op при отключённых эмбеддингах; никогда не блокирует/не бросает.
+      warmEmbeddingOnIngest(content, getEmbeddingConfig(), ctx.nowMs);
 
       // Контроль ёмкости: при превышении вытесняем самый старый kb-факт.
       // (R у всех kb одинаково высок, поэтому критерий — возраст по last_access.)

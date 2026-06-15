@@ -488,6 +488,17 @@ export const TABLE_CLASSIFICATIONS = {
     readers: "episode pressure/prompt/diagnostics",
     absence: "No row means no persisted episode for that id/tick.",
   },
+  embeddingCache: {
+    table: "embedding_cache",
+    exportName: "embeddingCache",
+    class: "snapshot",
+    appendOnly: false,
+    rebuildable: "yes",
+    authority: "Optional cache of memory/query embedding vectors; pure retrieval enrichment.",
+    writer: "runtime/src/llm/embedding-store.ts",
+    readers: "runtime/src/mods/recall.mod.ts (semantic blend)",
+    absence: "No row means cache miss; re-embed on demand or skip semantic recall.",
+  },
 } as const satisfies Record<string, TableClassification>;
 
 export type ClassifiedTableExport = keyof typeof TABLE_CLASSIFICATIONS;
