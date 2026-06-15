@@ -218,6 +218,13 @@
       "when": 1778007200000,
       "tag": "0031_sticker_disabled",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1778010800000,
+      "tag": "0032_sticker_signature",
+      "breakpoints": true
     }
   ]
 }

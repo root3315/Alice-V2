@@ -28,12 +28,14 @@ import { analyzeVoiceDiversity } from "../../diagnostics/diversity.js";
 import { safeDisplayName } from "../../graph/display.js";
 import { getWorkiSnapshot } from "../../mods/worki.mod.js";
 import { getSelfcheckData } from "../../telegram/apps/selfcheck.js";
+import { writeSignatureSelfFact } from "../../mods/relationships.mod.js";
 import {
   getStickerPack,
   listStickerPacks,
   lookupStickerFileId,
   NULL_SET_SENTINEL,
   setStickerDisabled,
+  setStickerSignature,
 } from "../../telegram/apps/sticker-palette.js";
 import { VOICES } from "../../voices/personality.js";
 import { createLogger } from "../../utils/logger.js";
@@ -1023,6 +1025,49 @@ function handleStickerToggle(body: unknown, res: ServerResponse): void {
 }
 
 /**
+ * POST /dashboard/sticker-signature {id, signature, meaning?} → помечает стикер значимым.
+ *
+ * Осознанная (не вероятностная) пометка владельцем: пишет signature/meaning в БД И синхронизирует
+ * self-факт в памяти Алисы (контакт self), чтобы значимый стикер стал частью её самопознания.
+ * При signature=false self-факт удаляется (meaning тоже сбрасывается на стороне БД).
+ */
+function handleStickerSignature(body: unknown, res: ServerResponse, deps: EngineApiDeps): void {
+  const sendJson = (code: number, payload: Record<string, unknown>): void => {
+    res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(payload));
+  };
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    sendJson(400, { ok: false, error: "body must be a JSON object" });
+    return;
+  }
+  const b = body as Record<string, unknown>;
+  const id = Number(b.id);
+  const signature = Boolean(b.signature);
+  const meaning = typeof b.meaning === "string" ? b.meaning : null;
+  if (!Number.isInteger(id) || id <= 0) {
+    sendJson(400, { ok: false, error: "id must be a positive integer" });
+    return;
+  }
+  try {
+    const updated = setStickerSignature(getDb(), id, signature, meaning);
+    if (!updated) {
+      sendJson(404, { ok: false, error: `sticker ${id} not found` });
+      return;
+    }
+    // Синхронизируем self-факт: значимый стикер становится частью её самопознания.
+    // best-effort — сбой записи факта не должен ронять успешную запись флага в БД.
+    try {
+      writeSignatureSelfFact(deps.G, updated.signature ? updated.meaning : null, Date.now());
+    } catch (e) {
+      log.warn("sticker-signature self-fact write failed", { err: (e as Error).message });
+    }
+    sendJson(200, { ok: true, id, signature: updated.signature, meaning: updated.meaning });
+  } catch (e) {
+    sendJson(500, { ok: false, error: (e as Error).message });
+  }
+}
+
+/**
  * GET /dashboard/sticker-image?id=<id> | ?uid=<fileUniqueId> → байты превью.
  * file_id ищем в БД, скачивание делегируем deps.telegramStickerImage (клиент в index.ts).
  * Анимированные/неотдаваемые → 204 (фронт показывает emoji+теги). Кэш — на стороне deps.
@@ -1116,7 +1161,7 @@ export async function handleDashboard(
   deps: EngineApiDeps,
 ): Promise<void> {
   if (method === "POST") {
-    if (sub !== "control" && sub !== "sticker-toggle") {
+    if (sub !== "control" && sub !== "sticker-toggle" && sub !== "sticker-signature") {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "not found" }));
       return;
@@ -1131,6 +1176,10 @@ export async function handleDashboard(
     }
     if (sub === "sticker-toggle") {
       handleStickerToggle(body, res);
+      return;
+    }
+    if (sub === "sticker-signature") {
+      handleStickerSignature(body, res, deps);
       return;
     }
     await handleControl(body, res, deps);
@@ -1266,6 +1315,15 @@ const DASHBOARD_HTML = `<!doctype html>
   .stk-toggle { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--mut); cursor:pointer; user-select:none; }
   .stk-toggle input { accent-color:var(--good); }
   .stk-toggle.off { color:var(--bad); }
+  .stk-cell.sig { border-color:var(--acc); box-shadow:0 0 0 1px var(--acc) inset; }
+  .stk-cell .img { position:relative; }
+  .stk-star { position:absolute; top:-4px; left:-4px; font-size:18px; z-index:1; }
+  .stk-sig { display:flex; flex-direction:column; gap:4px; width:100%; margin-top:2px; }
+  .stk-sigchk { display:flex; align-items:center; gap:5px; font-size:11px; color:var(--mut); cursor:pointer; user-select:none; }
+  .stk-sigchk input { accent-color:var(--acc); }
+  .stk-sigmeaning { width:100%; box-sizing:border-box; background:#0b0e13; border:1px solid var(--line); border-radius:6px; color:var(--tx); font:inherit; font-size:11px; padding:3px 5px; }
+  .stk-sigsave { font:inherit; font-size:11px; padding:2px 6px; border:1px solid var(--line); border-radius:6px; background:#0e1116; color:var(--tx); cursor:pointer; }
+  .stk-sigsave:hover { border-color:var(--acc); }
 </style>
 </head>
 <body>
@@ -1931,19 +1989,45 @@ async function openStickerPack(key){
         finally { inp.disabled=false; }
       });
     });
+    // ⭐ Значимый стикер: чекбокс + поле смысла → сохраняются вместе (POST /sticker-signature).
+    $('stkGrid').querySelectorAll('button[data-sig-save]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const id=Number(btn.getAttribute('data-sig-save'));
+        const cell=btn.closest('.stk-cell');
+        const chk=cell?cell.querySelector('input[data-sig-id]'):null;
+        const txt=cell?cell.querySelector('input[data-sig-meaning]'):null;
+        const signature = chk?chk.checked:false;
+        const meaning = txt?txt.value:'';
+        btn.disabled=true;
+        try {
+          const j=await ctl2('/dashboard/sticker-signature', {id, signature, meaning});
+          if(cell) cell.classList.toggle('sig', !!j.signature);
+          if(txt) txt.value = j.meaning||'';
+          ctlMsg('stkMsg','стикер '+id+(j.signature?' помечен значимым ⭐':' значимость снята'),'ok');
+        } catch(e){ ctlMsg('stkMsg','не вышло: '+e.message,'err'); }
+        finally { btn.disabled=false; }
+      });
+    });
   } catch(e){ $('stkGrid').innerHTML='<div class="err">не удалось загрузить стикеры: '+esc(e.message)+'</div>'; }
 }
-/* Ячейка стикера: lazy <img> (при ошибке/204 — фолбэк emoji), теги, переключатель. */
+/* Ячейка стикера: lazy <img> (при ошибке/204 — фолбэк emoji), теги, переключатель disabled,
+   ⭐ контрол значимости (signature) + поле смысла. */
 function stickerCell(r){
   const tags=[r.emotion,r.action,r.intensity].filter(x=>x&&x!=='none'&&x!=='neutral').map(t=>'<span class="tag">'+esc(t)+'</span>').join('');
   const em=r.emoji?esc(r.emoji):'🏷️';
+  const star=r.signature?'<span class="stk-star" title="значимый стикер">⭐</span>':'';
   const img='<img loading="lazy" src="/dashboard/sticker-image?id='+encodeURIComponent(r.id)+'" '+
     "onerror=\"this.style.display='none';this.nextElementSibling.style.display='block'\" />"+
     '<span class="fallback" style="display:none">'+em+'</span>';
-  return '<div class="stk-cell'+(r.disabled?' off':'')+'">'+
-    '<div class="img">'+img+'</div>'+
+  return '<div class="stk-cell'+(r.disabled?' off':'')+(r.signature?' sig':'')+'">'+
+    '<div class="img">'+star+img+'</div>'+
     '<div class="meta"><span class="em">'+em+'</span>'+(tags?('<div class="tags">'+tags+'</div>'):'')+'</div>'+
     '<label class="stk-toggle'+(r.disabled?' off':'')+'"><input type="checkbox" data-toggle-id="'+esc(r.id)+'"'+(r.disabled?'':' checked')+' /> '+(r.disabled?'выкл':'вкл')+'</label>'+
+    '<div class="stk-sig">'+
+      '<label class="stk-sigchk"><input type="checkbox" data-sig-id="'+esc(r.id)+'"'+(r.signature?' checked':'')+' /> значимый</label>'+
+      '<input type="text" class="stk-sigmeaning" data-sig-meaning="'+esc(r.id)+'" placeholder="смысл (что значит)" value="'+esc(r.meaning||'')+'" />'+
+      '<button class="stk-sigsave" data-sig-save="'+esc(r.id)+'">сохранить</button>'+
+    '</div>'+
   '</div>';
 }
 /* POST-хелпер для sticker admin (зеркалит ctl(), но с произвольным URL). */

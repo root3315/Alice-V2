@@ -153,6 +153,73 @@ export function getContactFacts(
 }
 
 /**
+ * Стабильный префикс self-факта о значимом стикере. По нему находим/обновляем/удаляем факт
+ * независимо от текущей формулировки meaning (формулировка может меняться, префикс — нет).
+ */
+const SIGNATURE_SELF_FACT_PREFIX = "Мой значимый стикер — ";
+
+/**
+ * Записывает/обновляет/удаляет self-факт о значимом стикере в памяти Алисы (контакт `self`).
+ *
+ * Идемпотентно (переиспользует тот же путь фактов, что и `note`/`self_note`):
+ *  - meaning задан → upsert единственного self-факта «Мой значимый стикер — {meaning}»
+ *    (находим прежний по префиксу и обновляем его содержимое, либо создаём новый узел fact).
+ *  - meaning === null → удаляем существующий факт со значимым стикером, если он есть (снятие значимости).
+ *
+ * OFF-BY-DEFAULT: пока владелец не пометил стикер, эта функция НЕ вызывается ниоткуда
+ * (вызывает её только эндпоинт sticker-signature дашборда), поэтому память остаётся прежней.
+ *
+ * @returns краткий статус операции (для лога/ответа эндпоинта).
+ */
+export function writeSignatureSelfFact(
+  graph: WorldModel,
+  meaning: string | null,
+  nowMs: number,
+): { action: "created" | "updated" | "removed" | "noop" } {
+  if (!graph.has(ALICE_SELF)) return { action: "noop" };
+
+  const facts = getContactFacts(graph, ALICE_SELF);
+  const existing = facts.find((f) => (f.attrs.content ?? "").startsWith(SIGNATURE_SELF_FACT_PREFIX));
+
+  const trimmed = typeof meaning === "string" ? meaning.trim() : "";
+  // Снятие значимости (или пустой meaning) → удалить факт, если он есть.
+  if (trimmed.length === 0) {
+    if (existing) {
+      graph.removeEntity(existing.id);
+      return { action: "removed" };
+    }
+    return { action: "noop" };
+  }
+
+  const content = `${SIGNATURE_SELF_FACT_PREFIX}${trimmed}`;
+  if (existing) {
+    // Уже есть факт о значимом стикере → обновляем содержимое + last_access (как update_fact).
+    if ((existing.attrs.content ?? "") === content) return { action: "noop" };
+    graph.updateFact(existing.id, { content, last_access_ms: nowMs });
+    return { action: "updated" };
+  }
+
+  // Нового узла fact ещё нет → создаём как preference (высокая стабильность — это часть её «я»).
+  const iid = nextFactId();
+  graph.addFact(iid, {
+    content,
+    fact_type: "preference",
+    importance: 0.6,
+    stability: factTypeInitialStability("preference"),
+    last_access_ms: nowMs,
+    volatility: 0,
+    tracked: false,
+    created_ms: nowMs,
+    novelty: 1.0,
+    reinforcement_count: 1,
+    source_contact: ALICE_SELF,
+    source: "llm",
+  });
+  graph.addRelation(ALICE_SELF, "knows", iid);
+  return { action: "created" };
+}
+
+/**
  * ADR-117 D2: Защитный guard — разрешить переданный ID в узел типа contact.
  * LLM может передавать не-contact ID (channel/fact и т.д.); поиск реального контакта ведётся по обратным рёбрам `knows`.
  * @returns ID узла contact или null (если разрешить не удалось).

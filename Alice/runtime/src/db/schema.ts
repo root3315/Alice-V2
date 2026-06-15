@@ -1073,6 +1073,17 @@ export const stickerPalette = sqliteTable(
      * его не отправляет. Исключается из ВСЕХ запросов выборки в sticker-palette.ts.
      */
     disabled: integer("disabled").notNull().default(0),
+    /**
+     * Флаг «значимого» стикера: 1 = владелец вручную пометил стикер как особенный.
+     * Алиса отправляет его ОСОЗНАННО (не через RNG-вес) — потому что ЗНАЕТ, что он значим,
+     * и выбирает его в подходящие тёплые моменты. По умолчанию 0 → поведение байт-в-байт прежнее.
+     */
+    signature: integer("signature").notNull().default(0),
+    /**
+     * Заметка о смысле значимого стикера (что он значит для владельца/Алисы), nullable.
+     * Используется для self-факта в её памяти и как ключ инвокации в resolveLabel.
+     */
+    meaning: text("meaning"),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
       .$defaultFn(() => new Date()),

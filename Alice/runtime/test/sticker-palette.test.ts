@@ -13,9 +13,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "../src/db/schema.js";
 import {
   getAvailableKeywords,
+  getSignatureSticker,
   hasPaletteEntries,
   resolveByEmoji,
   resolveLabel,
+  setStickerSignature,
   syncInstalledSets,
 } from "../src/telegram/apps/sticker-palette.js";
 
@@ -41,6 +43,8 @@ beforeEach(() => {
       intensity TEXT,
       curated INTEGER NOT NULL DEFAULT 0,
       disabled INTEGER NOT NULL DEFAULT 0,
+      signature INTEGER NOT NULL DEFAULT 0,
+      meaning TEXT,
       created_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
     CREATE INDEX idx_sticker_palette_label ON sticker_palette(label);
@@ -325,6 +329,80 @@ describe("resolveLabel", () => {
     // 查 sad → 主池无匹配，降级到 VLM 后备池
     const result = resolveLabel(db, "sad");
     expect(result).toBe("fid_vlm_sad");
+  });
+});
+
+// ── signature (значимый стикер) ──────────────────────────────────────────
+
+describe("signature sticker (conscious)", () => {
+  it("off-by-default → resolveLabel('signature') возвращает null, никакой ветки", () => {
+    sqlite.exec(`
+      INSERT INTO sticker_palette (label, file_id, file_unique_id, emoji, set_name, emotion, action, intensity)
+      VALUES ('обычный happy', 'fid_h', 'uid_h', '😊', 'my_set', 'happy', 'none', 'medium')
+    `);
+    // Зарезервированный токен без помеченного стикера → не матчит, обычный путь.
+    expect(resolveLabel(db, "signature")).toBeNull();
+    expect(getSignatureSticker(db)).toBeNull();
+    // happy по-прежнему работает как раньше.
+    expect(resolveLabel(db, "happy")).toBe("fid_h");
+  });
+
+  it("set → resolveLabel по зарезервированному токену и по смыслу возвращает значимый стикер", () => {
+    sqlite.exec(`
+      INSERT INTO sticker_palette (label, file_id, file_unique_id, emoji, set_name, emotion, action, intensity)
+      VALUES ('наш мишка', 'fid_sig', 'uid_sig', '🧸', 'my_set', 'love', 'hug', 'high')
+    `);
+    const id = (sqlite.prepare("SELECT id FROM sticker_palette").get() as { id: number }).id;
+    const updated = setStickerSignature(db, id, true, "напоминает мне о тебе");
+    expect(updated).toEqual({ id, signature: true, meaning: "напоминает мне о тебе" });
+
+    // getSignatureSticker видит активный значимый стикер.
+    expect(getSignatureSticker(db)?.fileId).toBe("fid_sig");
+
+    // Зарезервированный токен.
+    expect(resolveLabel(db, "signature")).toBe("fid_sig");
+    // По смыслу (двусторонний подстрочный матч, без учёта регистра).
+    expect(resolveLabel(db, "Напоминает мне о тебе")).toBe("fid_sig");
+    expect(resolveLabel(db, "напоминает мне о тебе!!!")).toBe("fid_sig");
+  });
+
+  it("disabled значимый стикер НЕ возвращается (ни по токену, ни по смыслу)", () => {
+    sqlite.exec(`
+      INSERT INTO sticker_palette (label, file_id, file_unique_id, emoji, set_name, emotion, action, intensity)
+      VALUES ('наш мишка', 'fid_sig', 'uid_sig', '🧸', 'my_set', 'love', 'hug', 'high')
+    `);
+    const id = (sqlite.prepare("SELECT id FROM sticker_palette").get() as { id: number }).id;
+    setStickerSignature(db, id, true, "напоминает мне о тебе");
+    sqlite.exec(`UPDATE sticker_palette SET disabled = 1 WHERE id = ${id}`);
+
+    expect(getSignatureSticker(db)).toBeNull();
+    expect(resolveLabel(db, "signature")).toBeNull();
+    expect(resolveLabel(db, "напоминает мне о тебе")).toBeNull();
+  });
+
+  it("clear → signature снят, meaning сброшен, ветка снова no-op", () => {
+    sqlite.exec(`
+      INSERT INTO sticker_palette (label, file_id, file_unique_id, emoji, set_name, emotion, action, intensity)
+      VALUES ('наш мишка', 'fid_sig', 'uid_sig', '🧸', 'my_set', 'love', 'hug', 'high')
+    `);
+    const id = (sqlite.prepare("SELECT id FROM sticker_palette").get() as { id: number }).id;
+    setStickerSignature(db, id, true, "особенный");
+    expect(resolveLabel(db, "signature")).toBe("fid_sig");
+
+    const cleared = setStickerSignature(db, id, false);
+    expect(cleared).toEqual({ id, signature: false, meaning: null });
+    const row = sqlite.prepare("SELECT signature, meaning FROM sticker_palette WHERE id = ?").get(id) as {
+      signature: number;
+      meaning: string | null;
+    };
+    expect(row.signature).toBe(0);
+    expect(row.meaning).toBeNull();
+    expect(getSignatureSticker(db)).toBeNull();
+    expect(resolveLabel(db, "signature")).toBeNull();
+  });
+
+  it("несуществующий id → setStickerSignature вернёт null", () => {
+    expect(setStickerSignature(db, 999999, true, "x")).toBeNull();
   });
 });
 

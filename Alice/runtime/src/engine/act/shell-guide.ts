@@ -30,7 +30,30 @@
 
 // ─── Типы ───────────────────────────────────────────────────────────
 
+import { getDb, isDbInitialized } from "../../db/connection.js";
 import type { ChatTargetType } from "../../prompt/types.js";
+import { getSignatureSticker } from "../../telegram/apps/sticker-palette.js";
+
+/**
+ * OFF-BY-DEFAULT: строка осознанности про значимый стикер для prompt.
+ *
+ * Возвращает "" (никакой инъекции), пока владелец не пометил стикер значимым → guide остаётся
+ * байт-в-байт прежним. Если значимый стикер есть — короткая строка сообщает Алисе, что у неё есть
+ * особенный стикер ({meaning}), который она может послать в искренний/тёплый/личный момент, КОГДА
+ * это уместно — по её выбору, не каждый раз. Никакого частотного веса/RNG: только осознанность.
+ */
+function signatureStickerLine(): string {
+  try {
+    if (!isDbInitialized()) return "";
+    const sig = getSignatureSticker(getDb());
+    if (!sig) return "";
+    const meaning = (sig.meaning ?? "").trim();
+    const what = meaning.length > 0 ? `: «${meaning}»` : "";
+    return `\n\nУ тебя есть один значимый стикер${what} — он особенный для тебя. Пошли его, когда момент по-настоящему искренний, тёплый или личный и он правда к месту (\`irc sticker --keyword signature\`). Это твой осознанный выбор, а не каждый раз.`;
+  } catch {
+    return "";
+  }
+}
 
 export interface ShellGuideContext {
   /** ADR-237: Тип цели чата — единственный источник истины для определения сценария. */
@@ -718,7 +741,7 @@ export function buildShellGuide(context?: ShellGuideContext): string {
         "",
         CURRENT_CHAT_CONTRACT,
         "",
-        GROUP_INSTINCTS,
+        GROUP_INSTINCTS + signatureStickerLine(),
         "",
         renderExamples(allExamples),
       ].join("\n");
@@ -733,7 +756,7 @@ export function buildShellGuide(context?: ShellGuideContext): string {
         "",
         CURRENT_CHAT_CONTRACT,
         "",
-        DM_INSTINCTS,
+        DM_INSTINCTS + signatureStickerLine(),
         "",
         renderExamples(baseExamples),
       ].join("\n");

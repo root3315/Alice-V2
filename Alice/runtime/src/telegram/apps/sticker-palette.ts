@@ -34,6 +34,50 @@ type Db = ReturnType<typeof getDb>;
  */
 const NOT_DISABLED = eq(stickerPalette.disabled, 0);
 
+/** Предикат «стикер помечен значимым владельцем» (signature = 1). */
+const IS_SIGNATURE = eq(stickerPalette.signature, 1);
+
+/**
+ * Стабильный зарезервированный токен инвокации значимого стикера: `signature`.
+ *
+ * Это детерминированный ключ, по которому LLM (или код) может ОСОЗНАННО запросить
+ * именно значимый стикер вне зависимости от текста смысла. Не зависит от языка/формулировки
+ * meaning — формулировка может меняться, токен остаётся прежним. Документирован в affordance.
+ */
+export const SIGNATURE_RESERVED_TOKEN = "signature";
+
+/** Строка одного значимого стикера (для affordance/self-факта/инвокации). */
+export interface SignatureSticker {
+  id: number;
+  fileId: string;
+  fileUniqueId: string;
+  meaning: string | null;
+}
+
+/**
+ * Возвращает АКТИВНЫЙ значимый стикер (signature=1 И НЕ disabled), либо null.
+ *
+ * ГАРАНТИЯ OFF-BY-DEFAULT: при отсутствии помеченных строк (дефолт) — возвращает null,
+ * поэтому все опирающиеся на неё ветки (resolveLabel, affordance, self-факт) становятся no-op,
+ * а поведение остаётся байт-в-байт прежним. Если значимых несколько — берём первый по id
+ * (детерминированно, без RNG): осознанный выбор владельца, а не вероятностный вес.
+ */
+export function getSignatureSticker(db: Db): SignatureSticker | null {
+  const row = db
+    .select({
+      id: stickerPalette.id,
+      fileId: stickerPalette.fileId,
+      fileUniqueId: stickerPalette.fileUniqueId,
+      meaning: stickerPalette.meaning,
+    })
+    .from(stickerPalette)
+    .where(and(IS_SIGNATURE, NOT_DISABLED))
+    .orderBy(stickerPalette.id)
+    .limit(1)
+    .get();
+  return row ? { ...row, meaning: row.meaning ?? null } : null;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Phase 1: Базовые запросы
 // ═══════════════════════════════════════════════════════════════════════════
@@ -212,6 +256,24 @@ function pickByDimension(
  */
 export function resolveLabel(db: Db, label: string, chatId?: string | number): string | null {
   const lower = label.toLowerCase();
+
+  // 0. ВЫСОКИЙ ПРИОРИТЕТ: осознанная инвокация значимого стикера (signature).
+  //    OFF-BY-DEFAULT: getSignatureSticker() возвращает null, пока владелец не пометил стикер →
+  //    эта ветка не выполняется и поведение остаётся байт-в-байт прежним.
+  //    Совпадение детерминированное (НИКАКОГО RNG-веса): либо стабильный зарезервированный токен
+  //    `signature`, либо запрос ССЫЛАЕТСЯ на смысл (двусторонний подстрочный матч meaning ⇄ label,
+  //    без учёта регистра). Уважает NOT_DISABLED (getSignatureSticker уже фильтрует disabled).
+  const sig = getSignatureSticker(db);
+  if (sig) {
+    if (lower === SIGNATURE_RESERVED_TOKEN) return sig.fileId;
+    const meaningLower = (sig.meaning ?? "").trim().toLowerCase();
+    if (
+      meaningLower.length > 0 &&
+      (lower.includes(meaningLower) || meaningLower.includes(lower))
+    ) {
+      return sig.fileId;
+    }
+  }
 
   // 1. VLM dimension match — значения измерений являются стандартным словарём запросов LLM
   if (EMOTIONS.has(lower)) {
@@ -658,8 +720,16 @@ const RASTER_THUMB_TYPES = new Set(["s", "m", "x", "y", "w", "a", "b", "c", "d"]
 
 /** Жёсткий потолок размера пака — защита от патологически больших наборов. */
 const MAX_STICKERS_PER_PACK = 200;
-/** Параллелизм VLM-вызовов внутри батча (компромисс скорость/нагрузка). */
-const INDEX_CONCURRENCY = 4;
+/**
+ * Параллелизм VLM-вызовов внутри батча. Снижен 4 → 2: первый прогон пака ~120 стикеров дал
+ * 25 vision-таймаутов («operation aborted due to timeout») — единственный vision-прокси не
+ * вытягивал высокую конкуренцию. Кап 2 in-flight держит нагрузку в пределах прокси.
+ */
+const INDEX_CONCURRENCY = 2;
+/** Сколько ДОПОЛНИТЕЛЬНЫХ попыток на стикер при таймауте/сбое VLM (всего 1 + RETRIES). */
+const INDEX_RETRIES = 2;
+/** Базовая задержка backoff между повторами (мс); растёт линейно: 400, 800. */
+const INDEX_RETRY_BASE_DELAY_MS = 400;
 
 /** Признак «грубого» (bootstrap) тега вида "<emoji> sticker" — такой не считаем богатым. */
 function isCrudeLabel(label: string | null | undefined): boolean {
@@ -672,6 +742,8 @@ export interface BatchIndexStats {
   skipped: number;
   failed: number;
   total: number;
+  /** Сколько успешных тегов потребовали хотя бы одного повтора (диагностика устойчивости). */
+  retried: number;
 }
 
 export interface BatchIndexOpts {
@@ -707,7 +779,7 @@ export async function batchIndexStickerSet(
 
   if (!isVisionEnabled(visionConfig)) {
     indexLog.warn("Batch index skipped: vision disabled", { shortName });
-    return { tagged: 0, skipped: 0, failed: 0, total: 0 };
+    return { tagged: 0, skipped: 0, failed: 0, total: 0, retried: 0 };
   }
 
   const set = await client.getStickerSet(shortName);
@@ -726,8 +798,9 @@ export async function batchIndexStickerSet(
   let tagged = 0;
   let skipped = 0;
   let failed = 0;
+  let retried = 0;
 
-  indexLog.info("Batch index started", { shortName, total, force });
+  indexLog.info("Batch index started", { shortName, total, force, concurrency: INDEX_CONCURRENCY });
 
   // Существующие богатые теги ЭТОГО пака (для идемпотентного пропуска при !force).
   const existingRich = new Set<string>();
@@ -742,8 +815,13 @@ export async function batchIndexStickerSet(
     }
   }
 
-  // Обработка одного стикера: download → frame → VLM → upsert(curated).
-  async function indexOne(doc: (typeof docs)[number]): Promise<"tagged" | "skipped" | "failed"> {
+  /** Сентинел повторяемого сбоя VLM (таймаут или пустой анализ): различается от структурного skip. */
+  class VisionAttemptError extends Error {}
+
+  // ОДНА попытка обработки стикера: download → frame → VLM → upsert(curated).
+  // Возвращает терминальный исход ("tagged"/"skipped"); БРОСАЕТ VisionAttemptError на повторяемом
+  // сбое (таймаут vision / пустой анализ) — чтобы обёртка-ретрай его перехватила.
+  async function attemptOne(doc: (typeof docs)[number]): Promise<"tagged" | "skipped"> {
     const media = doc.sticker as Sticker;
     const fileId = media.fileId;
     const fileUniqueId = media.uniqueFileId;
@@ -752,56 +830,86 @@ export async function batchIndexStickerSet(
     if (!fileUniqueId || !fileId) return "skipped";
     if (!force && existingRich.has(fileUniqueId)) return "skipped";
 
-    try {
-      // Извлечение кадра — ТОЧНО как в messages.ts.
-      let buffer: Buffer;
-      if (media.sourceType !== "static") {
-        const thumb = media.thumbnails?.find(
-          (t) => t.width > 0 && !Number.isNaN(t.width) && RASTER_THUMB_TYPES.has(t.type),
-        );
-        if (!thumb) return "skipped";
-        buffer = Buffer.from(await client.downloadAsBuffer(thumb));
-      } else {
-        buffer = Buffer.from(
-          await client.downloadAsBuffer(media as Parameters<typeof client.downloadAsBuffer>[0]),
-        );
-      }
-      if (buffer.byteLength > 512_000 || buffer.byteLength < 1024) return "skipped";
-      // Анимированный/SVG head-byte → не растр, пропускаем (как в messages.ts).
-      const head4 = buffer.subarray(0, 4);
-      if (head4[0] === 0x3c && (head4[1] === 0x3f || head4[1] === 0x73)) return "skipped";
-
-      const base64 = buffer.toString("base64");
-      const caption = await describeMedia(base64, fileUniqueId, "sticker", visionConfig);
-      const analysis = getStickerAnalysis(fileUniqueId);
-      // В ОТЛИЧИЕ от оппортунистического пути — текстовые стикеры тоже индексируем (явная курация).
-      if (!analysis || !caption) return "failed";
-
-      upsertFromVLM(db, {
-        fileUniqueId,
-        fileId,
-        label: analysis.description,
-        emoji,
-        setName: shortName,
-        curated: true,
-        emotion: analysis.emotion,
-        action: analysis.action,
-        intensity: analysis.intensity,
-      });
-
-      // Прогрев эмбеддинга описания (no-op при выключенных эмбеддингах).
-      if (embeddingConfig) {
-        warmEmbeddingOnIngest(analysis.description, embeddingConfig, Date.now());
-      }
-      return "tagged";
-    } catch (e) {
-      indexLog.debug("Sticker index failed (continuing)", {
-        shortName,
-        fileUniqueId,
-        error: e instanceof Error ? e.message : String(e),
-      });
-      return "failed";
+    // Извлечение кадра — ТОЧНО как в messages.ts.
+    let buffer: Buffer;
+    if (media.sourceType !== "static") {
+      const thumb = media.thumbnails?.find(
+        (t) => t.width > 0 && !Number.isNaN(t.width) && RASTER_THUMB_TYPES.has(t.type),
+      );
+      if (!thumb) return "skipped";
+      buffer = Buffer.from(await client.downloadAsBuffer(thumb));
+    } else {
+      buffer = Buffer.from(
+        await client.downloadAsBuffer(media as Parameters<typeof client.downloadAsBuffer>[0]),
+      );
     }
+    if (buffer.byteLength > 512_000 || buffer.byteLength < 1024) return "skipped";
+    // Анимированный/SVG head-byte → не растр, пропускаем (как в messages.ts).
+    const head4 = buffer.subarray(0, 4);
+    if (head4[0] === 0x3c && (head4[1] === 0x3f || head4[1] === 0x73)) return "skipped";
+
+    const base64 = buffer.toString("base64");
+    const caption = await describeMedia(base64, fileUniqueId, "sticker", visionConfig);
+    const analysis = getStickerAnalysis(fileUniqueId);
+    // В ОТЛИЧИЕ от оппортунистического пути — текстовые стикеры тоже индексируем (явная курация).
+    // Пустой анализ/caption трактуем как ПОВТОРЯЕМЫЙ сбой VLM (часто это тихий таймаут прокси).
+    if (!analysis || !caption) {
+      throw new VisionAttemptError("empty VLM analysis/caption");
+    }
+
+    upsertFromVLM(db, {
+      fileUniqueId,
+      fileId,
+      label: analysis.description,
+      emoji,
+      setName: shortName,
+      curated: true,
+      emotion: analysis.emotion,
+      action: analysis.action,
+      intensity: analysis.intensity,
+    });
+
+    // Прогрев эмбеддинга описания (no-op при выключенных эмбеддингах).
+    if (embeddingConfig) {
+      warmEmbeddingOnIngest(analysis.description, embeddingConfig, Date.now());
+    }
+    return "tagged";
+  }
+
+  // Обёртка с повторами и нарастающим backoff: на vision-таймаут/сбой — до INDEX_RETRIES доп.
+  // попыток (всего 1 + INDEX_RETRIES) с задержкой 400/800 мс. Структурный skip НЕ повторяется.
+  // didRetry=true, если успех потребовал хотя бы одной повторной попытки.
+  async function indexOne(
+    doc: (typeof docs)[number],
+  ): Promise<{ outcome: "tagged" | "skipped" | "failed"; didRetry: boolean }> {
+    const fileUniqueId = (doc.sticker as Sticker).uniqueFileId;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= INDEX_RETRIES; attempt++) {
+      try {
+        const outcome = await attemptOne(doc);
+        return { outcome, didRetry: attempt > 0 };
+      } catch (e) {
+        lastErr = e;
+        if (attempt < INDEX_RETRIES) {
+          const delay = INDEX_RETRY_BASE_DELAY_MS * (attempt + 1);
+          indexLog.debug("Sticker index attempt failed, retrying", {
+            shortName,
+            fileUniqueId,
+            attempt: attempt + 1,
+            delayMs: delay,
+            error: e instanceof Error ? e.message : String(e),
+          });
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+    }
+    indexLog.debug("Sticker index failed after retries (continuing)", {
+      shortName,
+      fileUniqueId,
+      attempts: INDEX_RETRIES + 1,
+      error: lastErr instanceof Error ? lastErr.message : String(lastErr),
+    });
+    return { outcome: "failed", didRetry: true };
   }
 
   // Ограниченный параллелизм: «рабочие» тянут из общей очереди индексов.
@@ -809,7 +917,8 @@ export async function batchIndexStickerSet(
   async function worker(): Promise<void> {
     while (cursor < docs.length) {
       const i = cursor++;
-      const r = await indexOne(docs[i]);
+      const { outcome: r, didRetry } = await indexOne(docs[i]);
+      if (r === "tagged" && didRetry) retried++;
       if (r === "tagged") tagged++;
       else if (r === "skipped") skipped++;
       else failed++;
@@ -826,8 +935,8 @@ export async function batchIndexStickerSet(
     Array.from({ length: Math.min(INDEX_CONCURRENCY, docs.length) }, () => worker()),
   );
 
-  indexLog.info("Batch index complete", { shortName, tagged, skipped, failed, total });
-  return { tagged, skipped, failed, total };
+  indexLog.info("Batch index complete", { shortName, tagged, skipped, failed, retried, total });
+  return { tagged, skipped, failed, total, retried };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -861,6 +970,10 @@ export interface StickerAdminRow {
   action: string | null;
   intensity: string | null;
   disabled: boolean;
+  /** Помечен ли стикер значимым (signature=1) владельцем. */
+  signature: boolean;
+  /** Заметка о смысле значимого стикера (null, если не задана). */
+  meaning: string | null;
 }
 
 /**
@@ -929,6 +1042,8 @@ export function getStickerPack(db: Db, setName: string | null): StickerAdminRow[
       action: stickerPalette.action,
       intensity: stickerPalette.intensity,
       disabled: stickerPalette.disabled,
+      signature: stickerPalette.signature,
+      meaning: stickerPalette.meaning,
     })
     .from(stickerPalette)
     .where(where)
@@ -943,6 +1058,8 @@ export function getStickerPack(db: Db, setName: string | null): StickerAdminRow[
     action: r.action ?? null,
     intensity: r.intensity ?? null,
     disabled: r.disabled === 1,
+    signature: r.signature === 1,
+    meaning: r.meaning ?? null,
   }));
 }
 
@@ -958,6 +1075,31 @@ export function setStickerDisabled(db: Db, id: number, disabled: boolean): boole
     .where(eq(stickerPalette.id, id))
     .run();
   return changes > 0;
+}
+
+/**
+ * Помечает/снимает «значимость» стикера (signature) + заметку о смысле (toggle из дашборда).
+ * Пишет прямо в БД, которую Алиса читает вживую → эффект без перезапуска.
+ *
+ * При signature=false meaning принудительно сбрасывается в null (снятая значимость не должна
+ * оставлять висячий смысл — это синхронизирует и self-факт, который очищается вызывающей стороной).
+ * @returns строку после обновления (id/signature/meaning) или null, если строки нет.
+ */
+export function setStickerSignature(
+  db: Db,
+  id: number,
+  signature: boolean,
+  meaning?: string | null,
+): { id: number; signature: boolean; meaning: string | null } | null {
+  const trimmed = typeof meaning === "string" ? meaning.trim() : null;
+  const nextMeaning = signature ? (trimmed && trimmed.length > 0 ? trimmed : null) : null;
+  const { changes } = db
+    .update(stickerPalette)
+    .set({ signature: signature ? 1 : 0, meaning: nextMeaning })
+    .where(eq(stickerPalette.id, id))
+    .run();
+  if (changes === 0) return null;
+  return { id, signature, meaning: nextMeaning };
 }
 
 /** Ищет file_id стикера по числовому id или по file_unique_id (для отдачи превью). */

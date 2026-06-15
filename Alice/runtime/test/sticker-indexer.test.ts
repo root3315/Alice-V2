@@ -140,7 +140,7 @@ describe("batchIndexStickerSet", () => {
 
     const stats = await batchIndexStickerSet(client, getDb(), VISION_CONFIG, "mypack");
 
-    expect(stats).toEqual({ tagged: 2, skipped: 0, failed: 0, total: 2 });
+    expect(stats).toEqual({ tagged: 2, skipped: 0, failed: 0, total: 2, retried: 0 });
 
     const rows = getDb().select().from(stickerPalette).all();
     expect(rows).toHaveLength(2);
@@ -168,7 +168,7 @@ describe("batchIndexStickerSet", () => {
     // Второй прогон: стикер уже богато размечен → skip, describeMedia не зовётся снова.
     mockDescribeMedia.mockClear();
     const second = await batchIndexStickerSet(client, getDb(), VISION_CONFIG, "mypack");
-    expect(second).toEqual({ tagged: 0, skipped: 1, failed: 0, total: 1 });
+    expect(second).toEqual({ tagged: 0, skipped: 1, failed: 0, total: 1, retried: 0 });
     expect(mockDescribeMedia).not.toHaveBeenCalled();
   });
 
@@ -212,6 +212,47 @@ describe("batchIndexStickerSet", () => {
     expect(stats.failed).toBe(1);
     expect(stats.total).toBe(2);
   });
+
+  it("таймаут → повтор с backoff → успех (retried учтён)", async () => {
+    // Первая попытка бросает (имитация vision timeout), вторая возвращает caption.
+    let calls = 0;
+    mockDescribeMedia.mockImplementation(async () => {
+      calls++;
+      if (calls === 1) throw new Error("operation aborted due to timeout");
+      return "desc ok";
+    });
+    mockGetStickerAnalysis.mockImplementation((uid: string) => ({
+      description: `recovered tag ${uid}`,
+      emotion: "happy",
+      action: "none",
+      intensity: "moderate",
+    }));
+
+    const client = fakeClient("mypack", [{ fileId: "fid1", uniqueFileId: "uid1", alt: "😊" }]);
+
+    const stats = await batchIndexStickerSet(client, getDb(), VISION_CONFIG, "mypack");
+    expect(stats).toEqual({ tagged: 1, skipped: 0, failed: 0, total: 1, retried: 1 });
+    expect(calls).toBe(2); // 1 провал + 1 успешный повтор
+    // Стикер реально размечен.
+    const row = getDb().select().from(stickerPalette).get();
+    expect(row?.label.startsWith("recovered tag")).toBe(true);
+  }, 15000);
+
+  it("сбой VLM на всех попытках → failed (исчерпаны повторы)", async () => {
+    // Всегда бросает → 1 + INDEX_RETRIES(2) = 3 вызова, итог failed.
+    let calls = 0;
+    mockDescribeMedia.mockImplementation(async () => {
+      calls++;
+      throw new Error("operation aborted due to timeout");
+    });
+    mockGetStickerAnalysis.mockImplementation(() => undefined);
+
+    const client = fakeClient("mypack", [{ fileId: "fid1", uniqueFileId: "uid1", alt: "😊" }]);
+
+    const stats = await batchIndexStickerSet(client, getDb(), VISION_CONFIG, "mypack");
+    expect(stats).toEqual({ tagged: 0, skipped: 0, failed: 1, total: 1, retried: 0 });
+    expect(calls).toBe(3); // все попытки исчерпаны
+  }, 15000);
 });
 
 // ── resolveLabelSemantic ──────────────────────────────────────────────────────

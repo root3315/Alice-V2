@@ -22,7 +22,9 @@ import { closeDb, getDb, initDb } from "../src/db/connection.js";
 import { stickerPalette } from "../src/db/schema.js";
 import { handleDashboard } from "../src/engine-api/routes/dashboard.js";
 import type { EngineApiDeps } from "../src/engine-api/server.js";
+import { ALICE_SELF } from "../src/graph/constants.js";
 import { WorldModel } from "../src/graph/world-model.js";
+import { getContactFacts } from "../src/mods/relationships.mod.js";
 import { resetEmbeddingBreaker } from "../src/llm/embeddings.js";
 import type { EmbeddingConfig } from "../src/llm/embeddings.js";
 import {
@@ -55,6 +57,8 @@ interface Row {
   action?: string;
   intensity?: string;
   disabled?: number;
+  signature?: number;
+  meaning?: string;
 }
 
 function insert(rows: Row[]): void {
@@ -72,6 +76,8 @@ function insert(rows: Row[]): void {
         action: r.action ?? "none",
         intensity: r.intensity ?? "medium",
         disabled: r.disabled ?? 0,
+        signature: r.signature ?? 0,
+        meaning: r.meaning,
       })),
     )
     .run();
@@ -512,6 +518,110 @@ describe("dashboard sticker admin endpoints", () => {
     await runBody(req, { id: 424242, disabled: true });
     await p;
     expect(res.snapshot().statusCode).toBe(404);
+  });
+
+  it("POST /dashboard/sticker-signature ставит флаг + meaning и пишет self-факт", async () => {
+    insert([{ label: "наш мишка", fileId: "f_s", fileUniqueId: "u_s", setName: "pk", emoji: "🧸" }]);
+    const id = getDb().select().from(stickerPalette).get()?.id ?? 0;
+
+    // Граф с узлом self → self-факт реально записывается.
+    const G = new WorldModel();
+    G.addAgent(ALICE_SELF);
+    const deps = baseDeps({ G });
+
+    const res = makeRes();
+    const req = makeReq("/dashboard/sticker-signature", "POST");
+    const p = handleDashboard("sticker-signature", "POST", req, res.res, deps);
+    await runBody(req, { id, signature: true, meaning: "напоминает мне о тебе" });
+    await p;
+    const snap = res.snapshot();
+    expect(snap.statusCode).toBe(200);
+    expect(snap.json).toEqual({ ok: true, id, signature: true, meaning: "напоминает мне о тебе" });
+
+    // БД: флаг + meaning записаны.
+    const row = getDb().select().from(stickerPalette).get();
+    expect(row?.signature).toBe(1);
+    expect(row?.meaning).toBe("напоминает мне о тебе");
+
+    // Self-факт в памяти Алисы создан.
+    const facts = getContactFacts(G, ALICE_SELF);
+    expect(facts.some((f) => (f.attrs.content ?? "").includes("напоминает мне о тебе"))).toBe(true);
+  });
+
+  it("POST /dashboard/sticker-signature signature=false снимает флаг, meaning и self-факт", async () => {
+    insert([
+      {
+        label: "наш мишка",
+        fileId: "f_s2",
+        fileUniqueId: "u_s2",
+        setName: "pk",
+        emoji: "🧸",
+        signature: 1,
+        meaning: "особенный",
+      },
+    ]);
+    const id = getDb().select().from(stickerPalette).get()?.id ?? 0;
+
+    const G = new WorldModel();
+    G.addAgent(ALICE_SELF);
+    const deps = baseDeps({ G });
+    // Сначала создадим self-факт через set=true, затем снимем.
+    {
+      const res = makeRes();
+      const req = makeReq("/dashboard/sticker-signature", "POST");
+      const p = handleDashboard("sticker-signature", "POST", req, res.res, deps);
+      await runBody(req, { id, signature: true, meaning: "особенный" });
+      await p;
+    }
+    expect(getContactFacts(G, ALICE_SELF).length).toBe(1);
+
+    const res = makeRes();
+    const req = makeReq("/dashboard/sticker-signature", "POST");
+    const p = handleDashboard("sticker-signature", "POST", req, res.res, deps);
+    await runBody(req, { id, signature: false });
+    await p;
+    const snap = res.snapshot();
+    expect(snap.statusCode).toBe(200);
+    expect(snap.json).toEqual({ ok: true, id, signature: false, meaning: null });
+
+    const row = getDb().select().from(stickerPalette).get();
+    expect(row?.signature).toBe(0);
+    expect(row?.meaning).toBeNull();
+    // Self-факт удалён.
+    expect(getContactFacts(G, ALICE_SELF).length).toBe(0);
+  });
+
+  it("POST /dashboard/sticker-signature неизвестный id → 404", async () => {
+    const res = makeRes();
+    const req = makeReq("/dashboard/sticker-signature", "POST");
+    const p = handleDashboard("sticker-signature", "POST", req, res.res, baseDeps());
+    await runBody(req, { id: 777777, signature: true, meaning: "x" });
+    await p;
+    expect(res.snapshot().statusCode).toBe(404);
+  });
+
+  it("GET /dashboard/sticker-pack включает signature/meaning", async () => {
+    insert([
+      {
+        label: "a",
+        fileId: "f1",
+        fileUniqueId: "u1",
+        setName: "pk",
+        signature: 1,
+        meaning: "особый",
+      },
+    ]);
+    const res = makeRes();
+    await handleDashboard(
+      "sticker-pack",
+      "GET",
+      makeReq("/dashboard/sticker-pack?set=pk"),
+      res.res,
+      baseDeps(),
+    );
+    const snap = res.snapshot();
+    expect(snap.statusCode).toBe(200);
+    expect(snap.json[0]).toMatchObject({ signature: true, meaning: "особый" });
   });
 
   it("GET /dashboard/sticker-image?id=… ищет file_id и отдаёт байты (downloader замокан)", async () => {
