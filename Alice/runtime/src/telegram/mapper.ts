@@ -12,8 +12,17 @@ import {
   updateConversation,
 } from "../engine/conversation.js";
 import { chatIdToContactId, DUNBAR_TIER_THETA, ensureChannelId } from "../graph/constants.js";
-import type { ChannelAttrs, ChatType, DunbarTier, Mutable } from "../graph/entities.js";
+import type { ChannelAttrs, ChatType, ContactAttrs, DunbarTier, Mutable } from "../graph/entities.js";
 import { findActiveConversation } from "../graph/queries.js";
+import {
+  type InteractionSignals,
+  interactionNudge,
+  readRV,
+  readVelocity,
+  RV_DIMENSIONS,
+  RV_VELOCITY_ALPHA,
+  updateVelocity,
+} from "../graph/relationship-vector.js";
 import type { WorldModel } from "../graph/world-model.js";
 import { getDefaultParams, type HawkesState, updateOnEvent } from "../pressure/hawkes.js";
 import { UNREAD_FRESHNESS_HALFLIFE_S } from "../pressure/signal-decay.js";
@@ -212,6 +221,45 @@ function resetReachability(G: WorldModel, nodeId: string): void {
 }
 
 /**
+ * ADR-178 (organic growth): применить органический авто-прирост вектора отношений к контакту.
+ *
+ * Импер. обёртка над чистой interactionNudge: читает текущий rv_* + velocity из узла,
+ * считает новый вектор, обновляет velocity (EMA) и метки времени каждого изменённого измерения,
+ * затем пишет патч в граф. Метки времени критичны — decay в onTickEnd считает elapsed от них,
+ * так что прогрев и затухание остаются сбалансированными.
+ *
+ * @param G граф
+ * @param contactId узел contact (уже проверено, что существует, вызывающей стороной)
+ * @param signals автоматические сигналы взаимодействия (исход/настроение/взаимность)
+ */
+function applyInteractionNudge(
+  G: WorldModel,
+  contactId: string,
+  nowMs: number,
+  signals: InteractionSignals,
+): void {
+  const attrs = G.getContact(contactId);
+  const prev = readRV(attrs);
+  const prevVel = readVelocity(attrs);
+  const next = interactionNudge(prev, signals);
+
+  const patch: Record<string, number> = {};
+  let changed = false;
+  for (const dim of RV_DIMENSIONS) {
+    const delta = next[dim] - prev[dim];
+    if (Math.abs(delta) < 1e-6) continue;
+    changed = true;
+    patch[`rv_${dim}`] = next[dim];
+    patch[`rv_vel_${dim}`] = updateVelocity(prevVel[dim], delta, RV_VELOCITY_ALPHA);
+    patch[`rv_${dim}_ms`] = nowMs;
+  }
+  if (changed) {
+    // biome-ignore lint/suspicious/noExplicitAny: динамические ключи rv_${dim} нельзя статически типизировать как ContactAttrs
+    G.updateContact(contactId, patch as Partial<ContactAttrs>);
+  }
+}
+
+/**
  * Преобразует одно событие в изменение состояния графа.
  * Возвращает значение novelty события.
  */
@@ -385,6 +433,19 @@ export function applyPerturbation(G: WorldModel, event: GraphPerturbation): numb
             hawkes_last_event_ms: newHawkes.lastEventMs,
             hawkes_event_count: (contactAttrs.hawkes_event_count ?? 0) + 1,
             hawkes_first_event_ms: contactAttrs.hawkes_first_event_ms ?? nowMs,
+          });
+
+          // ADR-178 (organic growth): органический авто-прирост вектора отношений.
+          // Раньше rv_* двигались только редкими LLM-инструкциями → росли лишь у ~3 контактов;
+          // активные собеседники застревали на INITIAL_RV (trust 0.3, familiarity 0) → tier 500.
+          // Теперь КАЖДОЕ входящее сообщение реального человека нежно подталкивает rv_* по сигналам,
+          // уже присутствующим в графе (исход/настроение/взаимность). Малые α + демпфирование
+          // growDimension → прогрев постепенный (не прыжок к 1.0); decay в onTickEnd балансирует рост.
+          // Бот-сообщения исключены тем же guard, что и Hawkes (нет петли AI-прогрева).
+          applyInteractionNudge(G, contactId, nowMs, {
+            outcomeQuality: contactAttrs.last_outcome_quality,
+            moodValence: contactAttrs.mood_valence,
+            reciprocated: true, // входящее сообщение собеседника = взаимность по определению
           });
         }
       }

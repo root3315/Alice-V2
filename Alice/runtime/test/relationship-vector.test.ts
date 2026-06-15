@@ -15,8 +15,10 @@ import {
   deriveRelationType,
   deriveRomanticPhase,
   deriveTier,
+  FAMILIARITY_INTERACTION_DELTA,
   growDimension,
   INITIAL_RV,
+  interactionNudge,
   type RelationshipVector,
   type RVDimension,
   readRV,
@@ -308,6 +310,96 @@ describe("ADR-178: Relationship Vector", () => {
     it("tauAttraction=1.0 → 接近 1.0", () => {
       const result = evalCurve(attractionCurve, 1.0);
       expect(result).toBeGreaterThan(0.95);
+    });
+  });
+
+  // ── interactionNudge (organic growth) ──────────────────────────────────
+
+  describe("interactionNudge", () => {
+    it("familiarity 每次交互都增长（频率/计数信号）", () => {
+      const next = interactionNudge(INITIAL_RV, { reciprocated: true });
+      // familiarity 从 0 起，growDimension(0, 0.02, 1) = 0.02
+      expect(next.familiarity).toBeCloseTo(FAMILIARITY_INTERACTION_DELTA, 4);
+      expect(next.familiarity).toBeGreaterThan(INITIAL_RV.familiarity);
+    });
+
+    it("familiarity 随交互次数累积增长（多次交互越来越熟）", () => {
+      let v: RelationshipVector = { ...INITIAL_RV };
+      const before = v.familiarity;
+      for (let i = 0; i < 30; i++) {
+        v = interactionNudge(v, { reciprocated: true });
+      }
+      expect(v.familiarity).toBeGreaterThan(before + 0.3);
+      // 但仍受天花板阻尼，不会爆到 1.0
+      expect(v.familiarity).toBeLessThan(1);
+    });
+
+    it("正向 outcomeQuality → trust 增长；负向 → trust 下降", () => {
+      const up = interactionNudge(INITIAL_RV, { outcomeQuality: 0.8 });
+      const down = interactionNudge(INITIAL_RV, { outcomeQuality: -0.8 });
+      expect(up.trust).toBeGreaterThan(INITIAL_RV.trust);
+      expect(down.trust).toBeLessThan(INITIAL_RV.trust);
+    });
+
+    it("信任脆弱：从对称 trust=0.5 出发，同幅负向冲击大于正向", () => {
+      // 在 trust=0.5 处天花板/地板阻尼对称（1-v == v），凸显负向系数更高
+      const mid: RelationshipVector = { ...INITIAL_RV, trust: 0.5 };
+      const up = interactionNudge(mid, { outcomeQuality: 0.8 });
+      const down = interactionNudge(mid, { outcomeQuality: -0.8 });
+      const upDelta = up.trust - 0.5;
+      const downDelta = 0.5 - down.trust;
+      expect(downDelta).toBeGreaterThan(upDelta);
+    });
+
+    it("中性信号下信任几乎不动（需要显式正向结果才长信任）", () => {
+      const next = interactionNudge(INITIAL_RV, { reciprocated: true });
+      expect(next.trust).toBeCloseTo(INITIAL_RV.trust, 6);
+    });
+
+    it("互动（reciprocated）即使中性也让 affection 略增（共处的温度）", () => {
+      const next = interactionNudge(INITIAL_RV, { reciprocated: true });
+      expect(next.affection).toBeGreaterThan(INITIAL_RV.affection);
+    });
+
+    it("负面情绪 → affection 下降", () => {
+      const warm: RelationshipVector = { ...INITIAL_RV, affection: 0.5 };
+      const next = interactionNudge(warm, { moodValence: -0.6, reciprocated: false });
+      expect(next.affection).toBeLessThan(0.5);
+    });
+
+    it("reciprocated 让 respect 缓慢增长", () => {
+      const next = interactionNudge(INITIAL_RV, { reciprocated: true });
+      expect(next.respect).toBeGreaterThan(INITIAL_RV.respect);
+    });
+
+    it("不修改 attraction（仍归 sense_chemistry 管）", () => {
+      const next = interactionNudge(
+        { ...INITIAL_RV, attraction: 0.3 },
+        { outcomeQuality: 0.9, moodValence: 0.8, reciprocated: true },
+      );
+      expect(next.attraction).toBe(0.3);
+    });
+
+    it("所有维度都钳制在 [0,1]，新接触不会跳到 1.0", () => {
+      const next = interactionNudge(INITIAL_RV, {
+        outcomeQuality: 1,
+        moodValence: 1,
+        reciprocated: true,
+      });
+      for (const dim of ["familiarity", "trust", "affection", "respect"] as RVDimension[]) {
+        expect(next[dim]).toBeGreaterThanOrEqual(0);
+        expect(next[dim]).toBeLessThanOrEqual(1);
+      }
+      // 单次交互即便满信号也是渐进的（远未到 1.0）
+      expect(next.trust).toBeLessThan(0.5);
+      expect(next.affection).toBeLessThan(0.3);
+    });
+
+    it("是纯函数：不改动入参向量", () => {
+      const input: RelationshipVector = { ...INITIAL_RV };
+      const snapshot = { ...input };
+      interactionNudge(input, { outcomeQuality: 0.9, reciprocated: true });
+      expect(input).toEqual(snapshot);
     });
   });
 

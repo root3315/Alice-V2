@@ -95,6 +95,36 @@ export const RV_VELOCITY_ALPHA = 0.05;
 /** Прирост familiarity за одно взаимодействие (до применения потолочного демпфирования). */
 export const FAMILIARITY_INTERACTION_DELTA = 0.02;
 
+// ── ADR-178 (organic growth): автоматический прирост rv_* на каждом взаимодействии ──
+// Проблема: rv_* писались ТОЛЬКО редко вызываемыми LLM-инструкциями (rate_outcome/feel/
+// self_sense/sense_chemistry) → росли лишь у ~3 контактов (владелец + 2). Активные собеседники
+// застревали на INITIAL_RV → tier 500. Решение: каждое входящее сообщение нежно подталкивает
+// rv_* по уже существующим в графе сигналам (interaction_count, last_outcome_quality, mood_valence,
+// взаимность). Малые α + потолочное/половое демпфирование growDimension гарантируют ПОСТЕПЕННОСТЬ:
+// новый контакт не прыгает к trust 1.0, а тёплеет десятками взаимодействий, как реальный человек.
+// @see docs/adr/178-relationship-vector-field.md
+
+/** α авто-прироста trust по качеству исхода (консервативно: доверие строится медленно). */
+export const TRUST_INTERACTION_ALPHA = 0.04;
+/** α авто-прироста/спада affection по настроению контакта. */
+export const AFFECTION_INTERACTION_ALPHA = 0.05;
+/** α авто-прироста respect при устойчивом взаимном контакте. */
+export const RESPECT_INTERACTION_ALPHA = 0.02;
+/** Базовый положительный стимул affection за сам факт ответа (контакт вернулся → теплота). */
+export const RECIPROCITY_AFFECTION_STIMULUS = 0.15;
+/** Базовый положительный стимул respect за взаимный (reciprocated) контакт. */
+export const RECIPROCITY_RESPECT_STIMULUS = 0.2;
+
+/** Сигналы взаимодействия, доступные автоматически (без LLM-разметки), для interactionNudge. */
+export interface InteractionSignals {
+  /** Качество последнего исхода с контактом [-1,1] (rate_outcome / deferred-outcome). undefined → нейтрально. */
+  outcomeQuality?: number;
+  /** Настроение контакта [-1,1] (feel). undefined → нейтрально. */
+  moodValence?: number;
+  /** Контакт сам инициировал/вернулся в этом сообщении (взаимность). */
+  reciprocated?: boolean;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Основные функции
 // ═══════════════════════════════════════════════════════════════════════════
@@ -126,6 +156,61 @@ export function growDimension(value: number, alpha: number, stimulus: number): n
  */
 export function updateVelocity(prevVel: number, delta: number, alpha: number): number {
   return alpha * delta + (1 - alpha) * prevVel;
+}
+
+/**
+ * ADR-178 (organic growth): чистый расчёт авто-прироста rv_* на ОДНО взаимодействие.
+ *
+ * Раньше rv_* двигались только редкими LLM-инструкциями → росли у горстки контактов.
+ * Теперь каждое осмысленное взаимодействие (входящий ответ собеседника) подталкивает вектор
+ * на малую ограниченную величину, опираясь на сигналы, уже присутствующие в графе:
+ *   - familiarity: всегда +FAMILIARITY_INTERACTION_DELTA (частота/счётчик взаимодействий)
+ *   - trust:       по outcomeQuality (положит. → рост, отрицат. → спад, к негативу чувствительнее)
+ *   - affection:   по moodValence + бонус за взаимность (контакт ответил/вернулся)
+ *   - respect:     малый плюс при взаимном устойчивом контакте
+ *   - attraction:  НЕ трогаем (остаётся за sense_chemistry — это явное суждение LLM)
+ *
+ * Чистая функция (без side effects): возвращает НОВЫЙ вектор. Все измерения клампятся в [0,1]
+ * через growDimension (демпфирование у потолка/пола) → новый контакт тёплеет постепенно,
+ * а не прыгает к 1.0. Decay в onTickEnd по-прежнему балансирует рост (рост не монотонный).
+ *
+ * Конструктивно: при reciprocated && нейтральных сигналах affection всё равно слегка растёт
+ * (тёплый эффект от самого факта общения), trust почти стоит (нужен явный положительный исход),
+ * respect медленно растёт. Это даёт «прогрев» обычных активных контактов без переоценки доверия.
+ */
+export function interactionNudge(
+  v: Readonly<RelationshipVector>,
+  signals: InteractionSignals,
+): RelationshipVector {
+  const next: RelationshipVector = { ...v };
+
+  // familiarity — растёт с каждым взаимодействием (частотный/счётный сигнал)
+  next.familiarity = growDimension(next.familiarity, FAMILIARITY_INTERACTION_DELTA, 1);
+
+  // trust — по качеству исхода; к негативу чувствительнее (доверие хрупко)
+  if (signals.outcomeQuality != null && signals.outcomeQuality !== 0) {
+    const q = signals.outcomeQuality;
+    const stimulus = q >= 0 ? q : q * 1.6;
+    next.trust = growDimension(next.trust, TRUST_INTERACTION_ALPHA, stimulus);
+  }
+
+  // affection — по настроению контакта + бонус за взаимность
+  let affectionStimulus = signals.moodValence ?? 0;
+  if (signals.reciprocated) affectionStimulus += RECIPROCITY_AFFECTION_STIMULUS;
+  if (affectionStimulus !== 0) {
+    next.affection = growDimension(next.affection, AFFECTION_INTERACTION_ALPHA, affectionStimulus);
+  }
+
+  // respect — малый плюс при взаимном контакте (устойчивое двустороннее общение → уважение)
+  if (signals.reciprocated) {
+    next.respect = growDimension(
+      next.respect,
+      RESPECT_INTERACTION_ALPHA,
+      RECIPROCITY_RESPECT_STIMULUS,
+    );
+  }
+
+  return next;
 }
 
 /**

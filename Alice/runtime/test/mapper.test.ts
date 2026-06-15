@@ -112,6 +112,96 @@ describe("applyPerturbation", () => {
       expect(G.getChannel("channel:100").unread).toBe(2);
     });
 
+    // -- ADR-178 organic growth: rv_* 随交互自动增长 -----------------------------
+
+    describe("relationship vector organic growth", () => {
+      function sendFrom(contactId: string, ms: number, extra: Record<string, unknown> = {}) {
+        applyPerturbation(G, {
+          type: "new_message",
+          chatType: "private",
+          channelId: "channel:100",
+          contactId,
+          displayName: "Abronius",
+          tick: 1,
+          nowMs: ms,
+          ...extra,
+        });
+      }
+
+      it("活跃联系人随正向交互逐步积累 rv_*（不停留在基线）", () => {
+        const base = 1_700_000_000_000;
+        // 模拟一个之前积累过正向结果的活跃联系人
+        G.addContact("contact:abronius", {
+          tier: 500,
+          display_name: "Abronius",
+          last_outcome_quality: 0.7,
+          mood_valence: 0.4,
+        });
+        const before = G.getContact("contact:abronius");
+        expect(before.rv_familiarity ?? 0).toBe(0);
+
+        // 80 次交互（题述活跃区间下限），每次间隔 1 小时
+        for (let i = 0; i < 80; i++) {
+          // 重新写回正向信号（observer 会持续刷新；这里固定模拟正向氛围）
+          G.updateContact("contact:abronius", {
+            last_outcome_quality: 0.7,
+            mood_valence: 0.4,
+          });
+          sendFrom("contact:abronius", base + i * 3_600_000);
+        }
+
+        const after = G.getContact("contact:abronius");
+        // familiarity 随交互次数明显增长
+        expect(after.rv_familiarity ?? 0).toBeGreaterThan(0.3);
+        // trust 随正向结果增长，超过 INITIAL_RV.trust(0.3)
+        expect(after.rv_trust ?? 0).toBeGreaterThan(0.35);
+        // affection 随正向情绪 + 互动增长，超过基线 0
+        expect(after.rv_affection ?? 0).toBeGreaterThan(0.1);
+        // 但全部仍 < 1.0（渐进，未过度膨胀）
+        expect(after.rv_familiarity ?? 0).toBeLessThan(1);
+        expect(after.rv_trust ?? 0).toBeLessThan(1);
+        // 时间戳被写入（decay 依赖它）
+        expect(after.rv_familiarity_ms).toBe(base + 79 * 3_600_000);
+      });
+
+      it("familiarity 随交互计数单调可见地增长", () => {
+        const base = 1_700_000_000_000;
+        G.addContact("contact:artem", { tier: 500, display_name: "Artem" });
+        sendFrom("contact:artem", base);
+        const f1 = G.getContact("contact:artem").rv_familiarity ?? 0;
+        for (let i = 1; i < 10; i++) sendFrom("contact:artem", base + i * 3_600_000);
+        const f10 = G.getContact("contact:artem").rv_familiarity ?? 0;
+        expect(f1).toBeGreaterThan(0);
+        expect(f10).toBeGreaterThan(f1);
+      });
+
+      it("负向结果让 trust 下探（信任脆弱）", () => {
+        const base = 1_700_000_000_000;
+        G.addContact("contact:grumpy", {
+          tier: 50,
+          display_name: "Grumpy",
+          rv_trust: 0.6,
+          last_outcome_quality: -0.7,
+        });
+        for (let i = 0; i < 5; i++) {
+          G.updateContact("contact:grumpy", { last_outcome_quality: -0.7 });
+          sendFrom("contact:grumpy", base + i * 3_600_000);
+        }
+        expect(G.getContact("contact:grumpy").rv_trust ?? 1).toBeLessThan(0.6);
+      });
+
+      it("bot 发送不触发 rv_* 自动增长（无 AI-互暖循环）", () => {
+        const base = 1_700_000_000_000;
+        G.addContact("contact:botty", { tier: 500, display_name: "Botty" });
+        for (let i = 0; i < 10; i++) {
+          sendFrom("contact:botty", base + i * 3_600_000, { senderIsBot: true });
+        }
+        const after = G.getContact("contact:botty");
+        expect(after.rv_familiarity ?? 0).toBe(0);
+        expect(after.rv_affection ?? 0).toBe(0);
+      });
+    });
+
     it("directed 消息更新 pending_directed 和 last_directed_ms", () => {
       applyPerturbation(G, {
         type: "new_message",
