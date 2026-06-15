@@ -26,6 +26,7 @@ import { pressureMod } from "../mods/pressure.mod.js";
 import { recallMod } from "../mods/recall.mod.js";
 import { relationshipsMod } from "../mods/relationships.mod.js";
 import { schedulerMod } from "../mods/scheduler.mod.js";
+import { selfReflectionMod } from "../mods/self-reflection.mod.js";
 import { socialCaseMod } from "../mods/social-case.mod.js";
 import { soulMod } from "../mods/soul.mod.js";
 import { strategyMod } from "../mods/strategy.mod.js";
@@ -66,6 +67,7 @@ export function loadAllMods(): ModDefinition[] {
     recallMod, // cross-chat recall: «что мы решили по X» (факты+дневник+эпизоды, read-only query)
     kbMod, // KB-ingestion: «запомни про проект …» (стойкое незатухающее знание)
     digestMod, // раз в сутки самосочинённая сводка дня в личку владельца
+    selfReflectionMod, // периодическая автобиографическая дуга: раз в сутки/неделю тихо консолидирует недавние сигналы в durable заметки её голосом (internal-only, питает память)
     commitmentMod, // follow-through: ловит намерения с мягким сроком → сама возвращается к ним, когда срок прошёл
     devOfferMod, // очень сдержанный нудж «предложить глянуть код» в рабочем чате
     explorationMod, // автономное read-only обучение по каналам: находит публичные каналы по сильнейшим темам её людей, тихо подписывается, ингестит заметное в KB
