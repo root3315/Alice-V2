@@ -380,3 +380,61 @@ describe("sendTable — native rich table (sendRichMessage)", () => {
     expect(payload.replyTo).toBe(7);
   });
 });
+
+describe("native widget fallback to text (no Premium / unsupported account)", () => {
+  const textOf = (arg: unknown): string =>
+    typeof arg === "string" ? arg : ((arg as { text?: string })?.text ?? "");
+
+  it("sendChecklist falls back to a text ☐-checklist on PREMIUM_ACCOUNT_REQUIRED", async () => {
+    const sendMedia = vi.fn(async () => {
+      throw { text: "PREMIUM_ACCOUNT_REQUIRED", code: 403 };
+    });
+    const sendText = vi.fn(async (..._a: unknown[]) => ({ id: 7 }));
+    const client = { sendMedia, sendText };
+
+    const msgId = await sendChecklist(client as unknown as TelegramClient, -100, {
+      title: "Groceries",
+      items: ["bread", "milk"],
+    });
+
+    expect(msgId).toBe(7);
+    expect(sendMedia).toHaveBeenCalledTimes(1);
+    expect(sendText).toHaveBeenCalledTimes(1);
+    const text = textOf(sendText.mock.calls[0][1]);
+    expect(text).toContain("☐ bread");
+    expect(text).toContain("☐ milk");
+  });
+
+  it("sendChecklist rethrows non-Premium errors (no silent text fallback)", async () => {
+    const sendMedia = vi.fn(async () => {
+      throw { text: "CHAT_WRITE_FORBIDDEN", code: 403 };
+    });
+    const sendText = vi.fn(async (..._a: unknown[]) => ({ id: 7 }));
+    const client = { sendMedia, sendText };
+
+    await expect(
+      sendChecklist(client as unknown as TelegramClient, -100, { title: "T", items: ["a"] }),
+    ).rejects.toBeDefined();
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
+  it("sendTable falls back to a monospace text table on RICH_MESSAGE_UNSUPPORTED", async () => {
+    const sendRichMessage = vi.fn(async () => {
+      throw { text: "RICH_MESSAGE_UNSUPPORTED", code: 400 };
+    });
+    const sendText = vi.fn(async (..._a: unknown[]) => ({ id: 8 }));
+    const client = { sendRichMessage, sendText };
+
+    const msgId = await sendTable(client as unknown as TelegramClient, -100, {
+      headers: ["Name", "Qty"],
+      rows: [["Apple", "3"]],
+    });
+
+    expect(msgId).toBe(8);
+    expect(sendRichMessage).toHaveBeenCalledTimes(1);
+    expect(sendText).toHaveBeenCalledTimes(1);
+    const text = textOf(sendText.mock.calls[0][1]);
+    expect(text).toContain("Name");
+    expect(text).toContain("Apple");
+  });
+});

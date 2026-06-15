@@ -163,6 +163,54 @@ function clampCodePoints(text: string, max: number): string {
 }
 
 /**
+ * true, если Telegram отверг нативный виджет из-за тарифа/неподдержки:
+ * To-Do требует Premium (PREMIUM_ACCOUNT_REQUIRED), rich-сообщение может вернуть
+ * RICH_MESSAGE_UNSUPPORTED. В этих случаях грациозно откатываемся на текст.
+ */
+function isNativeWidgetUnsupported(err: unknown): boolean {
+  const text = String(
+    (err as { text?: unknown } | null)?.text ??
+      (err as { message?: unknown } | null)?.message ??
+      err ??
+      "",
+  );
+  return /PREMIUM|UNSUPPORTED/i.test(text);
+}
+
+/** Текстовый фолбэк чеклиста (☐ + пункты) для аккаунтов без Premium. */
+function renderTextChecklist(title: string, items: string[]): string {
+  const head = title.trim() ? `**${title.trim()}**\n` : "";
+  return head + items.map((i) => `☐ ${i}`).join("\n");
+}
+
+/** Текстовый фолбэк таблицы: моноширинный код-блок с выравниванием колонок. */
+function renderTextTable(title: string, headers: string[], rows: string[][]): string {
+  const width = Math.max(headers.length, ...rows.map((r) => r.length), 1);
+  const norm = (r: string[]): string[] => {
+    const out = r.slice(0, width);
+    while (out.length < width) out.push("");
+    return out;
+  };
+  const body = rows.map(norm);
+  const head = headers.length > 0 ? norm(headers) : null;
+  const colW: number[] = [];
+  for (let c = 0; c < width; c++) {
+    const cells = [...(head ? [head[c]] : []), ...body.map((r) => r[c])];
+    colW[c] = Math.max(1, ...cells.map((s) => [...(s ?? "")].length));
+  }
+  const fmt = (r: string[]): string =>
+    r.map((s, c) => s + " ".repeat(Math.max(0, colW[c] - [...s].length))).join("  ");
+  const lines: string[] = [];
+  if (head) {
+    lines.push(fmt(head));
+    lines.push(colW.map((w) => "-".repeat(w)).join("  "));
+  }
+  for (const r of body) lines.push(fmt(r));
+  const titleLine = title.trim() ? `**${title.trim()}**\n` : "";
+  return `${titleLine}\`\`\`\n${lines.join("\n")}\n\`\`\``;
+}
+
+/**
  * mtcute 0.30: отправляет НАСТОЯЩИЙ нативный tappable чеклист Telegram (To-Do list, layer 227).
  * Каждый пункт — реальный нажимаемый checkbox (inputMediaTodo → todoList/todoItem), а НЕ статичный
  * квадрат из rich page-block (прежняя ошибочная реализация на Rich.list давала нерабочие квадраты).
@@ -203,6 +251,17 @@ export async function sendChecklist(
       replyTo: options.replyToMsgId ?? options.topicId,
     });
   } catch (err) {
+    // Нативный To-Do требует Telegram Premium. Без него Telegram отвечает
+    // PREMIUM_ACCOUNT_REQUIRED — грациозно шлём текстовый чеклист (☐), а не падаем 500.
+    if (isNativeWidgetUnsupported(err)) {
+      log.info("checklist: native To-Do unsupported, falling back to text", {
+        chatId: String(chatId),
+      });
+      return sendText(client, chatId, renderTextChecklist(title, items), {
+        replyToMsgId: options.replyToMsgId,
+        topicId: options.topicId,
+      });
+    }
     rethrowTelegramActionFailure(err, "send_checklist", { chatId: String(chatId) });
   }
   return sent?.id;
@@ -269,6 +328,17 @@ export async function sendTable(
       replyTo: options.replyToMsgId ?? options.topicId,
     });
   } catch (err) {
+    // rich-сообщение может быть не поддержано аккаунтом (RICH_MESSAGE_UNSUPPORTED) или
+    // требовать Premium — грациозно шлём текстовую таблицу (моноширинный код-блок), не 500.
+    if (isNativeWidgetUnsupported(err)) {
+      log.info("table: native rich message unsupported, falling back to text", {
+        chatId: String(chatId),
+      });
+      return sendText(client, chatId, renderTextTable(options.title ?? "", headers, rows), {
+        replyToMsgId: options.replyToMsgId,
+        topicId: options.topicId,
+      });
+    }
     rethrowTelegramActionFailure(err, "send_table", { chatId: String(chatId) });
   }
   return sent?.id;
