@@ -122,9 +122,9 @@ model = "whisper-1"
 #   model    = "bge-m3"
 # api_key_env можно не задавать (локальный TEI ключ не требует).
 # (Альтернатива без Docker: Ollama — `ollama pull bge-m3`, base_url 127.0.0.1:11434/v1.)
-base_url = ""
+base_url = "http://127.0.0.1:8080/v1"
 api_key_env = ""
-model = ""
+model = "multilingual-e5-small"
 
 [services]
 # 外部搜索。空 secret 时禁用 browse。
