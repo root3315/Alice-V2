@@ -28,6 +28,14 @@ describe("CompletedAction codec", () => {
       decoded: { kind: "sticker", chatId: "1", msgId: "3" },
     },
     {
+      raw: "checklist:chatId=1:msgId=5",
+      decoded: { kind: "checklist", chatId: "1", msgId: "5" },
+    },
+    {
+      raw: "table:chatId=1:msgId=9",
+      decoded: { kind: "table", chatId: "1", msgId: "9" },
+    },
+    {
       raw: "react:chatId=1:msgId=3:emoji=👍",
       decoded: { kind: "react", chatId: "1", msgId: "3", emoji: "👍" },
     },

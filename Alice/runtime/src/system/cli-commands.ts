@@ -470,25 +470,53 @@ export interface ChecklistArgs {
 }
 
 /**
- * Безопасно разбирает JSON-массив строк из CLI-аргумента.
- * Robust к содержимому, генерируемому LLM (кавычки/запятые/переводы строк внутри элементов),
- * потому что весь массив передаётся как один JSON-строковый аргумент.
+ * Разбирает список строк из CLI-аргумента, ТОЛЕРАНТНО к формату от LLM.
+ * Принимает: JSON-массив '["a","b"]', список по одному пункту на строку
+ * (с маркерами -, *, •, "1.", "[ ]"), либо одну строку через запятую.
+ * Так чеклист не падает, даже если модель не оформила строгий JSON.
  */
-function parseJsonStringArray(
+export function parseJsonStringArray(
   raw: string,
   die: (msg: string, code?: CliErrorCode) => never,
   label: string,
 ): string[] {
-  let parsed: unknown;
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) {
+    die(`${label} is empty — pass a JSON array '["a","b"]' or one item per line`, "command_missing_argument");
+  }
+  // Снимает маркеры списка (-, *, •, "1.", "[ ]") и обрамляющие кавычки.
+  const strip = (s: string): string =>
+    s
+      .replace(/^\s*(?:[-*•]|\d+[.)]|\[[ xX]?\])\s*/, "")
+      .trim()
+      .replace(/^["']|["']$/g, "")
+      .trim();
+  // 1. Предпочтительно — JSON-массив (значения коэрсятся в строки).
   try {
-    parsed = JSON.parse(raw);
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) {
+      const items = parsed
+        .map((x) => (x == null ? "" : String(x)).trim())
+        .filter((s) => s.length > 0);
+      if (items.length > 0) return items;
+    }
   } catch {
-    die(`${label} must be a JSON array of strings, e.g. '["a","b"]'`, "command_arg_format");
+    // не JSON → мягкие фолбэки ниже (LLM нередко шлёт список простым текстом)
   }
-  if (!Array.isArray(parsed) || !parsed.every((x) => typeof x === "string")) {
-    die(`${label} must be a JSON array of strings, e.g. '["a","b"]'`, "command_arg_format");
+  // 2. Несколько строк → по одному пункту на строку.
+  const lines = trimmed.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  if (lines.length > 1) {
+    const items = lines.map(strip).filter((s) => s.length > 0);
+    if (items.length > 0) return items;
   }
-  return parsed as string[];
+  // 3. Одна строка → делим по запятым (сняв обрамляющие скобки).
+  const single = trimmed
+    .replace(/^\[|\]$/g, "")
+    .split(",")
+    .map(strip)
+    .filter((s) => s.length > 0);
+  if (single.length > 0) return single;
+  die(`${label} must be a JSON array '["a","b"]', one item per line, or a comma list`, "command_arg_format");
 }
 
 /** Логика команды checklist — отправляет нативный tappable To-Do список. */
@@ -545,25 +573,45 @@ export interface TableArgs {
   ref?: string;
 }
 
-/** Безопасно разбирает JSON-массив массивов строк (строки таблицы). */
-function parseJsonStringMatrix(
+/**
+ * Разбирает строки таблицы, ТОЛЕРАНТНО к формату от LLM.
+ * Принимает: JSON-матрицу '[["a","b"]]' ИЛИ markdown-строки (по строке на ряд,
+ * ячейки через "|"); строку-разделитель |---| пропускает.
+ */
+export function parseJsonStringMatrix(
   raw: string,
   die: (msg: string, code?: CliErrorCode) => never,
   label: string,
 ): string[][] {
-  let parsed: unknown;
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) {
+    die(`${label} is empty — pass JSON '[["a","b"]]' or markdown rows (a | b per line)`, "command_missing_argument");
+  }
+  // 1. Предпочтительно — JSON-матрица (значения коэрсятся в строки).
   try {
-    parsed = JSON.parse(raw);
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed) && parsed.some((r) => Array.isArray(r))) {
+      const rows = parsed
+        .filter((r): r is unknown[] => Array.isArray(r))
+        .map((r) => r.map((c) => (c == null ? "" : String(c)).trim()));
+      if (rows.length > 0) return rows;
+    }
   } catch {
-    die(`${label} must be a JSON array of string arrays, e.g. '[["a","b"],["c","d"]]'`, "command_arg_format");
+    // не JSON → фолбэк на markdown-строки ниже
   }
-  if (
-    !Array.isArray(parsed) ||
-    !parsed.every((row) => Array.isArray(row) && row.every((c) => typeof c === "string"))
-  ) {
-    die(`${label} must be a JSON array of string arrays, e.g. '[["a","b"],["c","d"]]'`, "command_arg_format");
-  }
-  return parsed as string[][];
+  // 2. Фолбэк: строки по \n, ячейки по "|" (markdown); строку-разделитель |---| пропускаем.
+  const rows = trimmed
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !/^\|?[\s:|-]+\|?$/.test(l))
+    .map((l) =>
+      l
+        .replace(/^\||\|$/g, "")
+        .split("|")
+        .map((c) => c.trim()),
+    );
+  if (rows.length > 0) return rows;
+  die(`${label} must be JSON '[["a","b"]]' or markdown rows (a | b per line)`, "command_arg_format");
 }
 
 /** Логика команды table — отправляет нативную прокручиваемую rich-таблицу. */

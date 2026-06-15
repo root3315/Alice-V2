@@ -1467,6 +1467,237 @@ describe("Engine API route", () => {
     });
   });
 
+  it("checklist route forwards a valid body to telegramChecklist (200)", async () => {
+    const G = new WorldModel();
+    G.addAgent("self");
+    const telegramChecklist = vi.fn(async () => ({ msgId: 5 }));
+    const deps = {
+      config: { timezoneOffset: 8, exaApiKey: "", musicApiBaseUrl: "", youtubeApiKey: "" },
+      G,
+      strictCapabilities: false,
+      registry: {},
+      telegramChecklist,
+    };
+
+    const res = makeRes();
+    const req = makeTelegramReq("checklist");
+    const promise = routeRequest(req, res.res, deps);
+    await runBody(req, { chatId: 7, items: ["buy bread", "water plants"], title: "Todo" });
+    await promise;
+
+    expect(telegramChecklist).toHaveBeenCalledWith({
+      chatId: 7,
+      items: ["buy bread", "water plants"],
+      title: "Todo",
+      replyTo: undefined,
+    });
+    expect(res.snapshot()).toEqual({
+      statusCode: 200,
+      body: { msgId: 5 },
+    });
+  });
+
+  it("checklist route rejects empty/invalid items as 400", async () => {
+    const G = new WorldModel();
+    G.addAgent("self");
+    const telegramChecklist = vi.fn(async () => ({ msgId: 5 }));
+    const deps = {
+      config: { timezoneOffset: 8, exaApiKey: "", musicApiBaseUrl: "", youtubeApiKey: "" },
+      G,
+      strictCapabilities: false,
+      registry: {},
+      telegramChecklist,
+    };
+
+    const res = makeRes();
+    const req = makeTelegramReq("checklist");
+    const promise = routeRequest(req, res.res, deps);
+    await runBody(req, { chatId: 7, items: [] });
+    await promise;
+
+    expect(telegramChecklist).not.toHaveBeenCalled();
+    expect(res.snapshot().statusCode).toBe(400);
+  });
+
+  it("checklist route blocks disallowed targets via whitelist (400)", async () => {
+    const G = new WorldModel();
+    G.addAgent("self");
+    const telegramChecklist = vi.fn(async () => ({ msgId: 5 }));
+    const deps = {
+      config: { timezoneOffset: 8, exaApiKey: "", musicApiBaseUrl: "", youtubeApiKey: "" },
+      G,
+      strictCapabilities: false,
+      registry: {},
+      targetWhitelist: new Set(["channel:telegram:7"]),
+      telegramChecklist,
+    };
+
+    const res = makeRes();
+    const req = makeTelegramReq("checklist");
+    const promise = routeRequest(req, res.res, deps);
+    await runBody(req, { chatId: 8, items: ["a"] });
+    await promise;
+
+    expect(telegramChecklist).not.toHaveBeenCalled();
+    expect(res.snapshot()).toEqual({
+      statusCode: 400,
+      body: {
+        code: "command_invalid_target",
+        error: "target is outside Alice's allowed rooms",
+        target: "channel:telegram:8",
+      },
+    });
+  });
+
+  it("checklist route returns 501 when the dep is missing", async () => {
+    const G = new WorldModel();
+    G.addAgent("self");
+    const deps = {
+      config: { timezoneOffset: 8, exaApiKey: "", musicApiBaseUrl: "", youtubeApiKey: "" },
+      G,
+      strictCapabilities: false,
+      registry: {},
+    };
+
+    const res = makeRes();
+    const req = makeTelegramReq("checklist");
+    const promise = routeRequest(req, res.res, deps);
+    await runBody(req, { chatId: 7, items: ["a"] });
+    await promise;
+
+    expect(res.snapshot().statusCode).toBe(501);
+  });
+
+  it("table route forwards a valid body to telegramTable (200)", async () => {
+    const G = new WorldModel();
+    G.addAgent("self");
+    const telegramTable = vi.fn(async () => ({ msgId: 9 }));
+    const deps = {
+      config: { timezoneOffset: 8, exaApiKey: "", musicApiBaseUrl: "", youtubeApiKey: "" },
+      G,
+      strictCapabilities: false,
+      registry: {},
+      telegramTable,
+    };
+
+    const res = makeRes();
+    const req = makeTelegramReq("table");
+    const promise = routeRequest(req, res.res, deps);
+    await runBody(req, {
+      chatId: 7,
+      headers: ["A", "B"],
+      rows: [["1", "2"]],
+      title: "Prices",
+    });
+    await promise;
+
+    expect(telegramTable).toHaveBeenCalledWith({
+      chatId: 7,
+      headers: ["A", "B"],
+      rows: [["1", "2"]],
+      title: "Prices",
+      replyTo: undefined,
+    });
+    expect(res.snapshot()).toEqual({
+      statusCode: 200,
+      body: { msgId: 9 },
+    });
+  });
+
+  it("table route rejects invalid rows as 400", async () => {
+    const G = new WorldModel();
+    G.addAgent("self");
+    const telegramTable = vi.fn(async () => ({ msgId: 9 }));
+    const deps = {
+      config: { timezoneOffset: 8, exaApiKey: "", musicApiBaseUrl: "", youtubeApiKey: "" },
+      G,
+      strictCapabilities: false,
+      registry: {},
+      telegramTable,
+    };
+
+    const res = makeRes();
+    const req = makeTelegramReq("table");
+    const promise = routeRequest(req, res.res, deps);
+    // rows must be string[][]; a non-array cell row is invalid.
+    await runBody(req, { chatId: 7, headers: ["A"], rows: [[1, 2]] });
+    await promise;
+
+    expect(telegramTable).not.toHaveBeenCalled();
+    expect(res.snapshot().statusCode).toBe(400);
+  });
+
+  it("table route rejects an empty table (no headers and no rows) as 400", async () => {
+    const G = new WorldModel();
+    G.addAgent("self");
+    const telegramTable = vi.fn(async () => ({ msgId: 9 }));
+    const deps = {
+      config: { timezoneOffset: 8, exaApiKey: "", musicApiBaseUrl: "", youtubeApiKey: "" },
+      G,
+      strictCapabilities: false,
+      registry: {},
+      telegramTable,
+    };
+
+    const res = makeRes();
+    const req = makeTelegramReq("table");
+    const promise = routeRequest(req, res.res, deps);
+    await runBody(req, { chatId: 7, headers: [], rows: [] });
+    await promise;
+
+    expect(telegramTable).not.toHaveBeenCalled();
+    expect(res.snapshot().statusCode).toBe(400);
+  });
+
+  it("table route blocks disallowed targets via whitelist (400)", async () => {
+    const G = new WorldModel();
+    G.addAgent("self");
+    const telegramTable = vi.fn(async () => ({ msgId: 9 }));
+    const deps = {
+      config: { timezoneOffset: 8, exaApiKey: "", musicApiBaseUrl: "", youtubeApiKey: "" },
+      G,
+      strictCapabilities: false,
+      registry: {},
+      targetWhitelist: new Set(["channel:telegram:7"]),
+      telegramTable,
+    };
+
+    const res = makeRes();
+    const req = makeTelegramReq("table");
+    const promise = routeRequest(req, res.res, deps);
+    await runBody(req, { chatId: 8, headers: ["A"], rows: [["1"]] });
+    await promise;
+
+    expect(telegramTable).not.toHaveBeenCalled();
+    expect(res.snapshot()).toEqual({
+      statusCode: 400,
+      body: {
+        code: "command_invalid_target",
+        error: "target is outside Alice's allowed rooms",
+        target: "channel:telegram:8",
+      },
+    });
+  });
+
+  it("table route returns 501 when the dep is missing", async () => {
+    const G = new WorldModel();
+    G.addAgent("self");
+    const deps = {
+      config: { timezoneOffset: 8, exaApiKey: "", musicApiBaseUrl: "", youtubeApiKey: "" },
+      G,
+      strictCapabilities: false,
+      registry: {},
+    };
+
+    const res = makeRes();
+    const req = makeTelegramReq("table");
+    const promise = routeRequest(req, res.res, deps);
+    await runBody(req, { chatId: 7, headers: ["A"], rows: [["1"]] });
+    await promise;
+
+    expect(res.snapshot().statusCode).toBe(501);
+  });
+
   it("rejects unsupported Telegram reactions before calling Telegram", async () => {
     const G = new WorldModel();
     G.addAgent("self");

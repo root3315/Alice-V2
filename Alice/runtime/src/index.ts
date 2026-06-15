@@ -655,7 +655,11 @@ async function main() {
       if (graphId && G.has(graphId)) {
         const summary = (title?.trim() || items[0] || "checklist").slice(0, 150);
         G.setDynamic(graphId, "last_outgoing_text", summary);
-        dispatcher.dispatch("SEND_MESSAGE", { chatId: graphId, text: items.join("\n"), msgId });
+        dispatcher.dispatch("SEND_MESSAGE", {
+          chatId: graphId,
+          text: items.join("\n").trim() || title?.trim() || "checklist",
+          msgId,
+        });
         dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
       }
       return { msgId: msgId ?? null };
@@ -688,7 +692,9 @@ async function main() {
         G.setDynamic(graphId, "last_outgoing_text", summary);
         dispatcher.dispatch("SEND_MESSAGE", {
           chatId: graphId,
-          text: title ?? headers.join(" | "),
+          // SEND_MESSAGE требует непустой text (Zod .min(1)). Таблица из одних строк (headers=[],
+          // без title) иначе ушла бы с "" → валидация рубит → message_log/strategy/worki пропустят её.
+          text: title?.trim() || headers.join(" | ") || rows[0]?.join(" | ") || "table",
           msgId,
         });
         dispatcher.dispatch("DECLARE_ACTION", { target: graphId });

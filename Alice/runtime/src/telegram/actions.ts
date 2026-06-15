@@ -872,8 +872,9 @@ export async function translateMessage(
   toLang: string,
 ): Promise<{ text: string }> {
   await globalLimiter.acquire();
+  // translateMessage может вернуть null (Telegram не смог перевести), хотя тип это не отражает.
   const res = await client.translateMessage({ chatId, message: msgId, toLanguage: toLang });
-  return { text: res.text };
+  return { text: res?.text ?? "" };
 }
 
 /**

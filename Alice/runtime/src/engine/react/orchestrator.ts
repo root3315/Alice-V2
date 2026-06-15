@@ -62,7 +62,13 @@ const log = createLogger("react:orchestrator");
 const RESTING_DURATION_MS = 30 * 60 * 1000;
 
 function isConversationOutput(action: CompletedAction): boolean {
-  return action.kind === "sent" || action.kind === "voice" || action.kind === "sticker";
+  return (
+    action.kind === "sent" ||
+    action.kind === "voice" ||
+    action.kind === "sticker" ||
+    action.kind === "checklist" ||
+    action.kind === "table"
+  );
 }
 
 function hasConversationOutput(result: ScriptExecutionResult): boolean {
