@@ -204,8 +204,14 @@ describe("★A1+A3 空闲自启动", () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-01-01T07:00:00Z"));
+    // Детерминизм: IAUS дёргает Math.random (Box-Muller шум + epsilon-разведка) — без сидинга
+    // тесты флакали (один и тот же кейс то проходит, то падает). Высокое значение = без epsilon-разведки.
+    vi.spyOn(Math, "random").mockReturnValue(0.99);
   });
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
 
   it("idle 达到 idleThreshold 后触发声部行动入队", async () => {
     // dt 迁移：空闲判断基于墙钟秒差 (Date.now() - lastActionMs) / 1000
@@ -624,8 +630,14 @@ describe("ADR-252: IAUS queue backpressure", () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-01-01T07:00:00Z"));
+    // Детерминизм: IAUS дёргает Math.random (Box-Muller шум + epsilon-разведка) — без сидинга
+    // тесты флакали (один и тот же кейс то проходит, то падает). Высокое значение = без epsilon-разведки.
+    vi.spyOn(Math, "random").mockReturnValue(0.99);
   });
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
 
   it("未饱和时同一个普通 proactive IAUS 目标可以入队", () => {
     const state = buildProactiveIausState();
@@ -716,8 +728,14 @@ describe("post-wakeup recovery target spread control", () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-01-01T07:00:00Z"));
+    // Детерминизм: IAUS дёргает Math.random (Box-Muller шум + epsilon-разведка) — без сидинга
+    // тесты флакали (один и тот же кейс то проходит, то падает). Высокое значение = без epsilon-разведки.
+    vi.spyOn(Math, "random").mockReturnValue(0.99);
   });
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
 
   it("恢复窗口内超过目标预算时抑制普通 proactive 新目标", () => {
     const state = buildProactiveIausState();
@@ -792,8 +810,14 @@ describe("ADR-136: proactive cooldown 连续化后的管线行为", () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-01-01T07:00:00Z"));
+    // Детерминизм: IAUS дёргает Math.random (Box-Muller шум + epsilon-разведка) — без сидинга
+    // тесты флакали (один и тот же кейс то проходит, то падает). Высокое значение = без epsilon-разведки.
+    vi.spyOn(Math, "random").mockReturnValue(0.99);
   });
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
 
   it("alice_turn 对话延续：System 1 升级到 System 2（isContinuation 正确传播）", () => {
     const config = loadConfig();
