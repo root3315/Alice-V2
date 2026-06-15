@@ -115,6 +115,12 @@ export interface EngineApiDeps {
     correctOption?: number;
     replyTo?: number;
   }) => Promise<{ msgId: number | null }>;
+  /** Telegram native poll vote callback (`irc vote`). Free feature — no Premium needed. */
+  telegramVote?: (params: {
+    chatId: number;
+    msgId: number;
+    options: number[];
+  }) => Promise<{ voted: number[] }>;
   /** Telegram scrollable rich table callback (`irc table`). */
   telegramTable?: (params: {
     chatId: number;

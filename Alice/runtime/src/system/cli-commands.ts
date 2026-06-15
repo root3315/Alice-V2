@@ -630,6 +630,72 @@ export async function pollCommand(ctx: CliContext, args: PollArgs): Promise<Comm
   };
 }
 
+// ── Vote Command ──
+
+export interface VoteArgs {
+  json?: string;
+  in?: string;
+  /** ID сообщения-опроса, в котором голосуем. */
+  ref: string;
+  /** Выбранные варианты — 0-based индексы (по порядку вариантов в опросе). */
+  options: string;
+}
+
+/**
+ * Разбирает индексы вариантов из CLI-аргумента, ТОЛЕРАНТНО к формату от LLM.
+ * Принимает: JSON-массив '[0,2]', список через запятую "0,2" или через пробел "0 2".
+ * Каждый элемент — целое неотрицательное число (0-based индекс варианта опроса).
+ */
+export function parseOptionIndexes(
+  raw: string,
+  die: (msg: string, code?: CliErrorCode) => never,
+  label: string,
+): number[] {
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) {
+    die(`${label} is empty — pass one or more 0-based option indexes, e.g. '0' or '[0,2]'`, "command_missing_argument");
+  }
+  // Снимаем обрамляющие скобки и делим по запятым/пробелам — годится для JSON-массива и для "0 2"/"0,2".
+  const tokens = trimmed
+    .replace(/^\[|\]$/g, "")
+    .split(/[\s,]+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+  const indexes: number[] = [];
+  for (const token of tokens) {
+    const n = Number.parseInt(token, 10);
+    if (!Number.isInteger(n) || n < 0 || String(n) !== token.replace(/^\+/, "")) {
+      die(`${label} must be 0-based integer option indexes, e.g. '0' or '[0,2]' (got ${JSON.stringify(token)})`, "command_arg_format");
+    }
+    indexes.push(n);
+  }
+  if (indexes.length === 0) {
+    die(`${label} must contain at least one 0-based option index`, "command_missing_argument");
+  }
+  return indexes;
+}
+
+/** Логика команды vote — голосует в нативном опросе Telegram (messages.sendVote). */
+export async function voteCommand(ctx: CliContext, args: VoteArgs): Promise<CommandResult> {
+  const die = makeDie(ctx.output, "irc");
+
+  const chatId = await ctx.resolveTarget(args.in);
+  const msgId = parseMsgId(args.ref);
+  const options = parseOptionIndexes(args.options ?? "", die, "options");
+
+  const result = (await ctx.engine.post("/telegram/vote", {
+    chatId,
+    msgId,
+    options,
+  })) as { voted?: number[] } | null;
+
+  const voted = result?.voted ?? options;
+  return {
+    output: renderConfirm("Voted in poll", `#${msgId}: option(s) ${voted.join(", ")}`),
+    rawResult: { voted, chatId, msgId },
+  };
+}
+
 // ── Table Command ──
 
 export interface TableArgs {

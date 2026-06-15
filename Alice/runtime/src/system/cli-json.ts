@@ -65,6 +65,7 @@ export const COMMAND_FIELDS = {
   sticker: ["msgId", "chatId"] as const,
   checklist: ["msgId", "chatId"] as const,
   poll: ["msgId", "chatId"] as const,
+  vote: ["voted", "chatId", "msgId"] as const,
   table: ["msgId", "chatId"] as const,
   voice: ["msgId", "chatId"] as const,
   read: ["success"] as const,

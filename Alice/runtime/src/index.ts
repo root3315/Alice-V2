@@ -84,6 +84,7 @@ import {
   sendSticker,
   sendTable,
   sendText,
+  sendVote,
   setTyping,
 } from "./telegram/actions.js";
 import { bindAdminCommands } from "./telegram/admin.js";
@@ -753,6 +754,12 @@ async function main() {
         dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
       }
       return { msgId: msgId ?? null };
+    },
+    // Голосование в нативном опросе (messages.sendVote). НЕ выводит текст в чат, поэтому
+    // last_text_ms / SEND_MESSAGE не трогаем (голос — не реплика Алисы). Только sendVote.
+    telegramVote: async ({ chatId, msgId, options }) => {
+      const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
+      return sendVote(client, rawChatId, msgId, options);
     },
     // Нативная прокручиваемая таблица (rich-message). Зеркалит telegramSticker: typing → resolve топика → sendTable.
     telegramTable: async ({ chatId, title, headers, rows, replyTo }) => {

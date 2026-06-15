@@ -21,6 +21,7 @@ import {
   tailCommand,
   threadsCommand,
   voiceCommand,
+  voteCommand,
   whoisCommand,
 } from "./cli-commands.js";
 import { createRealContext } from "./cli-io.js";
@@ -252,6 +253,32 @@ const poll = defineCommand({
     },
   },
   run: makeRunner("poll", pollCommand),
+});
+
+const vote = defineCommand({
+  meta: {
+    name: "vote",
+    description:
+      "Vote in an existing Telegram poll / опрос (native sendVote, FREE, no Premium). Use to take part in group life, or when asked to vote — on your own initiative when you find it useful too. Pick options by their order in the poll (0-based: the first option is 0, the second is 1, ...). Regular polls let you change your vote later; quizzes do not.",
+  },
+  args: {
+    ...jsonFlag,
+    in: inOption,
+    ref: {
+      type: "string",
+      description: "Visible current-chat message ID of the poll to vote in",
+      required: true,
+      valueHint: "msgId",
+    },
+    options: {
+      type: "string",
+      description:
+        "Chosen option(s) as 0-based indexes into the poll's options (in their displayed order). One index for a single-choice poll, several for a multi-choice poll. Accepts '0', '0,2', '0 2', or JSON '[0,2]'. Single-choice polls use only the first index.",
+      required: true,
+      valueHint: "0 | [0,2]",
+    },
+  },
+  run: makeRunner("vote", voteCommand),
 });
 
 const table = defineCommand({
@@ -614,6 +641,7 @@ export const ircSubCommands = {
   sticker,
   checklist,
   poll,
+  vote,
   table,
   voice,
   read,

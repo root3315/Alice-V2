@@ -427,6 +427,50 @@ export async function handleTelegramForward(
     return;
   }
 
+  if (action === "vote") {
+    if (!deps.telegramVote) {
+      notConfigured(res, "vote");
+      return;
+    }
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      badRequest(res, 'body must be { "chatId": number, "msgId": number, "options": number[] }');
+      return;
+    }
+    const { chatId, msgId, options } = body as {
+      chatId?: number;
+      msgId?: unknown;
+      options?: unknown;
+    };
+    if (
+      typeof chatId !== "number" ||
+      typeof msgId !== "number" ||
+      !Number.isInteger(msgId) ||
+      msgId <= 0 ||
+      !Array.isArray(options) ||
+      options.length === 0 ||
+      !options.every((o) => typeof o === "number" && Number.isInteger(o) && o >= 0)
+    ) {
+      badRequest(
+        res,
+        'body must be { "chatId": number, "msgId": positive int, "options": int[] (one or more 0-based option indexes) }',
+      );
+      return;
+    }
+    if (!ensureTargetAllowed(res, deps, chatId)) return;
+    try {
+      const result = await deps.telegramVote({
+        chatId,
+        msgId,
+        options: options as number[],
+      });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      serverError(res, "vote failed", err);
+    }
+    return;
+  }
+
   if (action === "table") {
     if (!deps.telegramTable) {
       notConfigured(res, "table");

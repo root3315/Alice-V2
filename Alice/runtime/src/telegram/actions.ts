@@ -836,6 +836,149 @@ export async function sendPoll(
 }
 
 /**
+ * Голосует в нативном опросе Telegram (messages.sendVote).
+ *
+ * В mtcute 0.30 нет высокоуровневого метода голосования — используем Raw TL вызов,
+ * как другие raw-вызовы в этом файле (getInlineBotResults / contacts.search и т.п.).
+ *
+ * optionIndexes — 0-based порядковые номера вариантов в опросе (НЕ байты): сами байты
+ * (poll.answers[i].option) Алисе неизвестны, поэтому сначала тянем сообщение опроса
+ * через client.getMessages и сопоставляем индексы → option-байтам.
+ *
+ * Семантика повторного голоса: обычный опрос позволяет менять голос (повторный sendVote
+ * перезаписывает выбор); викторина (quiz) — нет, Telegram вернёт REVOTE_NOT_ALLOWED.
+ */
+export async function sendVote(
+  client: TelegramClient,
+  chatId: string | number,
+  msgId: number,
+  optionIndexes: number[],
+): Promise<{ voted: number[] }> {
+  await globalLimiter.acquire();
+  const peer = await client.resolvePeer(chatId);
+
+  // Тянем сообщение опроса, чтобы сопоставить индексы → option-байтам.
+  const [message] = await client.getMessages(chatId, [msgId]);
+  if (!message) {
+    throw new TelegramActionError("invalid_poll", `vote failed: message #${msgId} not found`, {
+      chatId: String(chatId),
+      msgId,
+    });
+  }
+
+  // Достаём сырой TL: media сообщения должна быть messageMediaPoll.
+  // Путь поля: Message.raw (tl.RawMessage) → .media (tl.TypeMessageMedia) → messageMediaPoll.poll.
+  const raw = message.raw;
+  const media = "media" in raw ? raw.media : undefined;
+  if (!media || media._ !== "messageMediaPoll") {
+    throw new TelegramActionError("invalid_poll", `vote failed: message #${msgId} is not a poll`, {
+      chatId: String(chatId),
+      msgId,
+    });
+  }
+
+  const poll = media.poll;
+  if (poll.closed) {
+    throw new TelegramActionError("invalid_poll", `vote failed: poll #${msgId} is closed`, {
+      chatId: String(chatId),
+      msgId,
+    });
+  }
+
+  const answers = poll.answers;
+  // Дедуп индексов с сохранением порядка.
+  let indexes = [...new Set(optionIndexes)];
+
+  // В одиночном опросе (не multipleChoice) допустим только один вариант — берём первый.
+  let truncatedToSingle = false;
+  if (!poll.multipleChoice && indexes.length > 1) {
+    indexes = [indexes[0]];
+    truncatedToSingle = true;
+  }
+
+  if (indexes.length === 0) {
+    throw new TelegramActionError("invalid_poll", "vote failed: no options chosen", {
+      chatId: String(chatId),
+      msgId,
+    });
+  }
+
+  // Валидация диапазона: каждый индекс должен указывать на существующий вариант.
+  for (const i of indexes) {
+    if (!Number.isInteger(i) || i < 0 || i >= answers.length) {
+      throw new TelegramActionError(
+        "invalid_poll",
+        `vote failed: option index ${i} out of range (0..${answers.length - 1})`,
+        { chatId: String(chatId), msgId },
+      );
+    }
+  }
+
+  if (truncatedToSingle) {
+    log.info("vote: single-choice poll — using only the first option", {
+      chatId: String(chatId),
+      msgId,
+      chosen: indexes[0],
+    });
+  }
+
+  // Индексы → option-байты выбранных ответов (poll.answers[i].option: Uint8Array).
+  // answers — TypePollAnswer (union); у пришедшего из сообщения опроса вариант всегда "pollAnswer".
+  const chosenBytes = indexes.map((i) => {
+    const answer = answers[i];
+    if (answer._ !== "pollAnswer") {
+      throw new TelegramActionError(
+        "invalid_poll",
+        `vote failed: option index ${i} has no votable bytes`,
+        { chatId: String(chatId), msgId },
+      );
+    }
+    return answer.option;
+  });
+
+  try {
+    await client.call({ _: "messages.sendVote", peer, msgId, options: chosenBytes });
+  } catch (error) {
+    if (tl.RpcError.is(error, "MESSAGE_POLL_CLOSED")) {
+      throw new TelegramActionError("invalid_poll", `vote failed: poll #${msgId} is closed`, {
+        chatId: String(chatId),
+        msgId,
+      });
+    }
+    if (tl.RpcError.is(error, "POLL_OPTION_INVALID")) {
+      throw new TelegramActionError("invalid_poll", "vote failed: chosen option is invalid", {
+        chatId: String(chatId),
+        msgId,
+      });
+    }
+    if (tl.RpcError.is(error, "POLL_OPTION_DUPLICATE")) {
+      throw new TelegramActionError("invalid_poll", "vote failed: duplicate option chosen", {
+        chatId: String(chatId),
+        msgId,
+      });
+    }
+    if (tl.RpcError.is(error, "REVOTE_NOT_ALLOWED")) {
+      // Викторина / уже проголосовано: повторное голосование запрещено.
+      throw new TelegramActionError(
+        "invalid_poll",
+        `vote failed: re-voting is not allowed for poll #${msgId} (quiz or already voted)`,
+        { chatId: String(chatId), msgId },
+      );
+    }
+    if (tl.RpcError.is(error, "MSG_ID_INVALID") || tl.RpcError.is(error, "MESSAGE_ID_INVALID")) {
+      throw new TelegramActionError("invalid_poll", `vote failed: invalid message id #${msgId}`, {
+        chatId: String(chatId),
+        msgId,
+      });
+    }
+    // PEER_ID_INVALID и прочие транспортные сбои классифицируем стандартно.
+    rethrowTelegramActionFailure(error, "send_vote", { chatId: String(chatId), msgId });
+  }
+
+  return { voted: indexes };
+}
+
+/**
  * Удаляет сообщения (двусторонний отзыв).
  */
 export async function deleteMessages(
