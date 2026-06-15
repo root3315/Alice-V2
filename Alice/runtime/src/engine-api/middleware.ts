@@ -223,6 +223,10 @@ export function withRequestLog(
     const start = performance.now();
     const skill = req.headers["x-alice-skill"] as string | undefined;
     res.on("finish", () => {
+      // Дашборд опрашивает /dashboard/* каждые ~5с — успешные опросы не логируем,
+      // чтобы не засорять консоль (ошибки >=400 по-прежнему пишем).
+      const path = (req.url ?? "/").split("?")[0];
+      if (req.method === "GET" && path.startsWith("/dashboard") && res.statusCode < 400) return;
       const duration = (performance.now() - start).toFixed(1);
       const tag = skill ? ` [${skill}]` : "";
       log.info(`${req.method} ${req.url}${tag} → ${res.statusCode} (${duration}ms)`);

@@ -17,6 +17,14 @@ import { actionLog, auditEvents, personalitySnapshots, tickLog } from "./schema.
 
 const log = createLogger("anomaly");
 
+// Троттл КОНСОЛЬНОГО лога повторяющихся аномалий: один и тот же type пишется не чаще
+// раза в LOG_THROTTLE_MS. В простое pressure_dead/api_stagnant держатся постоянно и иначе
+// спамят на каждом прогоне. На возвращаемый массив alerts НЕ влияет — health-watch/selfcheck/
+// дашборд продолжают видеть аномалии в реальном времени. Ключ — только по type (сообщение
+// api_stagnant содержит меняющийся std, поэтому по сообщению троттл бы не сработал).
+const LOG_THROTTLE_MS = 10 * 60_000;
+const lastLoggedAt = new Map<string, number>();
+
 export interface AnomalyAlert {
   level: "warn" | "error";
   type: string;
@@ -488,8 +496,11 @@ export function runAnomalyCheck(currentTick: number, G?: WorldModel): AnomalyAle
     log.warn("pressure_saturated: сбой проверки", e);
   }
 
-  // Вывод результатов
+  // Вывод результатов (с троттлом повторов по type, чтобы не засорять лог в простое)
+  const nowMs = Date.now();
   for (const alert of alerts) {
+    if (nowMs - (lastLoggedAt.get(alert.type) ?? 0) < LOG_THROTTLE_MS) continue;
+    lastLoggedAt.set(alert.type, nowMs);
     if (alert.level === "error") {
       log.error(`[${alert.type}] ${alert.message}`);
     } else {
