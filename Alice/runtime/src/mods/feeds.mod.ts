@@ -22,6 +22,7 @@
  *
  * @see docs/adr/167-rsshub-perception-channel.md
  */
+import { z } from "zod";
 import { createMod } from "../core/mod-builder.js";
 import { PromptBuilder } from "../core/prompt-style.js";
 import type { ContributionItem, ModContext } from "../core/types.js";
@@ -59,6 +60,13 @@ const lastFetchMs = new Map<string, number>();
 
 /** Ссылка на таймер поллинга (для очистки). */
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Пауза фонового поллинга (control-plane дашборда). Таймер продолжает тикать, но pollFeeds()
+ * выходит сразу при paused=true — кэш не обновляется (интернет-восприятие «на паузе»), а уже
+ * собранные записи живут по своему shelfLife. Module-global осознанно: поллинг — single-instance.
+ */
+let pollingPaused = false;
 
 /** Снимок конфигурации. */
 let feedsConfig: FeedsConfig | null = null;
@@ -126,6 +134,7 @@ async function fetchOneFeed(feed: FeedDef, now: number): Promise<void> {
  */
 async function pollFeeds(): Promise<void> {
   if (!feedsConfig) return;
+  if (pollingPaused) return; // control-plane пауза: не тянем новые записи
 
   const now = Date.now();
   const shelfLifeMs = feedsConfig.shelfLifeHours * 3600_000;
@@ -173,11 +182,27 @@ export function stopFeedPoller(): void {
   }
 }
 
+/**
+ * Пауза/возобновление фонового поллинга фидов (control-plane дашборда).
+ * Возвращает фактическое состояние после применения. Идемпотентна.
+ */
+export function setFeedsPolling(polling: boolean): { polling: boolean } {
+  pollingPaused = !polling;
+  log.info("feeds: polling set", { polling, paused: pollingPaused });
+  return { polling: !pollingPaused };
+}
+
+/** Текущее состояние поллинга (true = активен). */
+export function isFeedsPolling(): boolean {
+  return !pollingPaused;
+}
+
 /** Очищает кэш (для тестов). */
 export function _resetFeedCache(): void {
   feedCache.clear();
   lastFetchMs.clear();
   feedsConfig = null;
+  pollingPaused = false;
 }
 
 // ── Параметры поведенческой аутентичности ────────────────────────────────────
@@ -368,5 +393,18 @@ export const feedsMod = createMod<FeedsState>("feeds", {
         30, // priority: низкий (может быть урезан бюджетом токенов)
       ),
     ];
+  })
+  // Control-plane: пауза/возобновление поллинга фидов (вызывается дашбордом).
+  // БЕЗ affordance → невидима для LLM. Только переключает module-global pollingPaused —
+  // движок/contribute продолжают читать уже собранный кэш (на паузе он просто не пополняется).
+  .instruction("feeds_set_polling", {
+    params: z.object({
+      polling: z.coerce.boolean().describe("true = возобновить поллинг, false = поставить на паузу."),
+    }),
+    description: "Пауза/возобновление поллинга фидов (dashboard control-plane).",
+    impl(_ctx, args): unknown {
+      const state = setFeedsPolling(args.polling === true);
+      return { success: true, polling: state.polling };
+    },
   })
   .build();

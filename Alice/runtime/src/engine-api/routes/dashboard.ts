@@ -14,9 +14,16 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { asc, desc, eq, sql } from "drizzle-orm";
+import { runAnomalyCheck } from "../../db/anomaly.js";
 import { writeAuditEvent } from "../../db/audit.js";
 import { getDb } from "../../db/connection.js";
-import { actionLog, personalitySnapshots, silenceLog, tickLog } from "../../db/schema.js";
+import {
+  actionLog,
+  auditEvents,
+  personalitySnapshots,
+  silenceLog,
+  tickLog,
+} from "../../db/schema.js";
 import { analyzeVoiceDiversity } from "../../diagnostics/diversity.js";
 import { safeDisplayName } from "../../graph/display.js";
 import { getWorkiSnapshot } from "../../mods/worki.mod.js";
@@ -98,6 +105,7 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
           API_peak: number;
           A: number;
           contributions?: Record<string, Record<string, number>>;
+          prospectContributions?: Record<string, number>;
         }
       | null;
     if (p) {
@@ -120,6 +128,11 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
         for (const [entity, v] of Object.entries(contrib[dim] ?? {})) {
           totals[entity] = (totals[entity] ?? 0) + Number(v ?? 0);
         }
+      }
+      // Bug #4: prospect-вклады лежат в ОТДЕЛЬНОЙ per-entity карте (P_prospect не попадает в
+      // contributions) — без них давление на сущность недооценено. Складываем и их.
+      for (const [entity, v] of Object.entries(p.prospectContributions ?? {})) {
+        totals[entity] = (totals[entity] ?? 0) + Number(v ?? 0);
       }
       pressureByEntity = totals;
     }
@@ -164,13 +177,23 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
   try {
     for (const id of G.getEntitiesByType("contact")) {
       const c = G.getContact(id) as unknown as Record<string, unknown>;
+      const num = (k: string): number | null => (c[k] != null ? Number(c[k]) : null);
       contacts.push({
         name: safeDisplayName(G, id),
         tier: Number(c.tier ?? 0),
         relationType: c.relation_type ?? null,
-        trust: c.rv_trust != null ? Number(c.rv_trust) : null,
-        affection: c.rv_affection != null ? Number(c.rv_affection) : null,
-        familiarity: c.rv_familiarity != null ? Number(c.rv_familiarity) : null,
+        // Полный вектор отношений (ADR-178): все 5 измерений ∈ [0,1].
+        trust: num("rv_trust"),
+        affection: num("rv_affection"),
+        familiarity: num("rv_familiarity"),
+        respect: num("rv_respect"), // Bug #3: было отброшено
+        attraction: num("rv_attraction"), // Bug #3: было отброшено
+        // Velocity по измерениям (сглаженная EMA первой производной) — рост/спад связи.
+        velTrust: num("rv_vel_trust"),
+        velAffection: num("rv_vel_affection"),
+        velFamiliarity: num("rv_vel_familiarity"),
+        velRespect: num("rv_vel_respect"),
+        velAttraction: num("rv_vel_attraction"),
         romanticPhase: c.romantic_phase ?? null,
         interactions: Number(c.interaction_count ?? 0),
         risk: c.risk_level ?? null,
@@ -626,6 +649,113 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
     log.warn("dashboard worki failed", { err: (e as Error).message });
   }
 
+  // ── Лента действий / решений (action_log: что именно она сделала + почему) ───
+  // Panel #6: «что Алиса реально делала» — голос/цель/тип/текст/уверенность/успех/тик.
+  // Самый ценный артефакт для понимания автономного компаньона. messageText/reasoning
+  // обрезаем на стороне сервера (превью), чтобы не раздувать JSON.
+  let actionFeed: Array<Record<string, unknown>> = [];
+  try {
+    const d = getDb();
+    const rows = d
+      .select({
+        id: actionLog.id,
+        tick: actionLog.tick,
+        voice: actionLog.voice,
+        target: actionLog.target,
+        chatId: actionLog.chatId,
+        actionType: actionLog.actionType,
+        messageText: actionLog.messageText,
+        confidence: actionLog.confidence,
+        reasoning: actionLog.reasoning,
+        success: actionLog.success,
+        tcAfterward: actionLog.tcAfterward,
+        createdAt: actionLog.createdAt,
+      })
+      .from(actionLog)
+      .orderBy(desc(actionLog.id))
+      .limit(80)
+      .all();
+    const preview = (s: unknown, n: number): string | null => {
+      const t = typeof s === "string" ? s.trim() : "";
+      if (!t) return null;
+      return t.length > n ? `${t.slice(0, n)}…` : t;
+    };
+    actionFeed = rows.map((r) => {
+      // Цель в человекочитаемое имя, если узел известен.
+      let targetName: string | null = null;
+      const tgt = r.target ?? r.chatId ?? null;
+      if (tgt != null) {
+        const tid = String(tgt);
+        try {
+          targetName = G.has(tid) ? safeDisplayName(G, tid) : tid;
+        } catch {
+          targetName = tid;
+        }
+      }
+      return {
+        id: r.id,
+        tick: Number(r.tick ?? 0),
+        voice: r.voice ?? null,
+        target: targetName,
+        actionType: r.actionType ?? null,
+        message: preview(r.messageText, 160),
+        reasoning: preview(r.reasoning, 160),
+        confidence: r.confidence != null ? Number(r.confidence) : null,
+        success: r.success === true,
+        afterward: r.tcAfterward ?? null,
+        atMs: r.createdAt instanceof Date ? r.createdAt.getTime() : null,
+      };
+    });
+  } catch (e) {
+    log.warn("dashboard actionFeed failed", { err: (e as Error).message });
+  }
+
+  // ── Таймлайн аномалий + аудит-события (вынесено из selfcheck — Panel #8) ─────
+  // runAnomalyCheck() даёт живые алерты поля давления/голосов/личности (передаём G для
+  // инвариантов INV-1/INV-3). auditEvents — недавние warn/error из движка с временем.
+  let anomalies: Array<Record<string, unknown>> = [];
+  try {
+    const alerts = runAnomalyCheck(tick ?? 0, G);
+    if (Array.isArray(alerts)) {
+      anomalies = alerts.map((a) => ({
+        level: a.level,
+        type: a.type,
+        message: a.message,
+        tick: a.tick,
+      }));
+    }
+  } catch (e) {
+    log.warn("dashboard anomalies failed", { err: (e as Error).message });
+  }
+
+  let auditFeed: Array<Record<string, unknown>> = [];
+  try {
+    const d = getDb();
+    const rows = d
+      .select({
+        id: auditEvents.id,
+        tick: auditEvents.tick,
+        level: auditEvents.level,
+        source: auditEvents.source,
+        message: auditEvents.message,
+        createdAt: auditEvents.createdAt,
+      })
+      .from(auditEvents)
+      .orderBy(desc(auditEvents.id))
+      .limit(60)
+      .all();
+    auditFeed = rows.map((r) => ({
+      id: r.id,
+      tick: Number(r.tick ?? 0),
+      level: r.level ?? null,
+      source: r.source ?? null,
+      message: typeof r.message === "string" ? r.message : "",
+      atMs: r.createdAt instanceof Date ? r.createdAt.getTime() : null,
+    }));
+  } catch (e) {
+    log.warn("dashboard auditFeed failed", { err: (e as Error).message });
+  }
+
   // ── Аптайм процесса движка (дешёвая дополнительная метрика) ─────────────────
   let uptimeSec: number | null = null;
   try {
@@ -668,6 +798,8 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
       worki: worki.length,
       workiRunning: worki.filter((w) => w.status === "running").length,
       workiUndelivered: worki.filter((w) => w.delivered !== true).length,
+      anomalies: anomalies.length,
+      anomalyErrors: anomalies.filter((a) => a.level === "error").length,
     },
     channels: channels.slice(0, 60),
     contacts: contacts.slice(0, 40),
@@ -684,6 +816,9 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
     voices,
     selfcheck,
     worki,
+    actionFeed,
+    anomalies,
+    auditFeed,
   };
 }
 
@@ -949,6 +1084,11 @@ const DASHBOARD_HTML = `<!doctype html>
   .kv .item .v { font-size:16px; font-weight:600; margin-top:2px; }
   .kv .item .v.pos { color:var(--good); } .kv .item .v.neg { color:var(--bad); }
   .tag { display:inline-block; background:#0e1116; border:1px solid var(--line); border-radius:6px; padding:1px 6px; font-size:11px; color:var(--mut); margin:2px 2px 0 0; }
+  .vel { font-size:9px; vertical-align:middle; } .vel.up { color:var(--good); } .vel.down { color:var(--bad); }
+  .lvl-error { color:var(--bad); } .lvl-warn { color:var(--warn); } .lvl-fatal { color:#ff5577; font-weight:600; }
+  .feed-text { color:var(--mut); font-size:12px; max-width:340px; overflow:hidden; text-overflow:ellipsis; }
+  .scrollbox { max-height:420px; overflow-y:auto; }
+  .scrollbox table { border-collapse:collapse; } .scrollbox thead th { position:sticky; top:0; background:var(--card); z-index:1; }
   /* ── Control-plane (без авторизации — решение владельца) ── */
   .ctlbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:12px; }
   .ctlbtn { background:#1f6feb22; border:1px solid #1f6feb55; color:var(--acc); border-radius:8px; font:inherit; font-size:12px; padding:5px 12px; cursor:pointer; }
@@ -1014,6 +1154,10 @@ const DASHBOARD_HTML = `<!doctype html>
 
   <!-- ════════ АКТИВНОСТЬ ════════ -->
   <section class="tabpage" data-tab="activity">
+    <div class="panel">
+      <h2>Лента действий <span class="hint">что Алиса делала + почему (голос / цель / тип / текст / уверенность / исход)</span></h2>
+      <div id="actionFeed"></div>
+    </div>
     <div class="grid">
       <div class="panel"><h2>Активность по тикам <span class="hint">действия / успешные</span></h2><div class="chartbox"><canvas id="activityChart"></canvas></div></div>
       <div class="panel"><h2>Нагрузка API <span class="hint">последние тики</span></h2><div class="chartbox"><canvas id="apiChart"></canvas></div></div>
@@ -1069,13 +1213,26 @@ const DASHBOARD_HTML = `<!doctype html>
   <!-- ════════ WORKI ════════ -->
   <section class="tabpage" data-tab="worki">
     <div class="cards" id="workiCards"></div>
+    <div class="ctlbar"><span class="ctlmsg" id="workiMsg"></span></div>
     <div class="panel">
-      <h2>В работе <span class="hint">текущие задачи worki (read-only)</span></h2>
+      <h2>В работе <span class="hint">текущие задачи worki · «снять» убирает зависшую (dismiss_worki)</span></h2>
       <div id="workiActive"></div>
     </div>
     <div class="panel">
-      <h2>Недавние <span class="hint">завершённые / недоставленные</span></h2>
+      <h2>Недавние <span class="hint">завершённые / недоставленные · «снять» чистит застрявшие</span></h2>
       <div id="workiRecent"></div>
+    </div>
+  </section>
+
+  <!-- ════════ ЗДОРОВЬЕ (аномалии + аудит) ════════ -->
+  <section class="tabpage" data-tab="health">
+    <div class="panel">
+      <h2>Аномалии <span class="hint">живые алерты поля давления / голосов / личности (runAnomalyCheck)</span></h2>
+      <div id="anomalies"></div>
+    </div>
+    <div class="panel">
+      <h2>Аудит-события <span class="hint">недавние warn / error из движка с временем</span></h2>
+      <div id="auditFeed"></div>
     </div>
   </section>
 
@@ -1091,6 +1248,22 @@ function fmtInt(x){ return x==null?'—':Number(x).toLocaleString('ru'); }
 function fmtDur(sec){ if(sec==null) return '—'; sec=Math.floor(sec); const d=Math.floor(sec/86400),h=Math.floor(sec%86400/3600),m=Math.floor(sec%3600/60); if(d>0) return d+'д '+h+'ч'; if(h>0) return h+'ч '+m+'м'; if(m>0) return m+'м'; return sec+'с'; }
 function fmtAgo(ms){ if(!ms) return '—'; const s=Math.floor((Date.now()-Number(ms))/1000); if(s<0) return 'скоро'; if(s<60) return s+'с назад'; const m=Math.floor(s/60); if(m<60) return m+'м назад'; const h=Math.floor(m/60); if(h<24) return h+'ч назад'; return Math.floor(h/24)+'д назад'; }
 function esc(s){ return String(s==null?'':s).replace(/[<>&"']/g,m=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[m])); }
+/* Стрелка velocity отношения: rising/falling по знаку производной (мёртвая зона у нуля). */
+function velArrow(v){ if(v==null||Math.abs(v)<1e-4) return ''; return v>0?' <span class="vel up">▲</span>':' <span class="vel down">▼</span>'; }
+/* Ячейка одного измерения вектора отношений ∈ [0,1] → бар v*100 clamp 0..100 (Bug #2: rv_* уже [0,1],
+   старое ((v+1)/2)*100 раздувало; нейтральные 0.3 показывались ~65%). + стрелка velocity. */
+function rvCell(v,vel){
+  if(v==null) return '<td class="num">—</td>';
+  const w=Math.max(0,Math.min(100,Number(v)*100));
+  return '<td><div class="mini"><div class="bar"><i style="width:'+w+'%"></i></div><span>'+fmtN(v)+velArrow(vel)+'</span></div></td>';
+}
+/* Важность темы — enum (trivial/minor/major/critical), а НЕ число: рендерим цветной меткой. */
+function weightTag(w){
+  if(w==null||w==='') return '<span class="empty">—</span>';
+  const k=String(w).toLowerCase();
+  const cls={trivial:'risk-low',minor:'r-friend',major:'admin',critical:'risk-high'}[k]||'sub';
+  return '<span class="pill '+cls+'">'+esc(w)+'</span>';
+}
 const ax = { color:'#8b97a7' };
 
 /* ── Control-plane: POST /dashboard/control. Без авторизации (решение владельца). ──
@@ -1127,6 +1300,7 @@ const TABS = [
   { id:'activity',  label:'Активность', badge:d=>d&&d.db?d.db.actions:null },
   { id:'memory',    label:'Память',     badge:d=>d&&d.summary?d.summary.facts:null },
   { id:'worki',     label:'Worki',      badge:d=>d&&d.summary?d.summary.worki:null },
+  { id:'health',    label:'Здоровье',   badge:d=>d&&d.summary?d.summary.anomalies:null },
   { id:'selfcheck', label:'Self-report',badge:d=>d&&d.selfcheck&&d.selfcheck.sections?d.selfcheck.sections.length:null },
 ];
 let activeTab = (location.hash||'').replace('#','') || 'overview';
@@ -1176,6 +1350,10 @@ function renderHeader(d){
   const undel = (d.summary&&d.summary.workiUndelivered)||0;
   const badW = $('badge-worki');
   if(badW){ if(undel>0){ badW.classList.add('alert'); } else badW.classList.remove('alert'); }
+  // Алерт-бейдж: аномалии уровня error → вкладка Здоровье.
+  const anomErr = (d.summary&&d.summary.anomalyErrors)||0;
+  const badH = $('badge-health');
+  if(badH){ if(anomErr>0){ badH.classList.add('alert'); } else badH.classList.remove('alert'); }
 }
 
 /* ════════ Рендеры по вкладкам ════════ */
@@ -1249,7 +1427,7 @@ function renderCognition(d){
   pm.push(['Здоровье', pers.health??'—', '']);
   pm.push(['Drift', pers.driftMagnitude!=null?fmtN(pers.driftMagnitude,5):'—', '']);
   pm.push(['Velocity', pers.velocity!=null?Number(pers.velocity).toExponential(2):'—', '']);
-  pm.push(['Snapshot\\'ов', fmtInt(pers.snapshotCount), '']);
+  pm.push(['Снимков π', fmtInt(pers.snapshotCount), '']);
   if(pers.perDimDrift&&pers.labels){
     pers.labels.forEach((l,i)=>{ const dv=pers.perDimDrift[i]; pm.push(['Δ '+l.short, (dv>0?'+':'')+fmtN(dv,4), dv>0?'pos':(dv<0?'neg':'')]); });
   }
@@ -1302,20 +1480,25 @@ function renderSocial(d){
     ch.map(c=>'<tr><td>'+(c.unreachable?'<span class="gone">'+esc(c.name)+' (нет)</span>':esc(c.name))+'</td><td>'+esc(c.chatType||'')+'</td><td class="num">'+c.unread+'</td><td><span class="pill '+(c.role==='owner'?'owner':c.role==='admin'?'admin':'sub')+'">'+esc(c.role)+'</span></td><td class="num">'+c.pendingDirected+'</td><td class="num">'+(c.consecutiveOutgoing??0)+'</td><td class="num">'+fmtN(c.habituation)+'</td><td class="num">'+fmtN(c.pressure)+'</td><td>'+(c.risk&&c.risk!=='none'?'<span class="pill risk-'+esc(c.risk)+'">'+esc(c.risk)+'</span>':'—')+'</td><td class="num">'+(c.unreachable?'✗':fmtPct(c.reachability))+'</td></tr>').join('')+'</table>'
     : '<div class="empty">нет каналов</div>';
 
-  // контакты
+  // контакты — полный вектор отношений (ADR-178): 5 измерений ∈ [0,1] + velocity + фаза.
   const ct=d.contacts||[];
-  $('contacts').innerHTML = ct.length ? '<table><tr><th>Контакт</th><th>Tier</th><th>Отношения</th><th>Доверие</th><th>Привяз.</th><th>Взаимод.</th><th>Давление</th><th>Активность</th></tr>'+
+  $('contacts').innerHTML = ct.length ? '<table><tr><th>Контакт</th><th>Tier</th><th>Отношения</th><th>Доверие</th><th>Привяз.</th><th>Знаком.</th><th>Уважение</th><th>Влечение</th><th>Взаимод.</th><th>Давление</th><th>Активность</th></tr>'+
     ct.map(c=>{
-      const rt=c.relationType||'unknown'; const trust=c.trust; const tw=trust!=null?Math.max(0,Math.min(100,((trust+1)/2)*100)):0;
+      const rt=c.relationType||'unknown';
       const phase=(c.romanticPhase&&c.romanticPhase!=='none')?(' <span class="tag">'+esc(c.romanticPhase)+'</span>'):'';
-      return '<tr><td>'+esc(c.name)+(c.isBot?' <span class="tag">bot</span>':'')+phase+'</td><td class="num">'+c.tier+'</td><td><span class="pill r-'+esc(rt)+'">'+esc(rt)+'</span></td><td><div class="mini">'+(trust!=null?'<div class="bar"><i style="width:'+tw+'%"></i></div><span>'+fmtN(trust)+'</span>':'—')+'</div></td><td class="num">'+(c.affection!=null?fmtN(c.affection):'—')+'</td><td class="num">'+(c.interactions??0)+'</td><td class="num">'+fmtN(c.pressure)+'</td><td class="num">'+(c.lastSeen?fmtAgo(c.lastSeen):'—')+'</td></tr>';
+      return '<tr><td>'+esc(c.name)+(c.isBot?' <span class="tag">bot</span>':'')+phase+'</td>'+
+        '<td class="num">'+c.tier+'</td>'+
+        '<td><span class="pill r-'+esc(rt)+'">'+esc(rt)+'</span></td>'+
+        rvCell(c.trust,c.velTrust)+rvCell(c.affection,c.velAffection)+rvCell(c.familiarity,c.velFamiliarity)+rvCell(c.respect,c.velRespect)+rvCell(c.attraction,c.velAttraction)+
+        '<td class="num">'+(c.interactions??0)+'</td><td class="num">'+fmtN(c.pressure)+'</td><td class="num">'+(c.lastSeen?fmtAgo(c.lastSeen):'—')+'</td></tr>';
     }).join('')+'</table>'
     : '<div class="empty">нет контактов</div>';
 
-  // открытые темы
+  // открытые темы (Bug #5: «Вес» — это enum trivial/minor/major/critical, рендерим меткой,
+  // а не в числовой колонке; id оборачиваем в esc())
   const tp=d.topics||[];
-  $('topics').innerHTML = tp.length ? '<table><tr><th>#</th><th>Тема</th><th>Статус</th><th>Вес</th><th>Давл.</th><th>Релев.</th></tr>'+
-    tp.map(t=>'<tr><td>'+(t.id??'')+'</td><td>'+esc(t.title)+(t.involves&&t.involves.length?'<br><span class="tag">'+t.involves.map(esc).join('</span><span class="tag">')+'</span>':'')+'</td><td>'+esc(t.status)+'</td><td>'+esc(t.weight)+'</td><td class="num">'+fmtN(t.pressure)+'</td><td class="num">'+fmtN(t.relevance)+'</td></tr>').join('')+'</table>'
+  $('topics').innerHTML = tp.length ? '<table><tr><th>#</th><th>Тема</th><th>Статус</th><th>Важность</th><th>Давл.</th><th>Релев.</th></tr>'+
+    tp.map(t=>'<tr><td>'+esc(t.id??'')+'</td><td>'+esc(t.title)+(t.involves&&t.involves.length?'<br><span class="tag">'+t.involves.map(esc).join('</span><span class="tag">')+'</span>':'')+'</td><td>'+esc(t.status)+'</td><td>'+weightTag(t.weight)+'</td><td class="num">'+fmtN(t.pressure)+'</td><td class="num">'+fmtN(t.relevance)+'</td></tr>').join('')+'</table>'
     : '<div class="empty">нет открытых тем</div>';
 
   // кризисные каналы
@@ -1324,7 +1507,30 @@ function renderSocial(d){
     : '<div class="empty">кризисных каналов нет</div>';
 }
 
+/* Panel #6: лента действий — что Алиса реально делала + почему. Скролл-таблица из action_log. */
+function renderActionFeed(d){
+  const af=d.actionFeed||[];
+  $('actionFeed').innerHTML = af.length
+    ? '<div class="scrollbox"><table><thead><tr><th>Тик</th><th>Голос</th><th>Тип</th><th>Цель</th><th>Текст / резон</th><th>Увер.</th><th>Исход</th><th>Когда</th></tr></thead><tbody>'+
+      af.map(a=>{
+        const txt=a.message?('<div class="feed-text">'+esc(a.message)+'</div>'):'';
+        const why=a.reasoning?('<div class="feed-text" style="opacity:.7">'+esc(a.reasoning)+'</div>'):'';
+        const both=(txt||why)?(txt+why):'<span class="empty">—</span>';
+        const aw=a.afterward?(' <span class="tag">'+esc(a.afterward)+'</span>'):'';
+        return '<tr><td class="num">'+esc(a.tick)+'</td>'+
+          '<td>'+(a.voice?'<span class="tag">'+esc(a.voice)+'</span>':'—')+'</td>'+
+          '<td>'+esc(a.actionType||'—')+aw+'</td>'+
+          '<td>'+esc(a.target||'—')+'</td>'+
+          '<td>'+both+'</td>'+
+          '<td class="num">'+(a.confidence!=null?fmtN(a.confidence):'—')+'</td>'+
+          '<td>'+(a.success?'<span class="pill r-close_friend">ok</span>':'<span class="pill risk-high">fail</span>')+'</td>'+
+          '<td class="num">'+(a.atMs?fmtAgo(a.atMs):'—')+'</td></tr>';
+      }).join('')+'</tbody></table></div>'
+    : '<div class="empty">нет записей действий</div>';
+}
+
 function renderActivity(d){
+  renderActionFeed(d);
   const db=d.db||{};
   const ab=db.activityBuckets||[];
   if(ab.length) upsert('activityChart','line',{labels:ab.map(x=>'t'+Math.round(x.bucket)),datasets:[
@@ -1367,7 +1573,7 @@ function renderMemory(d){
 
   const rm=d.reminders||[];
   $('reminders').innerHTML = rm.length ? '<table><tr><th>#</th><th>Тип</th><th>Действие</th><th>Цель</th><th>Когда</th><th></th></tr>'+
-    rm.map(r=>'<tr><td>'+(r.id??'')+'</td><td>'+esc(r.type)+'</td><td>'+esc(r.action)+'</td><td>'+esc(r.target??'')+'</td><td class="num">'+(r.targetMs?new Date(Number(r.targetMs)).toLocaleString('ru'):(r.intervalMs?('каждые '+fmtDur(Number(r.intervalMs)/1000)):'—'))+'</td><td>'+(r.id!=null?'<button class="ctlbtn sm danger" data-cancel-task="'+esc(r.id)+'">отменить</button>':'')+'</td></tr>').join('')+'</table><div class="ctlmsg" id="rmMsg"></div>'
+    rm.map(r=>'<tr><td>'+esc(r.id??'')+'</td><td>'+esc(r.type)+'</td><td>'+esc(r.action)+'</td><td>'+esc(r.target??'')+'</td><td class="num">'+(r.targetMs?new Date(Number(r.targetMs)).toLocaleString('ru'):(r.intervalMs?('каждые '+fmtDur(Number(r.intervalMs)/1000)):'—'))+'</td><td>'+(r.id!=null?'<button class="ctlbtn sm danger" data-cancel-task="'+esc(r.id)+'">отменить</button>':'')+'</td></tr>').join('')+'</table><div class="ctlmsg" id="rmMsg"></div>'
     : '<div class="empty">нет активных напоминаний</div>';
   // Делегируем клики по кнопкам отмены задач (cancel_task).
   $('reminders').querySelectorAll('button[data-cancel-task]').forEach(b=>{
@@ -1394,7 +1600,7 @@ function workiStatusPill(st){
 }
 function workiTable(rows){
   if(!rows.length) return null;
-  return '<table><tr><th>Вид</th><th>Задача</th><th>Статус</th><th>Прогресс</th><th>Доставлено</th><th>Возраст</th></tr>'+
+  return '<table><tr><th>Вид</th><th>Задача</th><th>Статус</th><th>Прогресс</th><th>Доставлено</th><th>Возраст</th><th></th></tr>'+
     rows.map(w=>'<tr>'+
       '<td><span class="tag">'+esc(w.kind)+'</span></td>'+
       '<td>'+esc(w.task)+(w.project?'<br><span class="tag">'+esc(w.project)+'</span>':'')+'</td>'+
@@ -1402,7 +1608,20 @@ function workiTable(rows){
       '<td>'+(w.latestProgress?'<span style="color:#8b97a7">'+esc(w.latestProgress)+'</span>':'<span class="empty">—</span>')+'</td>'+
       '<td>'+(w.delivered?'<span class="pill r-close_friend">да</span>':'<span class="pill risk-high">нет</span>')+'</td>'+
       '<td class="num">'+(w.completedMs?fmtAgo(w.completedMs):(w.createdMs?fmtAgo(w.createdMs):'—'))+'</td>'+
+      '<td>'+(w.id!=null?'<button class="ctlbtn sm danger" data-dismiss-worki="'+esc(w.id)+'">снять</button>':'')+'</td>'+
     '</tr>').join('')+'</table>';
+}
+/* Делегирование кликов по кнопкам «снять» задачу worki (dismiss_worki) внутри контейнера. */
+function wireWorkiDismiss(containerId){
+  const root=$(containerId); if(!root) return;
+  root.querySelectorAll('button[data-dismiss-worki]').forEach(b=>{
+    b.addEventListener('click', async ()=>{
+      const id=b.getAttribute('data-dismiss-worki');
+      b.disabled=true;
+      try { await ctl({action:'dismiss_worki', id}); ctlMsg('workiMsg','задача снята','ok'); setTimeout(refresh, 400); }
+      catch(e){ b.disabled=false; ctlMsg('workiMsg','не вышло: '+e.message,'err'); }
+    });
+  });
 }
 function renderWorki(d){
   const wk = d.worki||[];
@@ -1416,6 +1635,30 @@ function renderWorki(d){
   ].join('');
   $('workiActive').innerHTML = workiTable(running) || '<div class="empty">нет задач в работе</div>';
   $('workiRecent').innerHTML = workiTable(recent) || '<div class="empty">нет недавних задач</div>';
+  wireWorkiDismiss('workiActive');
+  wireWorkiDismiss('workiRecent');
+}
+
+/* Panel #8: таймлайн аномалий + аудит-события (вынесено из selfcheck в отдельную вкладку). */
+function renderHealth(d){
+  const an=d.anomalies||[];
+  $('anomalies').innerHTML = an.length
+    ? '<table><tr><th>Уровень</th><th>Тип</th><th>Сообщение</th><th>Тик</th></tr>'+
+      an.map(a=>'<tr><td><span class="pill '+(a.level==='error'?'risk-high':'risk-medium')+'">'+esc(a.level)+'</span></td>'+
+        '<td><span class="tag">'+esc(a.type)+'</span></td>'+
+        '<td class="lvl-'+esc(a.level)+'">'+esc(a.message)+'</td>'+
+        '<td class="num">'+esc(a.tick)+'</td></tr>').join('')+'</table>'
+    : '<div class="empty">аномалий не обнаружено</div>';
+
+  const au=d.auditFeed||[];
+  $('auditFeed').innerHTML = au.length
+    ? '<div class="scrollbox"><table><thead><tr><th>Когда</th><th>Тик</th><th>Уровень</th><th>Источник</th><th>Сообщение</th></tr></thead><tbody>'+
+      au.map(e=>'<tr><td class="num">'+(e.atMs?fmtAgo(e.atMs):'—')+'</td>'+
+        '<td class="num">'+esc(e.tick)+'</td>'+
+        '<td class="lvl-'+esc(e.level)+'">'+esc(e.level)+'</td>'+
+        '<td>'+esc(e.source||'—')+'</td>'+
+        '<td><div class="feed-text" style="max-width:520px">'+esc(e.message)+'</div></td></tr>').join('')+'</tbody></table></div>'
+    : '<div class="empty">нет аудит-событий</div>';
 }
 
 /* Локальный self-report для on-demand selfcheck-кнопок (минует автообновляемые lastData). */
@@ -1457,7 +1700,7 @@ function wireControls(){
   });
 }
 
-const RENDERERS = { overview:renderOverview, cognition:renderCognition, social:renderSocial, activity:renderActivity, memory:renderMemory, worki:renderWorki, selfcheck:renderSelfcheck };
+const RENDERERS = { overview:renderOverview, cognition:renderCognition, social:renderSocial, activity:renderActivity, memory:renderMemory, worki:renderWorki, health:renderHealth, selfcheck:renderSelfcheck };
 function renderTab(id, d){ try { (RENDERERS[id]||(()=>{}))(d); } catch(e){ console.error('render '+id, e); } }
 
 async function refresh(){

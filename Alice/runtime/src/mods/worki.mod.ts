@@ -722,6 +722,28 @@ export const workiMod = createMod<WorkiState>("worki", {
       return { success: true, message: `Пушу ветку ${branch} и открываю PR — ссылка придёт в этот чат.` };
     },
   })
+  // Control-plane: снять зависшую/недоставленную задачу из очереди (вызывается дашбордом).
+  // БЕЗ affordance → невидима для LLM (только engine-owned dispatch). Чистит и `pending`
+  // (живая очередь доставки), и ctx.state.saved (персист недоставленных), чтобы задача не
+  // регидрировалась после рестарта. Идемпотентна: повторный вызов на уже снятый id → success.
+  .instruction("worki_dismiss", {
+    params: z.object({
+      id: z.coerce.string().trim().min(1).describe("ID задачи worki из снимка очереди (getWorkiSnapshot)."),
+    }),
+    description: "Снять зависшую/недоставленную задачу worki из очереди (dashboard control-plane).",
+    impl(ctx, args): unknown {
+      const id = String(args.id);
+      const wasPending = pending.delete(id);
+      let wasSaved = false;
+      if (ctx.state.saved && id in ctx.state.saved) {
+        delete ctx.state.saved[id];
+        wasSaved = true;
+      }
+      const removed = wasPending || wasSaved;
+      log.info("worki_dismiss", { id, wasPending, wasSaved });
+      return { success: true, id, removed };
+    },
+  })
   // Честная детекция доставки: она отправила сообщение в спросивший чат → результат доставлен.
   .listen("SEND_MESSAGE", (_ctx, args) => {
     const chatId = args.chatId ? String(args.chatId) : null;
