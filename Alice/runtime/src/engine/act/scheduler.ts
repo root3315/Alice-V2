@@ -113,6 +113,12 @@ export interface EngagementSlot {
    * @see C1 in adr130-review.md
    */
   preempted: boolean;
+  /**
+   * Burst settle: жёсткий предел «одна пауза-дочитывание на engagement».
+   * true после того, как окно дочитывания уже было применено к этому слоту —
+   * предотвращает голодание/зависание (никогда не откладываем дважды).
+   */
+  burstSettled: boolean;
 }
 
 // ── API планировщика ─────────────────────────────────────────────────────────
@@ -164,6 +170,7 @@ export async function initSlot(ctx: ActContext, item: ActionQueueItem): Promise<
     startMs: Date.now(),
     watcher: null,
     preempted: false,
+    burstSettled: false,
   };
 }
 

@@ -4,7 +4,11 @@ import { emptyScriptExecutionResult } from "../src/core/script-execution.js";
 import { closeDb, getDb, initDb } from "../src/db/connection.js";
 import { actionLog } from "../src/db/schema.js";
 import { ActionQueue, type ActionQueueItem } from "../src/engine/action-queue.js";
-import { type ActContext, startReActLoop } from "../src/engine/react/orchestrator.js";
+import {
+  type ActContext,
+  shouldSettleBurst,
+  startReActLoop,
+} from "../src/engine/react/orchestrator.js";
 import type { SubcycleResult } from "../src/engine/react/types.js";
 import { WorldModel } from "../src/graph/world-model.js";
 import { EventBuffer } from "../src/telegram/events.js";
@@ -347,5 +351,33 @@ describe("react orchestrator staleness", () => {
     const rows = getDb().select().from(actionLog).all();
     expect(rows[0]?.actionType).toBe("message");
     expect(rows[0]?.engagementOutcome).toBe("resting");
+  });
+});
+
+describe("burst settle decision (shouldSettleBurst)", () => {
+  const now = 1_000_000;
+
+  it("defers once when the most recent incoming arrived very recently (mid-burst)", () => {
+    // последнее входящее 500мс назад → серия ещё не осела → откладываем
+    expect(shouldSettleBurst(now - 500, now, false)).toBe(true);
+  });
+
+  it("responds immediately (no defer) when the last message is already settled", () => {
+    // последнее входящее 5с назад (> окна) → отвечаем сразу, без добавленной задержки
+    expect(shouldSettleBurst(now - 5000, now, false)).toBe(false);
+  });
+
+  it("never defers more than once per engagement (hard cap)", () => {
+    // даже если входящее свежее, но пауза уже применялась → больше не откладываем
+    expect(shouldSettleBurst(now - 500, now, true)).toBe(false);
+  });
+
+  it("does not defer when there is no incoming timestamp", () => {
+    expect(shouldSettleBurst(undefined, now, false)).toBe(false);
+  });
+
+  it("does not defer exactly at the window boundary", () => {
+    // граница окна (1800мс) считается осевшей → без задержки
+    expect(shouldSettleBurst(now - 1800, now, false)).toBe(false);
   });
 });

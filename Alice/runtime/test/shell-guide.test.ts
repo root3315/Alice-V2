@@ -71,6 +71,16 @@ describe("buildShellGuide", () => {
     expect(guide.indexOf(batchedTitle)).toBeLessThan(guide.indexOf(contextOnlyTitle));
   });
 
+  it("private chat guide frames multi-message as her free, contextual choice (not limited, not forced)", () => {
+    const guide = buildShellGuide({ chatTargetType: "private_person" });
+
+    // Свобода: не ограничена одним сообщением — может пару подряд, как живой человек
+    expect(guide).toContain("не ограничена одним сообщением");
+    expect(guide).toContain("пару подряд");
+    // Но по смыслу, не ради количества (её выбор по ситуации, без принуждения/рандома)
+    expect(guide).toContain("по смыслу, а не ради количества");
+  });
+
   it("uses valid self sense trait examples", () => {
     const guide = buildShellGuide({ chatTargetType: "group" });
 

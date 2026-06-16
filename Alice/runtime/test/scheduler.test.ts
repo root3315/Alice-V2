@@ -58,6 +58,7 @@ function makeSlot(
     startMs: Date.now(),
     watcher: null,
     preempted: false,
+    burstSettled: false,
   };
 }
 

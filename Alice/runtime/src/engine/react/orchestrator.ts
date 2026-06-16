@@ -61,6 +61,20 @@ const log = createLogger("react:orchestrator");
 /** Минимальное структурированное окно отсутствия для afterward=resting. Более длинные ночные ритмы управляются dormant FSM. */
 const RESTING_DURATION_MS = 30 * 60 * 1000;
 
+/**
+ * Окно «дай очереди сообщений осесть» (мс).
+ *
+ * Если самое свежее входящее сообщение в чате прилетело совсем недавно (< этого окна),
+ * собеседник, скорее всего, ещё дописывает серию («Привет» → «Как дела?)»). Как живой человек,
+ * Алиса ждёт удар сердца, чтобы дочитать всю серию целиком, прежде чем отвечать — тогда она
+ * составляет ОДИН ответ, видя весь всплеск, а не отвечает на половину.
+ *
+ * Безопасность: окно применяется не дольше одной паузы на engagement (см. slot.burstSettled),
+ * и только когда последнее сообщение действительно свежее. Если оно уже «осело» (старше окна),
+ * Алиса отвечает немедленно — в обычном случае задержки нет.
+ */
+const BURST_SETTLE_MS = 1800;
+
 function isConversationOutput(action: CompletedAction): boolean {
   return (
     action.kind === "sent" ||
@@ -127,6 +141,29 @@ function isStale(
 // ADR-214 Wave A: applyFeedbackArc удалён (зависел от ExecutionStats, входит в мёртвый конвейер).
 // В shell-native архитектуре действия Telegram выполняются через HTTP Engine API,
 // декремент pending_directed и обновление reachability обрабатываются маршрутами Engine API.
+
+/**
+ * Решение об окне дочитывания: нужно ли отложить ответ на удар сердца, чтобы дала осесть
+ * серия сообщений собеседника (см. BURST_SETTLE_MS).
+ *
+ * Чистая функция — вынесена для тестируемости.
+ * Откладываем ТОЛЬКО когда: (a) пауза ещё не применялась к этому слоту (жёсткий предел 1/turn),
+ * и (b) последнее входящее действительно свежее (моложе окна). Иначе — отвечаем немедленно,
+ * без добавленной задержки.
+ *
+ * @param lastIncomingMs настенное время последнего входящего сообщения (или undefined)
+ * @param nowMs текущее настенное время
+ * @param alreadySettled был ли слот уже однажды отложен
+ */
+export function shouldSettleBurst(
+  lastIncomingMs: number | undefined,
+  nowMs: number,
+  alreadySettled: boolean,
+): boolean {
+  if (alreadySettled) return false;
+  if (lastIncomingMs === undefined) return false;
+  return nowMs - lastIncomingMs < BURST_SETTLE_MS;
+}
 
 /**
  * Завершение engagement slot: защитный flush + processResult + cooldown + снятие блокировки.
@@ -375,6 +412,45 @@ export async function startReActLoop(ctx: ActContext): Promise<void> {
       });
     }
     lastTarget = next.item.target;
+
+    // ── 4b. Окно дочитывания (burst settle) — дать серии сообщений осесть ──
+    // Если последнее входящее свежее (собеседник, вероятно, ещё дописывает серию),
+    // ждём короткую ограниченную паузу и перечитываем сообщения, чтобы вся серия попала
+    // в контекст до составления ответа. Жёсткий предел: не более одной паузы на engagement
+    // (slot.burstSettled), поэтому слот никогда не голодает и не зависает. Ответ не пропускается
+    // и не меняется по содержанию — меняется только МОМЕНТ (на удар сердца позже, с полным контекстом).
+    if (next.targetChannelId && ctx.G.has(next.targetChannelId)) {
+      const lastIncomingMs = ctx.G.getChannel(next.targetChannelId).last_incoming_ms;
+      if (shouldSettleBurst(lastIncomingMs, Date.now(), next.burstSettled)) {
+        next.burstSettled = true; // жёсткий предел: одна пауза на engagement
+        log.info("Burst settle: deferring one beat to let the message burst land", {
+          target: next.item.target,
+          settleMs: BURST_SETTLE_MS,
+        });
+        await new Promise((resolve) => setTimeout(resolve, BURST_SETTLE_MS));
+        // Перечитываем сообщения, чтобы прицепившиеся реплики серии попали в контекст этого subcycle.
+        if (next.targetChatId) {
+          const chatType = ctx.G.has(next.item.target ?? "")
+            ? ctx.G.getChannel(next.item.target ?? "").chat_type
+            : undefined;
+          try {
+            next.liveMessages = await fetchRecentMessages(
+              ctx.client,
+              next.targetChatId,
+              ctx.config,
+              { chatType },
+            );
+          } catch (err) {
+            // Перечитывание не критично: если упало, продолжаем с уже имеющимися сообщениями —
+            // ответ не пропускается, просто без свежей дочитки.
+            log.warn("Burst settle: refetch failed → continue with existing messages", {
+              target: next.item.target,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+      }
+    }
 
     // ── 5. Устанавливаем цель Dispatcher ──
     ctx.dispatcher.dispatch("SET_CONTACT_TARGET", { nodeId: next.item.target ?? "" });
