@@ -45,6 +45,7 @@ beforeEach(() => {
       disabled INTEGER NOT NULL DEFAULT 0,
       signature INTEGER NOT NULL DEFAULT 0,
       meaning TEXT,
+      thumb_file_id TEXT,
       created_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
     CREATE INDEX idx_sticker_palette_label ON sticker_palette(label);

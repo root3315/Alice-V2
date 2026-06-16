@@ -440,8 +440,8 @@ export const TABLE_CLASSIFICATIONS = {
     appendOnly: false,
     rebuildable: "partially",
     authority:
-      "Current sticker semantic palette used for action selection; disabled=1 rows are owner-muted and excluded from every selection query; signature=1 rows are owner-marked meaningful stickers Alice sends consciously (no RNG bias).",
-    writer: "sticker sync/admin/batch-index (curated/disabled/signature) palette paths",
+      "Current sticker semantic palette used for action selection; disabled=1 rows are owner-muted and excluded from every selection query; signature=1 rows are owner-marked meaningful stickers Alice sends consciously (no RNG bias); thumb_file_id holds a raster preview-frame fileId for animated stickers (.tgs/.webm) so the dashboard can render a static thumbnail.",
+    writer: "sticker sync/admin/batch-index (curated/disabled/signature/thumb) palette paths",
     readers: "sticker action selection + dashboard sticker admin",
     absence: "No row means the sticker is unavailable to semantic lookup.",
   },

@@ -131,12 +131,16 @@ export interface EngineApiDeps {
   }) => Promise<{ started: boolean; shortName: string; estimated: number; message: string }>;
   /**
    * Превью стикера для дашборда (sticker admin): по fileId скачивает медиа через клиент Алисы
-   * и возвращает байты изображения + content-type. Статичные (webp/png) отдаются как есть;
-   * анимированные (tgs/webm) → растровая миниатюра, если есть, иначе null (фронт покажет emoji+теги).
+   * и возвращает байты изображения + content-type. Логика отдачи:
+   *  - скачиваем основной файл; если это отрисовываемый растр (webp/png/jpeg/gif) → отдаём его;
+   *  - если файл анимированный/нерастровый (tgs gzip / webm / svg) И передан thumbFileId →
+   *    скачиваем растровую миниатюру и отдаём ЕЁ с корректным content-type;
+   *  - иначе null (фронт покажет emoji+теги — поведение как раньше).
    * Реализация кэширует байты (in-memory LRU), чтобы повторное открытие пака было быстрым.
    */
   telegramStickerImage?: (
     fileId: string,
+    thumbFileId?: string | null,
   ) => Promise<{ bytes: Buffer; contentType: string } | null>;
   /** Telegram scrollable rich table callback (`irc table`). */
   telegramTable?: (params: {

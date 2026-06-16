@@ -1573,9 +1573,11 @@ async function handleStickerImage(
       return;
     }
 
-    const img = await deps.telegramStickerImage(hit.fileId);
+    // Передаём и thumb_file_id: для анимированного стикера (.tgs/.webm) downloader отдаст
+    // растровую миниатюру вместо 204. Статичные → thumbFileId=null, поведение прежнее.
+    const img = await deps.telegramStickerImage(hit.fileId, hit.thumbFileId);
     if (!img) {
-      // Анимированный/видео/не скачался → 204, фронт покажет emoji+теги.
+      // Анимированный без миниатюры / видео / не скачался → 204, фронт покажет emoji+теги.
       res.writeHead(204);
       res.end();
       return;

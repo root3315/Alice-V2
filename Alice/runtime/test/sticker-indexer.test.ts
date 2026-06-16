@@ -84,6 +84,34 @@ function fakeClient(
   } as unknown as TelegramClient;
 }
 
+/**
+ * Фейковый клиент с АНИМИРОВАННЫМИ стикерами: sourceType != "static", у каждого растровая
+ * миниатюра типа "s" с собственным fileId. downloadAsBuffer(thumb) → растр (проходит head-гейт).
+ * Нужен, чтобы проверить захват thumb_file_id при индексации анимированных стикеров.
+ */
+function fakeAnimatedClient(
+  shortName: string,
+  stickers: Array<{ fileId: string; uniqueFileId: string; alt: string; thumbFileId: string }>,
+): TelegramClient {
+  return {
+    getStickerSet: vi.fn(async (_id: string) => ({
+      shortName,
+      title: shortName,
+      isFull: true,
+      stickers: stickers.map((s) => ({
+        sticker: {
+          fileId: s.fileId,
+          uniqueFileId: s.uniqueFileId,
+          sourceType: "video",
+          thumbnails: [{ type: "s", width: 100, height: 100, fileId: s.thumbFileId }],
+        },
+        alt: s.alt,
+      })),
+    })),
+    downloadAsBuffer: vi.fn(async () => rasterBuffer()),
+  } as unknown as TelegramClient;
+}
+
 /** Детерминированный фейковый эмбеддинг: вектор по «теме» (ключевое слово в тексте). */
 function fakeEmbedding(text: string): number[] {
   const t = text.toLowerCase();
@@ -149,6 +177,43 @@ describe("batchIndexStickerSet", () => {
       expect(r.curated).toBe(1);
       expect(r.label.startsWith("happy sticker")).toBe(true);
     }
+  });
+
+  it("анимированный стикер: захватывает thumb_file_id миниатюры; статичный — оставляет null", async () => {
+    mockDescribeMedia.mockImplementation(async (_b64, uid: string) => `desc ${uid}`);
+    mockGetStickerAnalysis.mockImplementation((uid: string) => ({
+      description: `rich tag ${uid}`,
+      emotion: "happy",
+      action: "none",
+      intensity: "moderate",
+    }));
+
+    // Анимированный стикер → thumb_file_id выбранной растровой миниатюры.
+    const animClient = fakeAnimatedClient("animpack", [
+      { fileId: "afid1", uniqueFileId: "auid1", alt: "😊", thumbFileId: "athumb1" },
+    ]);
+    const animStats = await batchIndexStickerSet(animClient, getDb(), VISION_CONFIG, "animpack");
+    expect(animStats.tagged).toBe(1);
+    const animRow = getDb().select().from(stickerPalette).get();
+    expect(animRow?.thumbFileId).toBe("athumb1");
+
+    // Статичный стикер → thumb_file_id остаётся null (его основной файл уже растр).
+    const staticClient = fakeClient("staticpack", [
+      { fileId: "sfid1", uniqueFileId: "suid1", alt: "😢" },
+    ]);
+    const staticStats = await batchIndexStickerSet(
+      staticClient,
+      getDb(),
+      VISION_CONFIG,
+      "staticpack",
+    );
+    expect(staticStats.tagged).toBe(1);
+    const staticRow = getDb()
+      .select()
+      .from(stickerPalette)
+      .all()
+      .find((r) => r.fileUniqueId === "suid1");
+    expect(staticRow?.thumbFileId).toBeNull();
   });
 
   it("идемпотентный skip на повторном прогоне (без force)", async () => {

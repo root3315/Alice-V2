@@ -1,0 +1,1 @@
+ALTER TABLE `sticker_palette` ADD `thumb_file_id` text;

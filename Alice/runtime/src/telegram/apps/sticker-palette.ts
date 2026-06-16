@@ -121,6 +121,12 @@ export const upsertParamsSchema = z.object({
   setName: z.string().optional(),
   /** Курируемый стикер (batch-VLM пак): true → curated=1, защищён от очистки. По умолчанию false. */
   curated: z.boolean().optional(),
+  /**
+   * fileId растровой миниатюры для АНИМИРОВАННЫХ стикеров (превью-кадр для дашборда).
+   * Опционально: статичные стикеры его не передают (их основной файл — уже растр) → остаётся null.
+   * При повторной индексации обновляется как другие refreshable-поля.
+   */
+  thumbFileId: z.string().optional(),
   emotion: z.string(),
   action: z.string(),
   intensity: z.string(),
@@ -144,6 +150,7 @@ export function upsertFromVLM(db: Db, params: UpsertParams): void {
       emoji: params.emoji,
       setName: params.setName,
       curated: curatedFlag,
+      thumbFileId: params.thumbFileId,
       emotion: params.emotion,
       action: params.action,
       intensity: params.intensity,
@@ -156,6 +163,10 @@ export function upsertFromVLM(db: Db, params: UpsertParams): void {
         emotion: params.emotion,
         action: params.action,
         intensity: params.intensity,
+        // thumbFileId — refreshable: обновляем ТОЛЬКО когда явно передан (re-index анимированного
+        // стикера бэкфилит/освежает превью). Оппортунистический путь его не передаёт → НЕ затираем
+        // в null ранее захваченную миниатюру.
+        ...(params.thumbFileId != null ? { thumbFileId: params.thumbFileId } : {}),
         // setName/curated обновляем только при явной курации (батч-индекс),
         // иначе оставляем как было (оппортунистический путь не перетирает курируемый пак).
         ...(params.curated
@@ -831,12 +842,16 @@ export async function batchIndexStickerSet(
     if (!force && existingRich.has(fileUniqueId)) return "skipped";
 
     // Извлечение кадра — ТОЧНО как в messages.ts.
+    // Для НЕ-статичных стикеров запоминаем fileId выбранной растровой миниатюры — тот же кадр,
+    // что идёт в VLM, переиспользуем как превью для дашборда (браузер не рисует .tgs/.webm).
     let buffer: Buffer;
+    let thumbFileId: string | undefined;
     if (media.sourceType !== "static") {
       const thumb = media.thumbnails?.find(
         (t) => t.width > 0 && !Number.isNaN(t.width) && RASTER_THUMB_TYPES.has(t.type),
       );
       if (!thumb) return "skipped";
+      thumbFileId = thumb.fileId;
       buffer = Buffer.from(await client.downloadAsBuffer(thumb));
     } else {
       buffer = Buffer.from(
@@ -864,6 +879,8 @@ export async function batchIndexStickerSet(
       emoji,
       setName: shortName,
       curated: true,
+      // Статичные стикеры → thumbFileId undefined (их основной файл уже растр).
+      thumbFileId,
       emotion: analysis.emotion,
       action: analysis.action,
       intensity: analysis.intensity,
@@ -1115,26 +1132,30 @@ export function deleteSticker(db: Db, id: number): boolean {
   return changes > 0;
 }
 
-/** Ищет file_id стикера по числовому id или по file_unique_id (для отдачи превью). */
+/**
+ * Ищет file_id стикера по числовому id или по file_unique_id (для отдачи превью).
+ * thumbFileId — растровая миниатюра анимированного стикера (null для статичных); маршрут
+ * sticker-image использует её, чтобы отдать превью-кадр там, где основной файл не растр.
+ */
 export function lookupStickerFileId(
   db: Db,
   ref: { id?: number; fileUniqueId?: string },
-): { fileId: string; fileUniqueId: string } | null {
-  let row: { fileId: string; fileUniqueId: string } | undefined;
+): { fileId: string; fileUniqueId: string; thumbFileId: string | null } | null {
+  let row: { fileId: string; fileUniqueId: string; thumbFileId: string | null } | undefined;
+  const cols = {
+    fileId: stickerPalette.fileId,
+    fileUniqueId: stickerPalette.fileUniqueId,
+    thumbFileId: stickerPalette.thumbFileId,
+  };
   if (ref.id != null && Number.isFinite(ref.id)) {
-    row = db
-      .select({ fileId: stickerPalette.fileId, fileUniqueId: stickerPalette.fileUniqueId })
-      .from(stickerPalette)
-      .where(eq(stickerPalette.id, ref.id))
-      .limit(1)
-      .get();
+    row = db.select(cols).from(stickerPalette).where(eq(stickerPalette.id, ref.id)).limit(1).get();
   } else if (ref.fileUniqueId) {
     row = db
-      .select({ fileId: stickerPalette.fileId, fileUniqueId: stickerPalette.fileUniqueId })
+      .select(cols)
       .from(stickerPalette)
       .where(eq(stickerPalette.fileUniqueId, ref.fileUniqueId))
       .limit(1)
       .get();
   }
-  return row ?? null;
+  return row ? { ...row, thumbFileId: row.thumbFileId ?? null } : null;
 }

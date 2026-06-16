@@ -1084,6 +1084,14 @@ export const stickerPalette = sqliteTable(
      * Используется для self-факта в её памяти и как ключ инвокации в resolveLabel.
      */
     meaning: text("meaning"),
+    /**
+     * fileId растровой миниатюры (превью-кадр) для АНИМИРОВАННЫХ стикеров (.tgs/.webm), nullable.
+     * Браузер не умеет рисовать .tgs/.webm как <img>, поэтому дашборд отдаёт этот растровый
+     * thumbnail вместо 204-фолбэка. Для статичных стикеров остаётся null (их основной файл —
+     * уже отрисовываемый растр). Заполняется при batch-индексации (тот же thumbnail, что
+     * скармливается VLM); уже проиндексированные строки получают значение при РЕ-индексации.
+     */
+    thumbFileId: text("thumb_file_id"),
     createdAt: integer("created_at", { mode: "timestamp" })
       .notNull()
       .$defaultFn(() => new Date()),

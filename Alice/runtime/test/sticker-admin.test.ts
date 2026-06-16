@@ -60,6 +60,7 @@ interface Row {
   disabled?: number;
   signature?: number;
   meaning?: string;
+  thumbFileId?: string;
 }
 
 function insert(rows: Row[]): void {
@@ -79,6 +80,7 @@ function insert(rows: Row[]): void {
         disabled: r.disabled ?? 0,
         signature: r.signature ?? 0,
         meaning: r.meaning,
+        thumbFileId: r.thumbFileId,
       })),
     )
     .run();
@@ -727,6 +729,65 @@ describe("dashboard sticker admin endpoints", () => {
       baseDeps({ telegramStickerImage }),
     );
     expect(res.snapshot().statusCode).toBe(204);
+  });
+
+  it("GET /dashboard/sticker-image: анимированный стикер с thumb_file_id → миниатюра проброшена в downloader", async () => {
+    // Анимированный стикер: основной file_id + сохранённый растровый thumb_file_id.
+    insert([
+      {
+        label: "анимка",
+        fileId: "ANIM_MAIN",
+        fileUniqueId: "u_anim",
+        setName: "pk",
+        thumbFileId: "THUMB_RASTER",
+      },
+    ]);
+    const id = getDb().select().from(stickerPalette).get()?.id ?? 0;
+
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 9, 9, 9, 9]);
+    // Маршрут передаёт ОБА fileId; downloader получает (main, thumb) и отдаёт растр миниатюры.
+    const telegramStickerImage = vi.fn(async (fileId: string, thumbFileId?: string | null) => {
+      expect(fileId).toBe("ANIM_MAIN");
+      expect(thumbFileId).toBe("THUMB_RASTER");
+      return { bytes: png, contentType: "image/png" };
+    });
+
+    const res = makeRes();
+    await handleDashboard(
+      "sticker-image",
+      "GET",
+      makeReq(`/dashboard/sticker-image?id=${id}`),
+      res.res,
+      baseDeps({ telegramStickerImage }),
+    );
+    const snap = res.snapshot();
+    expect(snap.statusCode).toBe(200);
+    expect(snap.headers["Content-Type"]).toBe("image/png");
+    expect(snap.raw.equals(png)).toBe(true);
+    expect(telegramStickerImage).toHaveBeenCalledWith("ANIM_MAIN", "THUMB_RASTER");
+  });
+
+  it("GET /dashboard/sticker-image: статичный стикер передаёт thumb_file_id=null (без регрессии)", async () => {
+    insert([{ label: "статик", fileId: "STATIC_MAIN", fileUniqueId: "u_static", setName: "pk" }]);
+    const id = getDb().select().from(stickerPalette).get()?.id ?? 0;
+
+    const webp = Buffer.from([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
+    const telegramStickerImage = vi.fn(async (fileId: string, thumbFileId?: string | null) => {
+      expect(fileId).toBe("STATIC_MAIN");
+      expect(thumbFileId).toBeNull(); // у статичного thumb_file_id нет → null
+      return { bytes: webp, contentType: "image/webp" };
+    });
+
+    const res = makeRes();
+    await handleDashboard(
+      "sticker-image",
+      "GET",
+      makeReq(`/dashboard/sticker-image?id=${id}`),
+      res.res,
+      baseDeps({ telegramStickerImage }),
+    );
+    expect(res.snapshot().statusCode).toBe(200);
+    expect(telegramStickerImage).toHaveBeenCalledWith("STATIC_MAIN", null);
   });
 
   it("GET /dashboard/sticker-image неизвестный id → 404", async () => {

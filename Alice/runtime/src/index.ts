@@ -862,32 +862,48 @@ async function main() {
     },
     // Превью стикера для дашборда (sticker admin). Скачивает медиа по fileId через клиент
     // Алисы и кэширует байты в in-memory LRU (повторное открытие пака — без сети).
-    // Статичные стикеры (webp) браузер рисует напрямую; буфер с XML/SVG/tgs head-byte
-    // считаем нерастровым → возвращаем null (фронт покажет emoji+теги).
-    telegramStickerImage: async (fileId) => {
-      const cached = stickerImageCacheGet(fileId);
-      if (cached !== undefined) return cached;
-      try {
-        const bytes = Buffer.from(
-          await client.downloadAsBuffer(fileId as Parameters<typeof client.downloadAsBuffer>[0]),
-        );
-        if (bytes.byteLength < 16 || bytes.byteLength > 1_000_000) {
-          stickerImageCacheSet(fileId, null);
+    // Статичные стикеры (webp) браузер рисует напрямую; для анимированных (tgs/webm) основной
+    // файл не растр → если передан thumbFileId, отдаём растровую миниатюру вместо null.
+    telegramStickerImage: async (fileId, thumbFileId) => {
+      // Скачивает один fileId, распознаёт растр по head-байтам, кэширует (включая null).
+      // Кэш-ключ — сам fileId: основной и thumb имеют разные fileId, поэтому не коллидируют.
+      const fetchRaster = async (
+        fid: string,
+      ): Promise<{ bytes: Buffer; contentType: string } | null> => {
+        const cached = stickerImageCacheGet(fid);
+        if (cached !== undefined) return cached;
+        try {
+          const bytes = Buffer.from(
+            await client.downloadAsBuffer(fid as Parameters<typeof client.downloadAsBuffer>[0]),
+          );
+          if (bytes.byteLength < 16 || bytes.byteLength > 1_000_000) {
+            stickerImageCacheSet(fid, null);
+            return null;
+          }
+          // Head-byte распознавание: WEBP (RIFF....WEBP), PNG, JPEG, GIF — растр, отдаём.
+          // gzip (tgs, 0x1f 0x8b) и XML/SVG (0x3c) — не растр → null.
+          const ct = detectStickerContentType(bytes);
+          const result = ct ? { bytes, contentType: ct } : null;
+          stickerImageCacheSet(fid, result);
+          return result;
+        } catch (e) {
+          log.debug("sticker image download failed", {
+            error: e instanceof Error ? e.message : String(e),
+          });
+          stickerImageCacheSet(fid, null);
           return null;
         }
-        // Head-byte распознавание: WEBP (RIFF....WEBP), PNG, JPEG, GIF — растр, отдаём.
-        // gzip (tgs, 0x1f 0x8b) и XML/SVG (0x3c) — не растр → null (фронт-фолбэк).
-        const ct = detectStickerContentType(bytes);
-        const result = ct ? { bytes, contentType: ct } : null;
-        stickerImageCacheSet(fileId, result);
-        return result;
-      } catch (e) {
-        log.debug("sticker image download failed", {
-          error: e instanceof Error ? e.message : String(e),
-        });
-        stickerImageCacheSet(fileId, null);
-        return null;
+      };
+
+      // Основной файл: статичный стикер — уже растр, отдаём его.
+      const main = await fetchRaster(fileId);
+      if (main) return main;
+      // Основной файл не растр (анимированный tgs/webm/svg). Если есть растровая миниатюра —
+      // отдаём ЕЁ; иначе null (фронт покажет emoji+теги — поведение как раньше).
+      if (thumbFileId) {
+        return fetchRaster(thumbFileId);
       }
+      return null;
     },
     // Нативная прокручиваемая таблица (rich-message). Зеркалит telegramSticker: typing → resolve топика → sendTable.
     telegramTable: async ({ chatId, title, headers, rows, replyTo }) => {
