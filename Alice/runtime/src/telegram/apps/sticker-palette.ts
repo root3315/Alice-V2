@@ -1102,6 +1102,19 @@ export function setStickerSignature(
   return { id, signature, meaning: nextMeaning };
 }
 
+/**
+ * Полностью УДАЛЯЕТ строку палитры по id (кнопка «удалить» в дашборде).
+ *
+ * Отличие от setStickerDisabled: disabled оставляет стикер в палитре (можно вернуть),
+ * delete стирает его насовсем — после удаления ни один путь подбора его не вернёт.
+ * Пишет прямо в БД, которую Алиса читает вживую → эффект без перезапуска.
+ * @returns true, если строка найдена и удалена.
+ */
+export function deleteSticker(db: Db, id: number): boolean {
+  const { changes } = db.delete(stickerPalette).where(eq(stickerPalette.id, id)).run();
+  return changes > 0;
+}
+
 /** Ищет file_id стикера по числовому id или по file_unique_id (для отдачи превью). */
 export function lookupStickerFileId(
   db: Db,

@@ -36,6 +36,7 @@ import { getWorkiSnapshot } from "../../mods/worki.mod.js";
 import { getSelfcheckData } from "../../telegram/apps/selfcheck.js";
 import { writeSignatureSelfFact } from "../../mods/relationships.mod.js";
 import {
+  deleteSticker,
   getStickerPack,
   listStickerPacks,
   lookupStickerFileId,
@@ -43,6 +44,7 @@ import {
   setStickerDisabled,
   setStickerSignature,
 } from "../../telegram/apps/sticker-palette.js";
+import { factRetrievabilityFromNode, getContactFacts } from "../../mods/relationships.mod.js";
 import { VOICES } from "../../voices/personality.js";
 import { createLogger } from "../../utils/logger.js";
 import type { EngineApiDeps } from "../server.js";
@@ -183,8 +185,10 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
       const chPressure =
         a.pressure != null ? Number(a.pressure) : (pressureByEntity[id] ?? null);
       channels.push({
+        id, // nodeId — нужен для управления (mute/delete) на стороне дашборда
         name: safeDisplayName(G, id),
         chatType: a.chat_type ?? null,
+        muted: a.muted === true, // TASK E: заглушена ли проактивная активность
         unread: Number(a.unread ?? 0),
         role: String(a.alice_role ?? "subscriber"),
         pendingDirected: Number(a.pending_directed ?? 0),
@@ -212,8 +216,10 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
       const c = G.getContact(id) as unknown as Record<string, unknown>;
       const num = (k: string): number | null => (c[k] != null ? Number(c[k]) : null);
       contacts.push({
+        id, // nodeId — нужен для управления (mute/delete) на стороне дашборда
         name: safeDisplayName(G, id),
         tier: Number(c.tier ?? 0),
+        muted: c.muted === true, // TASK E: заглушён ли проактивный контакт с человеком
         relationType: c.relation_type ?? null,
         // Полный вектор отношений (ADR-178): все 5 измерений ∈ [0,1].
         trust: num("rv_trust"),
@@ -1402,6 +1408,135 @@ function handleStickerSignature(body: unknown, res: ServerResponse, deps: Engine
 }
 
 /**
+ * POST /dashboard/sticker-delete {id} → полностью удаляет строку палитры (эффект без рестарта).
+ *
+ * Отличается от sticker-toggle: toggle лишь выключает отправку (disabled=1, обратимо),
+ * delete стирает стикер из палитры насовсем — после этого ни один путь подбора его не вернёт.
+ */
+function handleStickerDelete(body: unknown, res: ServerResponse): void {
+  const sendJson = (code: number, payload: Record<string, unknown>): void => {
+    res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(payload));
+  };
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    sendJson(400, { ok: false, error: "body must be a JSON object" });
+    return;
+  }
+  const id = Number((body as Record<string, unknown>).id);
+  if (!Number.isInteger(id) || id <= 0) {
+    sendJson(400, { ok: false, error: "id must be a positive integer" });
+    return;
+  }
+  try {
+    const ok = deleteSticker(getDb(), id);
+    if (!ok) {
+      sendJson(404, { ok: false, error: `sticker ${id} not found` });
+      return;
+    }
+    sendJson(200, { ok: true, id });
+  } catch (e) {
+    sendJson(500, { ok: false, error: (e as Error).message });
+  }
+}
+
+/**
+ * POST /dashboard/contact-mute {id, muted} → TASK E «безопасная» заглушка узла графа.
+ *
+ * Пишет флаг muted прямо на узел контакта ИЛИ канала (id определяет тип), который Алиса
+ * читает вживую → эффект без рестарта. Заглушённый узел исключается из ПРОАКТИВНОГО выбора
+ * цели (см. isTargetMuted в iaus-scorer), но узел + история отношений + память СОХРАНЯЮТСЯ,
+ * входящие сообщения по-прежнему воспринимаются. Полностью обратимо (muted=false).
+ * Персистится как обычный атрибут узла (graph_nodes.attrs JSON) — миграция БД не нужна.
+ */
+function handleContactMute(body: unknown, res: ServerResponse, deps: EngineApiDeps): void {
+  const sendJson = (code: number, payload: Record<string, unknown>): void => {
+    res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(payload));
+  };
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    sendJson(400, { ok: false, error: "body must be a JSON object" });
+    return;
+  }
+  const b = body as Record<string, unknown>;
+  const id = String(b.id ?? "").trim();
+  const muted = Boolean(b.muted);
+  if (!id) {
+    sendJson(400, { ok: false, error: "id required" });
+    return;
+  }
+  try {
+    const G = deps.G;
+    if (!G.has(id)) {
+      sendJson(404, { ok: false, error: `node ${id} not found` });
+      return;
+    }
+    const type = G.getNodeType(id);
+    const nowMs = Date.now();
+    if (type === "channel") {
+      G.updateChannel(id, { muted, muted_ms: nowMs });
+    } else if (type === "contact") {
+      G.updateContact(id, { muted, muted_ms: nowMs });
+    } else {
+      sendJson(400, { ok: false, error: `node ${id} is ${type}, expected channel/contact` });
+      return;
+    }
+    sendJson(200, { ok: true, id, muted });
+  } catch (e) {
+    sendJson(500, { ok: false, error: (e as Error).message });
+  }
+}
+
+/**
+ * POST /dashboard/contact-delete {id} → ДЕСТРУКТИВНОЕ удаление узла графа (стирает память).
+ *
+ * Удаляет узел контакта/канала и все его рёбра через граф-путь removeEntity (каскадно чистит
+ * связанные conversation-узлы). В отличие от mute это НЕОБРАТИМО: контакт/канал и его факты
+ * исчезают. Эффект без рестарта (Алиса читает граф вживую). Фронт помечает кнопку как
+ * «удалить НАВСЕГДА» с confirm(). best-effort удаляет и узел-факты, висящие на нём по рёбрам knows.
+ */
+function handleContactDelete(body: unknown, res: ServerResponse, deps: EngineApiDeps): void {
+  const sendJson = (code: number, payload: Record<string, unknown>): void => {
+    res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(payload));
+  };
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    sendJson(400, { ok: false, error: "body must be a JSON object" });
+    return;
+  }
+  const id = String((body as Record<string, unknown>).id ?? "").trim();
+  if (!id) {
+    sendJson(400, { ok: false, error: "id required" });
+    return;
+  }
+  try {
+    const G = deps.G;
+    if (!G.has(id)) {
+      sendJson(404, { ok: false, error: `node ${id} not found` });
+      return;
+    }
+    const type = G.getNodeType(id);
+    if (type !== "channel" && type !== "contact") {
+      sendJson(400, { ok: false, error: `node ${id} is ${type}, expected channel/contact` });
+      return;
+    }
+    // best-effort: сперва стираем висящие на узле факты (рёбра knows), затем сам узел.
+    let removedFacts = 0;
+    try {
+      for (const f of getContactFacts(G, id)) {
+        G.removeEntity(f.id);
+        removedFacts++;
+      }
+    } catch (e) {
+      log.warn("contact-delete facts cleanup failed", { err: (e as Error).message });
+    }
+    G.removeEntity(id);
+    sendJson(200, { ok: true, id, removedFacts });
+  } catch (e) {
+    sendJson(500, { ok: false, error: (e as Error).message });
+  }
+}
+
+/**
  * GET /dashboard/sticker-image?id=<id> | ?uid=<fileUniqueId> → байты превью.
  * file_id ищем в БД, скачивание делегируем deps.telegramStickerImage (клиент в index.ts).
  * Анимированные/неотдаваемые → 204 (фронт показывает emoji+теги). Кэш — на стороне deps.
@@ -1521,6 +1656,266 @@ async function handleEmbeddings(res: ServerResponse, deps: EngineApiDeps): Promi
   res.end(JSON.stringify(payload));
 }
 
+/**
+ * GET /dashboard/embeddings-detail → расширенная разбивка embedding_cache + ЖИВАЯ проба TEI.
+ *
+ * TASK B: добавляет к /dashboard/embeddings больше РЕАЛЬНЫХ фактов о кеше (резильентно — «—»,
+ * если что-то недоступно): всего строк, различных моделей, размерность, oldest/newest updatedAt,
+ * приблизительный размер на диске (сумма длин JSON-векторов), сколько строк соответствует ТЕКУЩЕЙ
+ * модели против устаревших, + компактный список последних N записей (префикс textHash + model +
+ * dim + возраст, БЕЗ сырых векторов). Живая проба TEI изолирована и ограничена таймаутом (как в
+ * handleEmbeddings) — каждый блок в своём try/catch, чтобы частичный сбой не ронял ответ.
+ */
+async function handleEmbeddingsDetail(res: ServerResponse, deps: EngineApiDeps): Promise<void> {
+  const cfg = getEmbeddingConfig();
+  const enabled = !!cfg.embeddingBaseUrl.trim() && !!cfg.embeddingModel.trim();
+  const currentModel = cfg.embeddingModel || null;
+
+  let cacheRows = 0;
+  let cachedModels = 0;
+  let cachedDim: number | null = null;
+  let oldestMs: number | null = null;
+  let newestMs: number | null = null;
+  let approxBytes: number | null = null;
+  let currentModelRows: number | null = null;
+  let staleRows: number | null = null;
+  let recent: Array<Record<string, unknown>> = [];
+  try {
+    const d = getDb();
+    cacheRows = d.select({ c: sql<number>`count(*)` }).from(embeddingCache).get()?.c ?? 0;
+    cachedModels =
+      d
+        .select({ c: sql<number>`count(distinct ${embeddingCache.model})` })
+        .from(embeddingCache)
+        .get()?.c ?? 0;
+    const one = d.select({ dim: embeddingCache.dim }).from(embeddingCache).limit(1).get();
+    cachedDim = one ? Number(one.dim) : null;
+
+    // Возраст кеша: самый старый/новый updatedAt (мс).
+    try {
+      const span = d
+        .select({
+          oldest: sql<number>`min(${embeddingCache.updatedAt})`,
+          newest: sql<number>`max(${embeddingCache.updatedAt})`,
+        })
+        .from(embeddingCache)
+        .get();
+      oldestMs = span?.oldest != null ? Number(span.oldest) : null;
+      newestMs = span?.newest != null ? Number(span.newest) : null;
+    } catch (e) {
+      log.warn("dashboard embeddings-detail span failed", { err: (e as Error).message });
+    }
+
+    // Приблизительный размер на диске: сумма длин JSON-представления векторов.
+    try {
+      const sz = d
+        .select({ bytes: sql<number>`sum(length(${embeddingCache.vec}))` })
+        .from(embeddingCache)
+        .get();
+      approxBytes = sz?.bytes != null ? Number(sz.bytes) : null;
+    } catch (e) {
+      log.warn("dashboard embeddings-detail size failed", { err: (e as Error).message });
+    }
+
+    // Сколько строк соответствует ТЕКУЩЕЙ модели против устаревших (смена модели самоинвалидирует).
+    try {
+      if (currentModel) {
+        currentModelRows =
+          d
+            .select({ c: sql<number>`count(*)` })
+            .from(embeddingCache)
+            .where(eq(embeddingCache.model, currentModel))
+            .get()?.c ?? 0;
+        staleRows = Math.max(0, cacheRows - currentModelRows);
+      }
+    } catch (e) {
+      log.warn("dashboard embeddings-detail model-match failed", { err: (e as Error).message });
+    }
+
+    // Последние N записей (без сырых векторов) — только метаданные.
+    try {
+      const rows = d
+        .select({
+          textHash: embeddingCache.textHash,
+          model: embeddingCache.model,
+          dim: embeddingCache.dim,
+          updatedAt: embeddingCache.updatedAt,
+        })
+        .from(embeddingCache)
+        .orderBy(desc(embeddingCache.updatedAt))
+        .limit(20)
+        .all();
+      recent = rows.map((r) => ({
+        hash: typeof r.textHash === "string" ? r.textHash.slice(0, 12) : "?",
+        model: r.model ?? null,
+        dim: r.dim != null ? Number(r.dim) : null,
+        atMs: r.updatedAt != null ? Number(r.updatedAt) : null,
+        stale: !!currentModel && r.model !== currentModel,
+      }));
+    } catch (e) {
+      log.warn("dashboard embeddings-detail recent failed", { err: (e as Error).message });
+    }
+  } catch (e) {
+    log.warn("dashboard embeddings-detail cache failed", { err: (e as Error).message });
+  }
+
+  // Живая проба достижимости TEI — изолирована, ограничена таймаутом, never throws.
+  let probe: {
+    reachable: boolean;
+    dim?: number | null;
+    latencyMs?: number | null;
+    reason?: string | null;
+  } = { reachable: false, dim: null, latencyMs: null, reason: enabled ? "no-probe" : "disabled" };
+  try {
+    if (deps.embeddingProbe) {
+      probe = await deps.embeddingProbe();
+    }
+  } catch (e) {
+    probe = { reachable: false, dim: null, latencyMs: null, reason: (e as Error).message };
+  }
+  const dim = probe.dim ?? cachedDim ?? null;
+
+  const payload = {
+    enabled,
+    model: currentModel,
+    baseUrl: cfg.embeddingBaseUrl || null,
+    hasApiKey: !!cfg.embeddingApiKey,
+    dim,
+    cacheRows,
+    cachedModels,
+    cachedDim,
+    oldestMs,
+    newestMs,
+    approxBytes, // приблизительный размер JSON-векторов на диске (байты)
+    currentModelRows, // строк, соответствующих текущей модели
+    staleRows, // строк от устаревших моделей (самоинвалидируются)
+    recent, // последние записи кеша (метаданные, без сырых векторов)
+    reachable: probe.reachable,
+    probeLatencyMs: probe.latencyMs ?? null,
+    probeReason: probe.reason ?? null,
+  };
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(payload));
+}
+
+/**
+ * GET /dashboard/memory-detail → СОДЕРЖИМОЕ памяти Алисы (read-only, TASK D).
+ *
+ * Грузится при открытии вкладки «Память» (не входит в 5-секундный /dashboard/data поллинг).
+ * Каждый блок защищён try/catch (резильентно). Кап ~50 на блок:
+ *  - selfFacts: факты на узле self (самопознание / self-reflection — отдельный список),
+ *  - contactFacts: недавние факты на контактах (content/type/stability/R/owner/age),
+ *  - diary: недавние записи дневника (text + age),
+ *  - kb: факты с fact_type='kb' (база знаний: content + source + age).
+ */
+function handleMemoryDetail(res: ServerResponse, deps: EngineApiDeps): void {
+  const G = deps.G;
+  const nowMs = Date.now();
+  const CAP = 50;
+
+  // Соберём все узлы-факты один раз; разложим по корзинам (self / kb / contact).
+  const selfFacts: Array<Record<string, unknown>> = [];
+  const kbFacts: Array<Record<string, unknown>> = [];
+  const contactFacts: Array<Record<string, unknown>> = [];
+  try {
+    const factIds = G.getEntitiesByType("fact");
+    for (const fid of factIds) {
+      try {
+        const a = G.getFact(fid) as unknown as Record<string, unknown>;
+        const owner = (a.source_contact as string | undefined) ?? null;
+        let ownerName: string | null = null;
+        if (owner) {
+          try {
+            ownerName = G.has(owner) ? safeDisplayName(G, owner) : owner;
+          } catch {
+            ownerName = owner;
+          }
+        }
+        const lastAccessMs = Number(a.last_access_ms ?? a.created_ms ?? 0);
+        const entry = {
+          id: fid,
+          content: typeof a.content === "string" ? a.content : "",
+          factType: (a.fact_type as string | undefined) ?? null,
+          stability: a.stability != null ? Number(a.stability) : null,
+          R: factRetrievabilityFromNode(G.getFact(fid), nowMs),
+          owner: ownerName,
+          source: (a.source as string | undefined) ?? null,
+          atMs: lastAccessMs > 0 ? lastAccessMs : null,
+        };
+        if (a.fact_type === "kb") {
+          kbFacts.push(entry);
+        } else if (owner === "self") {
+          selfFacts.push(entry);
+        } else {
+          contactFacts.push(entry);
+        }
+      } catch {
+        /* битый узел-факт — пропускаем */
+      }
+    }
+    // Свежие сверху (по last_access).
+    const byAge = (x: Record<string, unknown>, y: Record<string, unknown>) =>
+      Number(y.atMs ?? 0) - Number(x.atMs ?? 0);
+    selfFacts.sort(byAge);
+    kbFacts.sort(byAge);
+    contactFacts.sort(byAge);
+  } catch (e) {
+    log.warn("dashboard memory-detail facts failed", { err: (e as Error).message });
+  }
+
+  // Дневник — отдельная таблица diary_entries.
+  let diary: Array<Record<string, unknown>> = [];
+  try {
+    const d = getDb();
+    const rows = d
+      .select({
+        id: diaryEntries.id,
+        tick: diaryEntries.tick,
+        content: diaryEntries.content,
+        about: diaryEntries.about,
+        createdAt: diaryEntries.createdAt,
+      })
+      .from(diaryEntries)
+      .orderBy(desc(diaryEntries.id))
+      .limit(CAP)
+      .all();
+    diary = rows.map((r) => {
+      let aboutName: string | null = null;
+      if (r.about) {
+        try {
+          aboutName = G.has(r.about) ? safeDisplayName(G, r.about) : r.about;
+        } catch {
+          aboutName = r.about;
+        }
+      }
+      return {
+        id: r.id,
+        tick: Number(r.tick ?? 0),
+        content: typeof r.content === "string" ? r.content : "",
+        about: aboutName,
+        atMs: r.createdAt instanceof Date ? r.createdAt.getTime() : null,
+      };
+    });
+  } catch (e) {
+    log.warn("dashboard memory-detail diary failed", { err: (e as Error).message });
+  }
+
+  const payload = {
+    selfFacts: selfFacts.slice(0, CAP),
+    contactFacts: contactFacts.slice(0, CAP),
+    kb: kbFacts.slice(0, CAP),
+    diary,
+    counts: {
+      selfFacts: selfFacts.length,
+      contactFacts: contactFacts.length,
+      kb: kbFacts.length,
+      diary: diary.length,
+    },
+  };
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(payload));
+}
+
 /** Читает JSON из тела запроса (лимит 1 МБ); пустое тело → {}. */
 function readBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -1559,7 +1954,15 @@ export async function handleDashboard(
   deps: EngineApiDeps,
 ): Promise<void> {
   if (method === "POST") {
-    if (sub !== "control" && sub !== "sticker-toggle" && sub !== "sticker-signature") {
+    const POST_SUBS = new Set([
+      "control",
+      "sticker-toggle",
+      "sticker-signature",
+      "sticker-delete",
+      "contact-mute",
+      "contact-delete",
+    ]);
+    if (sub === undefined || !POST_SUBS.has(sub)) {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "not found" }));
       return;
@@ -1578,6 +1981,18 @@ export async function handleDashboard(
     }
     if (sub === "sticker-signature") {
       handleStickerSignature(body, res, deps);
+      return;
+    }
+    if (sub === "sticker-delete") {
+      handleStickerDelete(body, res);
+      return;
+    }
+    if (sub === "contact-mute") {
+      handleContactMute(body, res, deps);
+      return;
+    }
+    if (sub === "contact-delete") {
+      handleContactDelete(body, res, deps);
       return;
     }
     await handleControl(body, res, deps);
@@ -1603,6 +2018,28 @@ export async function handleDashboard(
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
       res.end(
         JSON.stringify({ enabled: false, reachable: false, probeReason: (e as Error).message }),
+      );
+    }
+    return;
+  }
+  if (sub === "embeddings-detail") {
+    try {
+      await handleEmbeddingsDetail(res, deps);
+    } catch (e) {
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(
+        JSON.stringify({ enabled: false, reachable: false, probeReason: (e as Error).message }),
+      );
+    }
+    return;
+  }
+  if (sub === "memory-detail") {
+    try {
+      handleMemoryDetail(res, deps);
+    } catch (e) {
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(
+        JSON.stringify({ selfFacts: [], contactFacts: [], kb: [], diary: [], error: (e as Error).message }),
       );
     }
     return;
@@ -1677,6 +2114,8 @@ const DASHBOARD_HTML = `<!doctype html>
   .pill.risk-high { background:#f8514933; color:#ff8a80; } .pill.risk-medium { background:#d2992233; color:#d29922; }
   .pill.risk-low { background:#30363d; color:var(--mut); }
   .gone { color:var(--bad); } .bar { height:6px; background:var(--line); border-radius:3px; overflow:hidden; min-width:60px; }
+  tr.muted-row { opacity:.6; }
+  tr.muted-row td:first-child { border-left:2px solid var(--warn); }
   .bar > i { display:block; height:100%; background:var(--acc); }
   .mini { display:flex; align-items:center; gap:6px; }
   .mini .bar { flex:1; }
@@ -1725,6 +2164,9 @@ const DASHBOARD_HTML = `<!doctype html>
   .stk-toggle { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--mut); cursor:pointer; user-select:none; }
   .stk-toggle input { accent-color:var(--good); }
   .stk-toggle.off { color:var(--bad); }
+  .stk-row { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; }
+  .stk-del { font:inherit; font-size:11px; padding:2px 8px; border:1px solid #f8514955; border-radius:6px; background:#f8514922; color:#ff8a80; cursor:pointer; }
+  .stk-del:hover { background:#f8514944; }
   .stk-cell.sig { border-color:var(--acc); box-shadow:0 0 0 1px var(--acc) inset; }
   .stk-cell .img { position:relative; }
   .stk-star { position:absolute; top:-4px; left:-4px; font-size:18px; z-index:1; }
@@ -1776,6 +2218,7 @@ const DASHBOARD_HTML = `<!doctype html>
 
   <!-- ════════ СОЦИАЛЬНОЕ ════════ -->
   <section class="tabpage" data-tab="social">
+    <div class="ctlbar"><span class="hint">«заглушить» = Алиса перестаёт писать сама (память сохраняется, обратимо) · «удалить НАВСЕГДА» стирает узел и его факты</span><span class="ctlmsg" id="socMsg"></span></div>
     <div class="panel"><h2>Каналы <span class="hint" id="chHint"></span></h2><div id="channels"></div></div>
     <div class="panel"><h2>Контакты <span class="hint">по давлению / tier</span></h2><div id="contacts"></div></div>
     <div class="grid">
@@ -1815,6 +2258,11 @@ const DASHBOARD_HTML = `<!doctype html>
       </div>
     </div>
     <div class="panel"><h2>Состояние / режим <span class="hint">self-узел</span></h2><div id="state"></div></div>
+    <div class="panel">
+      <h2>Содержимое памяти <span class="hint">реальные факты / дневник / знания (read-only · грузится при открытии вкладки)</span></h2>
+      <div class="ctlbar"><button class="ctlbtn" id="memRefresh">Обновить</button><span class="ctlmsg" id="memMsg"></span></div>
+      <div id="memDetail"><div class="empty">загрузка…</div></div>
+    </div>
   </section>
 
   <!-- ════════ SELF-REPORT (selfcheck) ════════ -->
@@ -2172,27 +2620,72 @@ function renderCognition(d){
   } else $('planes').innerHTML='<div class="empty">нет данных по плоскостям</div>';
 }
 
+/* ── TASK E: ячейка управления контактом/каналом — кнопка mute/unmute + деструктивное удаление. ──
+   id узла берём из data-атрибутов; muted-состояние определяет подпись кнопки. */
+function manageCell(c){
+  if(!c.id) return '—';
+  const muteLbl = c.muted ? 'вернуть' : 'заглушить';
+  const muteTitle = c.muted
+    ? 'Снять заглушку: Алиса снова может писать сюда сама'
+    : 'Заглушить: Алиса перестанет инициировать сама (память и история сохраняются, обратимо)';
+  return '<button class="ctlbtn sm" data-mute="'+esc(c.id)+'" data-muted="'+(c.muted?'1':'0')+'" title="'+esc(muteTitle)+'">'+muteLbl+'</button> '+
+    '<button class="ctlbtn sm danger" data-cdel="'+esc(c.id)+'" data-name="'+esc(c.name||c.id)+'" title="Удалить НАВСЕГДА: стирает узел и его факты из памяти (необратимо)">удалить НАВСЕГДА</button>';
+}
+/* Делегирование кликов по кнопкам управления (mute/unmute + delete) внутри контейнера. */
+function wireSocialManage(containerId){
+  const root=$(containerId); if(!root) return;
+  root.querySelectorAll('button[data-mute]').forEach(b=>{
+    b.addEventListener('click', async ()=>{
+      const id=b.getAttribute('data-mute');
+      const muted = b.getAttribute('data-muted')!=='1'; // тогглим
+      b.disabled=true;
+      try {
+        await ctl2('/dashboard/contact-mute', {id, muted});
+        ctlMsg('socMsg', (muted?'заглушено: ':'возвращено: ')+id, 'ok');
+        setTimeout(refresh, 400);
+      } catch(e){ b.disabled=false; ctlMsg('socMsg','не вышло: '+e.message,'err'); }
+    });
+  });
+  root.querySelectorAll('button[data-cdel]').forEach(b=>{
+    b.addEventListener('click', async ()=>{
+      const id=b.getAttribute('data-cdel');
+      const nm=b.getAttribute('data-name')||id;
+      if(!confirm('Удалить НАВСЕГДА «'+nm+'»? Это сотрёт узел и все его факты из памяти Алисы. Необратимо. Если хотите лишь чтобы она не писала сама — используйте «заглушить».')) return;
+      b.disabled=true;
+      try {
+        await ctl2('/dashboard/contact-delete', {id});
+        ctlMsg('socMsg','удалено навсегда: '+nm, 'ok');
+        setTimeout(refresh, 400);
+      } catch(e){ b.disabled=false; ctlMsg('socMsg','не вышло: '+e.message,'err'); }
+    });
+  });
+}
+
 function renderSocial(d){
   // каналы
   const ch=d.channels||[];
   $('chHint').textContent = ch.length+' всего'+((d.summary&&d.summary.unreachableChannels)?(' · '+d.summary.unreachableChannels+' недостижимо'):'');
-  $('channels').innerHTML = ch.length ? '<table><tr><th>Канал</th><th>Тип</th><th>Непрочит.</th><th>Роль</th><th>Pending</th><th>Подряд исх.</th><th>Привыкание</th><th>Давление</th><th>Риск</th><th>Достижим</th></tr>'+
-    ch.map(c=>'<tr><td>'+(c.unreachable?'<span class="gone">'+esc(c.name)+' (нет)</span>':esc(c.name))+'</td><td>'+esc(c.chatType||'')+'</td><td class="num">'+c.unread+'</td><td><span class="pill '+(c.role==='owner'?'owner':c.role==='admin'?'admin':'sub')+'">'+esc(c.role)+'</span></td><td class="num">'+c.pendingDirected+'</td><td class="num">'+(c.consecutiveOutgoing??0)+'</td><td class="num">'+fmtN(c.habituation)+'</td><td class="num">'+fmtN(c.pressure)+'</td><td>'+(c.risk&&c.risk!=='none'?'<span class="pill risk-'+esc(c.risk)+'">'+esc(c.risk)+'</span>':'—')+'</td><td class="num">'+(c.unreachable?'✗':fmtPct(c.reachability))+'</td></tr>').join('')+'</table>'
+  $('channels').innerHTML = ch.length ? '<table><tr><th>Канал</th><th>Тип</th><th>Непрочит.</th><th>Роль</th><th>Pending</th><th>Подряд исх.</th><th>Привыкание</th><th>Давление</th><th>Риск</th><th>Достижим</th><th>Управление</th></tr>'+
+    ch.map(c=>'<tr'+(c.muted?' class="muted-row"':'')+'><td>'+(c.unreachable?'<span class="gone">'+esc(c.name)+' (нет)</span>':esc(c.name))+(c.muted?' <span class="tag" style="border-color:#d29922;color:#d29922">заглушён</span>':'')+'</td><td>'+esc(c.chatType||'')+'</td><td class="num">'+c.unread+'</td><td><span class="pill '+(c.role==='owner'?'owner':c.role==='admin'?'admin':'sub')+'">'+esc(c.role)+'</span></td><td class="num">'+c.pendingDirected+'</td><td class="num">'+(c.consecutiveOutgoing??0)+'</td><td class="num">'+fmtN(c.habituation)+'</td><td class="num">'+fmtN(c.pressure)+'</td><td>'+(c.risk&&c.risk!=='none'?'<span class="pill risk-'+esc(c.risk)+'">'+esc(c.risk)+'</span>':'—')+'</td><td class="num">'+(c.unreachable?'✗':fmtPct(c.reachability))+'</td><td>'+manageCell(c)+'</td></tr>').join('')+'</table>'
     : '<div class="empty">нет каналов</div>';
 
   // контакты — полный вектор отношений (ADR-178): 5 измерений ∈ [0,1] + velocity + фаза.
   const ct=d.contacts||[];
-  $('contacts').innerHTML = ct.length ? '<table><tr><th>Контакт</th><th>Tier</th><th>Отношения</th><th>Доверие</th><th>Привяз.</th><th>Знаком.</th><th>Уважение</th><th>Влечение</th><th>Взаимод.</th><th>Давление</th><th>Активность</th></tr>'+
+  $('contacts').innerHTML = ct.length ? '<table><tr><th>Контакт</th><th>Tier</th><th>Отношения</th><th>Доверие</th><th>Привяз.</th><th>Знаком.</th><th>Уважение</th><th>Влечение</th><th>Взаимод.</th><th>Давление</th><th>Активность</th><th>Управление</th></tr>'+
     ct.map(c=>{
       const rt=c.relationType||'unknown';
       const phase=(c.romanticPhase&&c.romanticPhase!=='none')?(' <span class="tag">'+esc(c.romanticPhase)+'</span>'):'';
-      return '<tr><td>'+esc(c.name)+(c.isBot?' <span class="tag">bot</span>':'')+phase+'</td>'+
+      return '<tr'+(c.muted?' class="muted-row"':'')+'><td>'+esc(c.name)+(c.isBot?' <span class="tag">bot</span>':'')+(c.muted?' <span class="tag" style="border-color:#d29922;color:#d29922">заглушён</span>':'')+phase+'</td>'+
         '<td class="num">'+c.tier+'</td>'+
         '<td><span class="pill r-'+esc(rt)+'">'+esc(rt)+'</span></td>'+
         rvCell(c.trust,c.velTrust)+rvCell(c.affection,c.velAffection)+rvCell(c.familiarity,c.velFamiliarity)+rvCell(c.respect,c.velRespect)+rvCell(c.attraction,c.velAttraction)+
-        '<td class="num">'+(c.interactions??0)+'</td><td class="num">'+fmtN(c.pressure)+'</td><td class="num">'+(c.lastSeen?fmtAgo(c.lastSeen):'—')+'</td></tr>';
+        '<td class="num">'+(c.interactions??0)+'</td><td class="num">'+fmtN(c.pressure)+'</td><td class="num">'+(c.lastSeen?fmtAgo(c.lastSeen):'—')+'</td><td>'+manageCell(c)+'</td></tr>';
     }).join('')+'</table>'
     : '<div class="empty">нет контактов</div>';
+
+  // TASK E: делегируем клики по кнопкам управления (mute/unmute + delete) для каналов и контактов.
+  wireSocialManage('channels');
+  wireSocialManage('contacts');
 
   // открытые темы (Bug #5: «Вес» — это enum trivial/minor/major/critical, рендерим меткой,
   // а не в числовой колонке; id оборачиваем в esc())
@@ -2290,6 +2783,55 @@ function renderMemory(d){
     ['Режим',s.mode??'—'],['Mood',fmtN(s.mood)],['Valence',fmtN(s.valence)],['Arousal',fmtN(s.arousal)],['Энергия',s.energy!=null?fmtN(s.energy):'—'],
     ['Думает о',esc(s.thinkingTarget??'—')],['Причина отдыха',esc(s.restingReason??'—')],['Отдых до',s.restingUntilMs?new Date(Number(s.restingUntilMs)).toLocaleTimeString('ru'):'—'],
   ].map(x=>'<div class="item"><div class="k">'+x[0]+'</div><div class="v">'+x[1]+'</div></div>').join('')+'</div>';
+
+  // TASK D: содержимое памяти грузим один раз при открытии вкладки (не на 5с поллинге).
+  if(!_memWired){ _memWired=true; const b=$('memRefresh'); if(b) b.addEventListener('click', ()=>loadMemoryDetail(true)); }
+  loadMemoryDetail(false);
+}
+
+/* ── TASK D: содержимое памяти — реальные факты/дневник/знания (read-only, lazy). ── */
+let _memWired=false;
+let memLoaded=false;
+function factListHtml(rows, withOwner){
+  if(!rows||!rows.length) return '<div class="empty">нет записей</div>';
+  return '<div class="scrollbox"><table><thead><tr><th>Содержимое</th><th>Тип</th>'+(withOwner?'<th>О ком</th>':'')+'<th>Стаб.</th><th>R</th><th>Источник</th><th>Возраст</th></tr></thead><tbody>'+
+    rows.map(f=>'<tr><td class="feed-text" style="max-width:420px">'+esc(f.content)+'</td>'+
+      '<td>'+(f.factType?'<span class="tag">'+esc(f.factType)+'</span>':'—')+'</td>'+
+      (withOwner?('<td>'+esc(f.owner||'—')+'</td>'):'')+
+      '<td class="num">'+(f.stability!=null?fmtN(f.stability,1):'—')+'</td>'+
+      '<td class="num">'+(f.R!=null?fmtN(f.R):'—')+'</td>'+
+      '<td>'+(f.source?'<span class="tag">'+esc(f.source)+'</span>':'—')+'</td>'+
+      '<td class="num">'+(f.atMs?fmtAgo(f.atMs):'—')+'</td></tr>').join('')+'</tbody></table></div>';
+}
+function renderMemoryDetail(m){
+  if(!m){ $('memDetail').innerHTML='<div class="empty">нет данных</div>'; return; }
+  const c=m.counts||{};
+  let h='<div class="kv" style="margin-bottom:12px">'+[
+    ['Факты self', fmtInt(c.selfFacts), 'Самопознание / self-reflection (факты на узле self)'],
+    ['Факты о людях', fmtInt(c.contactFacts), 'Факты, привязанные к контактам/каналам'],
+    ['Знания (KB)', fmtInt(c.kb), 'База знаний — факты с типом kb'],
+    ['Дневник', fmtInt(c.diary), 'Записи дневника'],
+  ].map(x=>'<div class="item" title="'+esc(x[2])+'"><div class="k">'+esc(x[0])+'</div><div class="v">'+x[1]+'</div></div>').join('')+'</div>';
+  h+='<h2 style="margin-top:8px">Self-факты <span class="hint">её самопознание</span></h2>'+factListHtml(m.selfFacts,false);
+  h+='<h2 style="margin-top:16px">Факты о людях <span class="hint">недавние</span></h2>'+factListHtml(m.contactFacts,true);
+  h+='<h2 style="margin-top:16px">Знания (KB) <span class="hint">база знаний</span></h2>'+factListHtml(m.kb,true);
+  h+='<h2 style="margin-top:16px">Дневник <span class="hint">недавние записи</span></h2>';
+  const dr=m.diary||[];
+  h+= dr.length
+    ? '<div class="scrollbox"><table><thead><tr><th>Тик</th><th>Запись</th><th>О ком</th><th>Возраст</th></tr></thead><tbody>'+
+      dr.map(e=>'<tr><td class="num">'+esc(e.tick)+'</td><td class="feed-text" style="max-width:520px">'+esc(e.content)+'</td><td>'+esc(e.about||'—')+'</td><td class="num">'+(e.atMs?fmtAgo(e.atMs):'—')+'</td></tr>').join('')+'</tbody></table></div>'
+    : '<div class="empty">дневник пуст</div>';
+  $('memDetail').innerHTML=h;
+}
+async function loadMemoryDetail(force){
+  if(memLoaded && !force) return;
+  if(force) ctlMsg('memMsg','обновляю…');
+  try {
+    const m = await (await fetch('/dashboard/memory-detail')).json();
+    memLoaded=true;
+    renderMemoryDetail(m);
+    if(force) ctlMsg('memMsg','обновлено','ok');
+  } catch(e){ $('memDetail').innerHTML='<div class="err">не удалось загрузить: '+esc(e.message)+'</div>'; ctlMsg('memMsg','ошибка: '+e.message,'err'); }
 }
 
 /* ── Worki: read-only очередь задач (in-flight + недавние). Без управления здесь. ── */
@@ -2472,6 +3014,20 @@ async function openStickerPack(key){
         finally { btn.disabled=false; }
       });
     });
+    // Кнопка «удалить» — полностью стирает стикер из палитры (с confirm), затем убирает ячейку.
+    $('stkGrid').querySelectorAll('button[data-del-id]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const id=Number(btn.getAttribute('data-del-id'));
+        if(!confirm('Удалить стикер '+id+' из палитры навсегда? Это нельзя отменить (отличается от «выкл»: выкл просто прячет, удаление — стирает).')) return;
+        btn.disabled=true;
+        try {
+          await ctl2('/dashboard/sticker-delete', {id});
+          const cell=btn.closest('.stk-cell'); if(cell) cell.remove();
+          ctlMsg('stkMsg','стикер '+id+' удалён','ok');
+          stkPacksLoaded=false; loadStickerPacks(true); // обновить счётчики паков
+        } catch(e){ btn.disabled=false; ctlMsg('stkMsg','не вышло: '+e.message,'err'); }
+      });
+    });
   } catch(e){ $('stkGrid').innerHTML='<div class="err">не удалось загрузить стикеры: '+esc(e.message)+'</div>'; }
 }
 /* Ячейка стикера: lazy <img> (при ошибке/204 — фолбэк emoji), теги, переключатель disabled,
@@ -2486,7 +3042,10 @@ function stickerCell(r){
   return '<div class="stk-cell'+(r.disabled?' off':'')+(r.signature?' sig':'')+'">'+
     '<div class="img">'+star+img+'</div>'+
     '<div class="meta"><span class="em">'+em+'</span>'+(tags?('<div class="tags">'+tags+'</div>'):'')+'</div>'+
-    '<label class="stk-toggle'+(r.disabled?' off':'')+'"><input type="checkbox" data-toggle-id="'+esc(r.id)+'"'+(r.disabled?'':' checked')+' /> '+(r.disabled?'выкл':'вкл')+'</label>'+
+    '<div class="stk-row">'+
+      '<label class="stk-toggle'+(r.disabled?' off':'')+'"><input type="checkbox" data-toggle-id="'+esc(r.id)+'"'+(r.disabled?'':' checked')+' /> '+(r.disabled?'выкл':'вкл')+'</label>'+
+      '<button class="stk-del" data-del-id="'+esc(r.id)+'" title="Удалить стикер из палитры навсегда">удалить</button>'+
+    '</div>'+
     '<div class="stk-sig">'+
       '<label class="stk-sigchk"><input type="checkbox" data-sig-id="'+esc(r.id)+'"'+(r.signature?' checked':'')+' /> значимый</label>'+
       '<input type="text" class="stk-sigmeaning" data-sig-meaning="'+esc(r.id)+'" placeholder="смысл (что значит)" value="'+esc(r.meaning||'')+'" />'+
@@ -2647,6 +3206,8 @@ function renderEmbeddingsDetail(stat){
   const models = (stat&&stat.cachedModels!=null)?stat.cachedModels:(live&&live.cachedModels!=null?live.cachedModels:null);
   const reasonRu={disabled:'отключено в конфиге','no-probe':'проба недоступна (нет deps)',unreachable:'сервер не ответил вектором'};
 
+  // Дополнительные РЕАЛЬНЫЕ факты из живой детальной пробы (embeddings-detail); «—», если нет.
+  const fmtBytes=(b)=>{ if(b==null) return '—'; b=Number(b); if(b<1024) return b+' Б'; if(b<1048576) return (b/1024).toFixed(1)+' КБ'; return (b/1048576).toFixed(2)+' МБ'; };
   $('embDetail').innerHTML=kvList([
     ['Включено', enabled?'<span class="pill r-close_friend">да</span>':'<span class="pill risk-high">нет</span>', 'Семантическая память активна, если заданы base_url и модель'],
     ['Модель', esc(model||'—'), 'Имя модели эмбеддинга (например bge-m3)'],
@@ -2657,12 +3218,29 @@ function renderEmbeddingsDetail(stat){
     ['Размерность', dim?fmtInt(dim):'—', 'Длина вектора (из живой пробы или из кеша)'],
     ['Кеш (строк)', fmtInt(cacheRows), 'Сколько текстов уже векторизовано в embedding_cache'],
     ['Моделей в кеше', models!=null?fmtInt(models):'—', 'Сколько разных моделей встречается в кеше (смена модели самоинвалидирует старое)'],
+    ['Текущая модель (строк)', (live&&live.currentModelRows!=null)?fmtInt(live.currentModelRows):'—', 'Строк кеша, соответствующих ТЕКУЩЕЙ модели'],
+    ['Устаревших строк', (live&&live.staleRows!=null)?fmtInt(live.staleRows):'—', 'Строк от других (старых) моделей — самоинвалидируются'],
+    ['Размер на диске (≈)', live?fmtBytes(live.approxBytes):'—', 'Приблизительно: сумма длин JSON-векторов в кеше'],
+    ['Самая старая запись', (live&&live.oldestMs)?fmtAgo(live.oldestMs):'—', 'Возраст самого старого вектора в кеше'],
+    ['Самая свежая запись', (live&&live.newestMs)?fmtAgo(live.newestMs):'—', 'Когда последний раз пополнялся кеш'],
   ]);
+
+  // Список последних N записей кеша (без сырых векторов) — только метаданные.
+  const rec=(live&&live.recent)||[];
+  if(rec.length){
+    $('embDetail').innerHTML += '<h2 style="margin-top:16px">Последние записи кеша <span class="hint">префикс хэша · модель · dim · возраст (без сырых векторов)</span></h2>'+
+      '<div class="scrollbox"><table><thead><tr><th>Хэш</th><th>Модель</th><th>Dim</th><th>Возраст</th></tr></thead><tbody>'+
+      rec.map(e=>'<tr><td><code style="color:#8b97a7">'+esc(e.hash)+'…</code></td>'+
+        '<td>'+esc(e.model||'—')+(e.stale?' <span class="tag" style="border-color:#d29922;color:#d29922">stale</span>':'')+'</td>'+
+        '<td class="num">'+(e.dim!=null?fmtInt(e.dim):'—')+'</td>'+
+        '<td class="num">'+(e.atMs?fmtAgo(e.atMs):'—')+'</td></tr>').join('')+'</tbody></table></div>';
+  }
 }
 async function loadEmbeddingsLive(){
   ctlMsg('embMsg','проверяю сервер…');
   try {
-    embLive = await (await fetch('/dashboard/embeddings')).json();
+    // embeddings-detail: расширенная разбивка кеша + живая проба TEI (проба изолирована/таймаут).
+    embLive = await (await fetch('/dashboard/embeddings-detail')).json();
     ctlMsg('embMsg', embLive.reachable?'сервер доступен':'сервер недоступен', embLive.reachable?'ok':'err');
   } catch(e){
     embLive = { enabled:false, reachable:false, probeReason:e.message };

@@ -464,6 +464,44 @@ describe("scoreAllCandidates", () => {
     );
   });
 
+  it("TASK E: muted channel исключён из проактивного выбора (off-by-default + reversible)", () => {
+    const G = buildGraph([{ id: "channel:m", tierContact: 5 }]);
+    const tensionMap = new Map([["channel:m", tension({ tau1: 1.0, tau3: 0.5 })]]);
+    const config = buildIAUSConfig(G, tensionMap, { nowMs });
+
+    // OFF-BY-DEFAULT: без muted канал оценивается как обычно.
+    const before = scoreAllCandidatesDetailed(tensionMap, G, 100, [], config);
+    expect(before.result).not.toBeNull();
+    expect(before.filterStats.filtered.muted ?? 0).toBe(0);
+
+    // Заглушаем канал → он исключается (filtered.muted), результат пуст (единственная цель).
+    G.updateChannel("channel:m", { muted: true });
+    const muted = scoreAllCandidatesDetailed(tensionMap, G, 100, [], config);
+    expect(muted.filterStats.filtered.muted).toBe(1);
+    expect(muted.result).toBeNull();
+
+    // REVERSIBLE: снятие заглушки восстанавливает прежнее поведение.
+    G.updateChannel("channel:m", { muted: false });
+    const after = scoreAllCandidatesDetailed(tensionMap, G, 100, [], config);
+    expect(after.result).not.toBeNull();
+    expect(after.filterStats.filtered.muted ?? 0).toBe(0);
+  });
+
+  it("TASK E: muted на зеркальном контакте тоже исключает приватный чат", () => {
+    const G = buildGraph([{ id: "channel:telegram:777", chatType: "private", tierContact: 5 }]);
+    G.addContact("contact:telegram:777", { tier: 5 });
+    const tensionMap = new Map([
+      ["channel:telegram:777", tension({ tau1: 1.0, tau3: 0.5 })],
+    ]);
+    const config = buildIAUSConfig(G, tensionMap, { nowMs });
+
+    // Заглушаем КОНТАКТ (не канал) → приватный чат исключается через зеркальный узел.
+    G.updateContact("contact:telegram:777", { muted: true });
+    const muted = scoreAllCandidatesDetailed(tensionMap, G, 100, [], config);
+    expect(muted.filterStats.filtered.muted).toBe(1);
+    expect(muted.result).toBeNull();
+  });
+
   it("单个 channel + 非零张力 → 返回结果", () => {
     const G = buildGraph([{ id: "channel:a", tierContact: 5 }]);
     const tensionMap = new Map([["channel:a", tension({ tau1: 1.0, tau3: 0.5 })]]);

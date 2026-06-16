@@ -28,6 +28,7 @@ import { getContactFacts } from "../src/mods/relationships.mod.js";
 import { resetEmbeddingBreaker } from "../src/llm/embeddings.js";
 import type { EmbeddingConfig } from "../src/llm/embeddings.js";
 import {
+  deleteSticker,
   getStickerPack,
   listStickerPacks,
   lookupStickerFileId,
@@ -354,6 +355,34 @@ describe("getStickerPack / setStickerDisabled / lookup", () => {
     expect(setStickerDisabled(getDb(), 999999, true)).toBe(false);
   });
 
+  it("deleteSticker удаляет строку насовсем и убирает её из выборки", () => {
+    insert([
+      {
+        label: "happy doomed",
+        fileId: "f_del",
+        fileUniqueId: "u_del",
+        setName: "pk",
+        emotion: "happy",
+        disabled: 0,
+      },
+    ]);
+    const id = getDb().select().from(stickerPalette).get()?.id ?? 0;
+
+    // До удаления стикер выбирается.
+    expect(resolveLabel(getDb(), "happy")).toBe("f_del");
+
+    // Удаление → строки больше нет, выборка пуста.
+    expect(deleteSticker(getDb(), id)).toBe(true);
+    expect(getDb().select().from(stickerPalette).get()).toBeFalsy();
+    expect(resolveLabel(getDb(), "happy")).toBeNull();
+    expect(lookupStickerFileId(getDb(), { id })).toBeNull();
+
+    // Повторное удаление того же id → false (строки уже нет).
+    expect(deleteSticker(getDb(), id)).toBe(false);
+    // Несуществующий id → false.
+    expect(deleteSticker(getDb(), 999999)).toBe(false);
+  });
+
   it("lookupStickerFileId: по id и по fileUniqueId", () => {
     insert([{ label: "l", fileId: "fl", fileUniqueId: "ul", setName: "pk" }]);
     const row = getDb().select().from(stickerPalette).get();
@@ -516,6 +545,41 @@ describe("dashboard sticker admin endpoints", () => {
     const req = makeReq("/dashboard/sticker-toggle", "POST");
     const p = handleDashboard("sticker-toggle", "POST", req, res.res, baseDeps());
     await runBody(req, { id: 424242, disabled: true });
+    await p;
+    expect(res.snapshot().statusCode).toBe(404);
+  });
+
+  it("POST /dashboard/sticker-delete удаляет строку и возвращает {ok,id}", async () => {
+    insert([
+      {
+        label: "happy",
+        fileId: "f_d",
+        fileUniqueId: "u_d",
+        setName: "pk",
+        emotion: "happy",
+        disabled: 0,
+      },
+    ]);
+    const id = getDb().select().from(stickerPalette).get()?.id ?? 0;
+
+    const res = makeRes();
+    const req = makeReq("/dashboard/sticker-delete", "POST");
+    const p = handleDashboard("sticker-delete", "POST", req, res.res, baseDeps());
+    await runBody(req, { id });
+    await p;
+    const snap = res.snapshot();
+    expect(snap.statusCode).toBe(200);
+    expect(snap.json).toEqual({ ok: true, id });
+    // Реально удалено → выборка пуста.
+    expect(getDb().select().from(stickerPalette).get()).toBeFalsy();
+    expect(resolveLabel(getDb(), "happy")).toBeNull();
+  });
+
+  it("POST /dashboard/sticker-delete с неизвестным id → 404", async () => {
+    const res = makeRes();
+    const req = makeReq("/dashboard/sticker-delete", "POST");
+    const p = handleDashboard("sticker-delete", "POST", req, res.res, baseDeps());
+    await runBody(req, { id: 555555 });
     await p;
     expect(res.snapshot().statusCode).toBe(404);
   });

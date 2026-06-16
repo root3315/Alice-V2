@@ -18,6 +18,7 @@
 import type { BeliefStore } from "../belief/store.js";
 import { readEmotionControlPatch } from "../emotion/graph.js";
 import type { EmotionControlPatch } from "../emotion/types.js";
+import { chatIdToContactId } from "../graph/constants.js";
 import { type TensionVector, ZERO_TENSION } from "../graph/tension.js";
 import type { WorldModel } from "../graph/world-model.js";
 import {
@@ -303,6 +304,7 @@ export type IAUSFilterReason =
   | "target_whitelist"
   | "excluded_active_target"
   | "permanent_failure"
+  | "muted"
   | "consecutive_outgoing_cap"
   | "closing_conversation"
   | "crisis_mode"
@@ -1007,6 +1009,41 @@ function computeCuriosityConsiderations(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
+ * TASK E (управление дашбордом): помечена ли цель «заглушённой» владельцем.
+ *
+ * Цель проактивного контакта — узел канала (приватный чат тоже представлен узлом channel).
+ * «Заглушка» исключает цель из ПРОАКТИВНОГО выбора, но НЕ блокирует восприятие входящих.
+ * Считаем цель заглушённой, если muted=true на самом узле канала ИЛИ на зеркальном узле
+ * контакта (приватный чат): дашборд может заглушить как канал/группу, так и человека —
+ * любой из флагов исключает её из инициации.
+ *
+ * OFF-BY-DEFAULT: если ничего не заглушено (атрибут отсутствует/false на обоих узлах),
+ * возвращает false ВСЕГДА, и поведение остаётся байт-в-байт прежним. Полностью резильентна:
+ * любой сбой чтения графа трактуется как «не заглушено».
+ */
+export function isTargetMuted(G: WorldModel, target: string): boolean {
+  try {
+    if (G.has(target) && G.getNodeType(target) === "channel" && G.getChannel(target).muted === true) {
+      return true;
+    }
+    // Зеркальный контакт приватного чата (channel:telegram:123 → contact:telegram:123).
+    const contactId = chatIdToContactId(target);
+    if (
+      contactId &&
+      G.has(contactId) &&
+      G.getNodeType(contactId) === "contact" &&
+      G.getContact(contactId).muted === true
+    ) {
+      return true;
+    }
+  } catch {
+    // Любой сбой чтения → не заглушено (никогда не ломаем выбор цели).
+    return false;
+  }
+  return false;
+}
+
+/**
  * Выполняет IAUS-оценивание по всем channel × 3 action_types.
  *
  * @returns IAUSResult или null (все кандидаты набрали ≤ ε).
@@ -1064,6 +1101,15 @@ export function scoreAllCandidatesDetailed(
     // Pre-filter: permanent-недостижимые target не оцениваются
     if (G.has(target) && G.getChannel(target).failure_type === "permanent") {
       noteFiltered("permanent_failure");
+      continue;
+    }
+
+    // TASK E: «заглушённые» владельцем цели исключаются из ПРОАКТИВНОГО контакта.
+    // OFF-BY-DEFAULT: без заглушённых узлов isTargetMuted всегда false → байт-в-байт прежнее
+    // поведение. Жёсткий skip, как и permanent_failure: восприятие входящих не затрагивается
+    // (этот фильтр работает только на пути выбора цели проактивной инициации).
+    if (isTargetMuted(G, target)) {
+      noteFiltered("muted");
       continue;
     }
 
