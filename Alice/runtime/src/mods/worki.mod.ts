@@ -25,6 +25,8 @@
  */
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { createMod } from "../core/mod-builder.js";
@@ -311,18 +313,55 @@ async function fetchDevCloneFresh(): Promise<void> {
   }
 }
 
-async function postJson(url: string, body: unknown, timeoutSec: number): Promise<Record<string, unknown>> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout((timeoutSec + 20) * 1000),
+// node:http(s) вместо global fetch: у Node fetch (undici) ДЕФОЛТНЫЙ headersTimeout = 300с (5 мин),
+// и длинные code-задачи (opus-ревью идёт >5 мин) упирались в него → «fetch failed», хотя
+// agent-таймаут (timeout_s) и AbortSignal разрешали до 20 мин. node:http не навязывает 5-минутный
+// потолок — ставим свой idle-таймаут по запросу (+30с буфер). Прокси молчит до конца агента, так что
+// это именно ожидание ответа (socket idle), а не активность.
+function postJson(url: string, body: unknown, timeoutSec: number): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const u = new URL(url);
+    const reqFn = u.protocol === "https:" ? httpsRequest : httpRequest;
+    const req = reqFn(
+      {
+        hostname: u.hostname,
+        port: u.port,
+        path: `${u.pathname}${u.search}`,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        let data = "";
+        res.setEncoding("utf8");
+        res.on("data", (c) => {
+          data += c;
+        });
+        res.on("end", () => {
+          const status = res.statusCode ?? 0;
+          if (status >= 200 && status < 300) {
+            try {
+              resolve(JSON.parse(data) as Record<string, unknown>);
+            } catch {
+              reject(new Error(`bad JSON from ${u.pathname}: ${data.slice(0, 120)}`));
+            }
+          } else {
+            reject(new Error(`HTTP ${status} ${data.slice(0, 120)}`));
+          }
+        });
+      },
+    );
+    // Idle-таймаут ожидания ответа: agent-время + 30с буфер (никакого 5-минутного потолка undici).
+    req.setTimeout((timeoutSec + 30) * 1000, () => {
+      req.destroy(new Error(`postJson timeout after ${timeoutSec + 30}s`));
+    });
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
   });
-  if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status} ${t.slice(0, 120)}`);
-  }
-  return (await res.json()) as Record<string, unknown>;
 }
 
 /** Опрос прогресса worki-агента с прокси (best-effort, не критично). */

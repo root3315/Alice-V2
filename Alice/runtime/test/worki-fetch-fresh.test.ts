@@ -12,6 +12,8 @@
  *
  * Токен задаём ДО импорта мода (константа читается из env на загрузке модуля).
  */
+import { EventEmitter } from "node:events";
+import type { ClientRequest, IncomingMessage } from "node:http";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Константы worki читаются из env на ЗАГРУЗКЕ модуля. ESM-импорты вычисляются раньше тела файла,
@@ -54,7 +56,34 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
-// Прокси не поднимаем: fetch возвращает валидный разбор (или прогресс-404 для pollProgress).
+// postJson теперь на node:http (обход 5-мин undici-таймаута) → мокаем request: мгновенный 200 + JSON.
+vi.mock("node:http", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:http")>();
+  return {
+    ...original,
+    request: vi.fn((_opts: unknown, cb: (res: IncomingMessage) => void): ClientRequest => {
+      const res = Object.assign(new EventEmitter(), {
+        statusCode: 200,
+        setEncoding() {},
+      }) as unknown as IncomingMessage;
+      const req = Object.assign(new EventEmitter(), {
+        setTimeout() {},
+        write() {},
+        destroy() {},
+        end() {
+          setImmediate(() => {
+            cb(res);
+            res.emit("data", JSON.stringify({ analysis: "разбор готов: файл foo.py" }));
+            res.emit("end");
+          });
+        },
+      }) as unknown as ClientRequest;
+      return req;
+    }) as unknown as typeof original.request,
+  };
+});
+
+// pollProgress ещё на fetch: возвращаем валидный разбор/пустой прогресс.
 const realFetch = globalThis.fetch;
 beforeEach(() => {
   gitCalls.length = 0;
