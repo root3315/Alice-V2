@@ -634,6 +634,18 @@ export async function syncInstalledSets(client: TelegramClient, db: Db): Promise
         const fileId = doc.sticker.fileId;
         const fileUniqueId = doc.sticker.uniqueFileId;
 
+        // Растровый превью-кадр для анимированных стикеров (.tgs/.webm): запоминаем fileId
+        // выбранной растровой миниатюры, чтобы дашборд показывал статичный кадр (браузер
+        // не рисует .tgs/.webm). Скачивать не нужно — храним только fileId.
+        // Статичные стикеры → thumbFileId undefined (их основной файл уже растр).
+        let thumbFileId: string | undefined;
+        if (doc.sticker.sourceType !== "static") {
+          const thumb = doc.sticker.thumbnails?.find(
+            (t) => t.width > 0 && !Number.isNaN(t.width) && RASTER_THUMB_TYPES.has(t.type),
+          );
+          if (thumb) thumbFileId = thumb.fileId;
+        }
+
         // Обратное сопоставление emoji → dimension
         const emotion = EMOJI_TO_EMOTION[emoji] ?? "neutral";
         const action = EMOJI_TO_ACTION[emoji] ?? "none";
@@ -652,20 +664,28 @@ export async function syncInstalledSets(client: TelegramClient, db: Db): Promise
               emotion,
               action,
               intensity: "medium",
+              // Растровый превью-кадр анимированных стикеров (статичные → null).
+              thumbFileId,
             })
             .onConflictDoNothing()
             .run();
           if (changes > 0) {
             added++;
           } else {
-            // Уже существует → обновляем fileId (Telegram мог его изменить)
+            // Уже существует → обновляем fileId (Telegram мог его изменить).
+            // Заодно бэкфилим thumb_file_id для анимированных стикеров: старые грубые
+            // строки без превью получают растровый кадр. Обновляем, если изменился fileId
+            // ИЛИ если есть растровый кадр, а в строке его ещё нет (бэкфилл превью).
+            const needsThumbBackfill = thumbFileId != null;
             const { changes: updateChanges } = db
               .update(stickerPalette)
-              .set({ fileId })
+              .set(needsThumbBackfill ? { fileId, thumbFileId } : { fileId })
               .where(
                 and(
                   eq(stickerPalette.fileUniqueId, fileUniqueId),
-                  sql`${stickerPalette.fileId} != ${fileId}`,
+                  needsThumbBackfill
+                    ? sql`(${stickerPalette.fileId} != ${fileId} OR ${stickerPalette.thumbFileId} IS NULL)`
+                    : sql`${stickerPalette.fileId} != ${fileId}`,
                 ),
               )
               .run();

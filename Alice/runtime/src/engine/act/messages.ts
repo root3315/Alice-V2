@@ -518,12 +518,17 @@ export async function fetchRecentMessages(
           try {
             // Скачиваем buffer
             let buffer: Buffer;
+            // Растровая миниатюра анимированного стикера (.tgs/.webm) — её fileId
+            // сохраняем в палитру, чтобы дашборд показывал статичный превью-кадр.
+            // Для статичных стикеров остаётся undefined (основной файл уже растр).
+            let thumbFileId: string | undefined;
             if (sourceType !== "static") {
               const sticker = media as Sticker;
               const thumb = sticker.thumbnails?.find(
                 (t) => t.width > 0 && !Number.isNaN(t.width) && RASTER_THUMB_TYPES.has(t.type),
               );
               if (!thumb) return { index, fileId, caption: undefined };
+              thumbFileId = thumb.fileId;
               buffer = Buffer.from(await client.downloadAsBuffer(thumb));
             } else {
               buffer = Buffer.from(
@@ -565,6 +570,8 @@ export async function fetchRecentMessages(
                 emotion: analysis.emotion,
                 action: analysis.action,
                 intensity: analysis.intensity,
+                // Растровый превью-кадр для анимированных стикеров (статичные → undefined).
+                thumbFileId,
               });
               log.info("Sticker indexed to palette (fallback pool)", {
                 fileUniqueId,

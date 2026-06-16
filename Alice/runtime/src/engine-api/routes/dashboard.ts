@@ -20,7 +20,6 @@ import { getDb } from "../../db/connection.js";
 import {
   actionLog,
   auditEvents,
-  diaryEntries,
   embeddingCache,
   modStates,
   personalitySnapshots,
@@ -948,8 +947,9 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
     log.warn("dashboard commitments failed", { err: (e as Error).message });
   }
 
-  // ── Память: счётчики фактов/дневника/KB + недавние записи дневника ────────────
-  // Факты живут в графе (getEntitiesByType('fact')); дневник — отдельная таблица diary_entries.
+  // ── Память: счётчики фактов/дневника/KB + недавние мысли дневника ─────────────
+  // Факты живут в графе (getEntitiesByType('fact')); дневник — живые мысли рабочей памяти
+  // diary-мода (state.thoughts[] в mod_states, ADR-225), НЕ legacy-таблица diary_entries.
   // KB = факты с пометкой темы (kb) — считаем по графу, если атрибут доступен; иначе пропускаем.
   let memory: Record<string, unknown> | null = null;
   try {
@@ -971,40 +971,43 @@ function collectData(deps: EngineApiDeps): Record<string, unknown> {
       factCount = 0;
     }
 
+    // Дневник — РАБОЧАЯ ПАМЯТЬ diary-мода (ADR-225): живые мысли (state.thoughts[]) из
+    // mod_states, а НЕ legacy-таблица diary_entries (она пуста). Read-only.
     let diaryCount: number | null = null;
     let recentDiary: Array<Record<string, unknown>> = [];
     try {
-      const d = getDb();
-      diaryCount = d.select({ c: sql<number>`count(*)` }).from(diaryEntries).get()?.c ?? 0;
-      const rows = d
-        .select({
-          id: diaryEntries.id,
-          tick: diaryEntries.tick,
-          content: diaryEntries.content,
-          about: diaryEntries.about,
-          createdAt: diaryEntries.createdAt,
-        })
-        .from(diaryEntries)
-        .orderBy(desc(diaryEntries.id))
-        .limit(12)
-        .all();
-      recentDiary = rows.map((r) => {
-        let aboutName: string | null = null;
-        if (r.about) {
-          try {
-            aboutName = G.has(r.about) ? safeDisplayName(G, r.about) : r.about;
-          } catch {
-            aboutName = r.about;
+      const st = readModState<{
+        thoughts?: Array<{
+          content?: string;
+          about?: string | null;
+          salience?: number;
+          updatedAt?: number;
+        }>;
+      }>("diary");
+      const thoughts = Array.isArray(st?.thoughts) ? st!.thoughts : [];
+      diaryCount = thoughts.length;
+      recentDiary = thoughts
+        .map((t) => {
+          let aboutName: string | null = null;
+          if (t.about) {
+            try {
+              aboutName = G.has(t.about) ? safeDisplayName(G, t.about) : t.about;
+            } catch {
+              aboutName = t.about;
+            }
           }
-        }
-        return {
-          id: r.id,
-          tick: Number(r.tick ?? 0),
-          content: typeof r.content === "string" ? r.content : "",
-          about: aboutName,
-          atMs: r.createdAt instanceof Date ? r.createdAt.getTime() : null,
-        };
-      });
+          return {
+            content: typeof t.content === "string" ? t.content : "",
+            about: aboutName,
+            salience: t.salience != null ? Number(t.salience) : null,
+            atMs: t.updatedAt != null ? Number(t.updatedAt) : null,
+          };
+        })
+        .sort((a, b) => {
+          const ds = Number(b.salience ?? 0) - Number(a.salience ?? 0);
+          return ds !== 0 ? ds : Number(b.atMs ?? 0) - Number(a.atMs ?? 0);
+        })
+        .slice(0, 12);
     } catch (e) {
       log.warn("dashboard diary failed", { err: (e as Error).message });
     }
@@ -1807,7 +1810,7 @@ async function handleEmbeddingsDetail(res: ServerResponse, deps: EngineApiDeps):
  * Каждый блок защищён try/catch (резильентно). Кап ~50 на блок:
  *  - selfFacts: факты на узле self (самопознание / self-reflection — отдельный список),
  *  - contactFacts: недавние факты на контактах (content/type/stability/R/owner/age),
- *  - diary: недавние записи дневника (text + age),
+ *  - diary: живые мысли рабочей памяти diary-мода (text + salience + age, ADR-225),
  *  - kb: факты с fact_type='kb' (база знаний: content + source + age).
  */
 function handleMemoryDetail(res: ServerResponse, deps: EngineApiDeps): void {
@@ -1865,39 +1868,44 @@ function handleMemoryDetail(res: ServerResponse, deps: EngineApiDeps): void {
     log.warn("dashboard memory-detail facts failed", { err: (e as Error).message });
   }
 
-  // Дневник — отдельная таблица diary_entries.
+  // Дневник — РАБОЧАЯ ПАМЯТЬ diary-мода (ADR-225): живые мысли (state.thoughts[]) из
+  // mod_states, а НЕ legacy-таблица diary_entries (она пуста). Поле updatedAt — время
+  // последней эволюции мысли (для «возраст»), salience — значимость. Read-only.
   let diary: Array<Record<string, unknown>> = [];
   try {
-    const d = getDb();
-    const rows = d
-      .select({
-        id: diaryEntries.id,
-        tick: diaryEntries.tick,
-        content: diaryEntries.content,
-        about: diaryEntries.about,
-        createdAt: diaryEntries.createdAt,
-      })
-      .from(diaryEntries)
-      .orderBy(desc(diaryEntries.id))
-      .limit(CAP)
-      .all();
-    diary = rows.map((r) => {
-      let aboutName: string | null = null;
-      if (r.about) {
-        try {
-          aboutName = G.has(r.about) ? safeDisplayName(G, r.about) : r.about;
-        } catch {
-          aboutName = r.about;
+    const st = readModState<{
+      thoughts?: Array<{
+        content?: string;
+        about?: string | null;
+        salience?: number;
+        createdAt?: number;
+        updatedAt?: number;
+      }>;
+    }>("diary");
+    const thoughts = Array.isArray(st?.thoughts) ? st!.thoughts : [];
+    diary = thoughts
+      .map((t) => {
+        let aboutName: string | null = null;
+        if (t.about) {
+          try {
+            aboutName = G.has(t.about) ? safeDisplayName(G, t.about) : t.about;
+          } catch {
+            aboutName = t.about;
+          }
         }
-      }
-      return {
-        id: r.id,
-        tick: Number(r.tick ?? 0),
-        content: typeof r.content === "string" ? r.content : "",
-        about: aboutName,
-        atMs: r.createdAt instanceof Date ? r.createdAt.getTime() : null,
-      };
-    });
+        return {
+          content: typeof t.content === "string" ? t.content : "",
+          about: aboutName,
+          salience: t.salience != null ? Number(t.salience) : null,
+          atMs: t.updatedAt != null ? Number(t.updatedAt) : null,
+        };
+      })
+      // Самые значимые / свежие — сверху (по убыванию значимости, затем по свежести).
+      .sort((a, b) => {
+        const ds = Number(b.salience ?? 0) - Number(a.salience ?? 0);
+        return ds !== 0 ? ds : Number(b.atMs ?? 0) - Number(a.atMs ?? 0);
+      })
+      .slice(0, 30);
   } catch (e) {
     log.warn("dashboard memory-detail diary failed", { err: (e as Error).message });
   }
@@ -2816,13 +2824,14 @@ function renderMemoryDetail(m){
   ].map(x=>'<div class="item" title="'+esc(x[2])+'"><div class="k">'+esc(x[0])+'</div><div class="v">'+x[1]+'</div></div>').join('')+'</div>';
   h+='<h2 style="margin-top:8px">Self-факты <span class="hint">её самопознание</span></h2>'+factListHtml(m.selfFacts,false);
   h+='<h2 style="margin-top:16px">Факты о людях <span class="hint">недавние</span></h2>'+factListHtml(m.contactFacts,true);
-  h+='<h2 style="margin-top:16px">Знания (KB) <span class="hint">база знаний</span></h2>'+factListHtml(m.kb,true);
-  h+='<h2 style="margin-top:16px">Дневник <span class="hint">недавние записи</span></h2>';
+  h+='<h2 style="margin-top:16px">Знания (KB) <span class="hint">база знаний</span></h2>';
+  h+= (m.kb&&m.kb.length) ? factListHtml(m.kb,true) : '<div class="empty">пока пусто — знаний ещё не записано</div>';
+  h+='<h2 style="margin-top:16px">Дневник <span class="hint">живые мысли (рабочая память)</span></h2>';
   const dr=m.diary||[];
   h+= dr.length
-    ? '<div class="scrollbox"><table><thead><tr><th>Тик</th><th>Запись</th><th>О ком</th><th>Возраст</th></tr></thead><tbody>'+
-      dr.map(e=>'<tr><td class="num">'+esc(e.tick)+'</td><td class="feed-text" style="max-width:520px">'+esc(e.content)+'</td><td>'+esc(e.about||'—')+'</td><td class="num">'+(e.atMs?fmtAgo(e.atMs):'—')+'</td></tr>').join('')+'</tbody></table></div>'
-    : '<div class="empty">дневник пуст</div>';
+    ? '<div class="scrollbox"><table><thead><tr><th>Мысль</th><th>О ком</th><th>Значимость</th><th>Возраст</th></tr></thead><tbody>'+
+      dr.map(e=>'<tr><td class="feed-text" style="max-width:520px">'+esc(e.content)+'</td><td>'+esc(e.about||'—')+'</td><td class="num">'+(e.salience!=null?fmtN(e.salience):'—')+'</td><td class="num">'+(e.atMs?fmtAgo(e.atMs):'—')+'</td></tr>').join('')+'</tbody></table></div>'
+    : '<div class="empty">дневник пуст — мыслей ещё не записано</div>';
   $('memDetail').innerHTML=h;
 }
 async function loadMemoryDetail(force){
@@ -3178,12 +3187,12 @@ function renderPortrait(d){
     ]);
   } else $('prtMemory').innerHTML='<div class="empty">нет данных памяти</div>';
 
-  // Дневник (недавние записи).
+  // Дневник (живые мысли рабочей памяти).
   const dr=(mem.recentDiary)||[];
   $('prtDiary').innerHTML = dr.length
-    ? '<div class="scrollbox"><table><thead><tr><th>Тик</th><th>Запись</th><th>О ком</th><th>Когда</th></tr></thead><tbody>'+
-      dr.map(e=>'<tr><td class="num">'+esc(e.tick)+'</td><td class="feed-text" style="max-width:520px">'+esc(e.content)+'</td><td>'+esc(e.about||'—')+'</td><td class="num">'+(e.atMs?fmtAgo(e.atMs):'—')+'</td></tr>').join('')+'</tbody></table></div>'
-    : '<div class="empty">дневник пуст</div>';
+    ? '<div class="scrollbox"><table><thead><tr><th>Мысль</th><th>О ком</th><th>Значимость</th><th>Когда</th></tr></thead><tbody>'+
+      dr.map(e=>'<tr><td class="feed-text" style="max-width:520px">'+esc(e.content)+'</td><td>'+esc(e.about||'—')+'</td><td class="num">'+(e.salience!=null?fmtN(e.salience):'—')+'</td><td class="num">'+(e.atMs?fmtAgo(e.atMs):'—')+'</td></tr>').join('')+'</tbody></table></div>'
+    : '<div class="empty">дневник пуст — мыслей ещё не записано</div>';
 }
 
 /* ════════ СЕМАНТИКА: эмбеддинги + ЖИВАЯ проба TEI (отдельный endpoint). ════════
