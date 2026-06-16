@@ -32,8 +32,10 @@ import {
   type ScriptExecutionErrorCode,
 } from "../../core/script-execution.js";
 import { logPromptSnapshot } from "../../diagnostics/prompt-log.js";
+import { extractNumericId } from "../../graph/constants.js";
 import type { AvailableProvider } from "../../llm/client.js";
 import type { Afterward } from "../../llm/tools.js";
+import { CROSS_CHAT_OBSERVATION_MARKER } from "../act/timeline.js";
 import { drainBoard, isTerminal, updateBoard } from "./blackboard.js";
 import type { TickCallResult, TickExecutionResult, TickFailureResult } from "./callLLM.js";
 import { buildTickPrompt, type TickPromptContext } from "./prompt-builder.js";
@@ -88,6 +90,36 @@ function describeExecutionErrorCode(code: ScriptExecutionErrorCode): string {
     case "shell_nonzero":
       return "команда не выполнилась";
   }
+}
+
+/**
+ * Контекст-скоупинг: прочитала ли команда этого раунда ДРУГОЙ чат (не текущую цель тика).
+ *
+ * Достоверный сигнал — структурированная метаданных наблюдения (ExecutionObservation.targetChatId),
+ * а НЕ текст вывода. Команды чтения чужого чата (`irc tail --in ...`, `recent_chat --in ...`)
+ * проставляют targetChatId; если он указывает на чат, отличный от текущей цели, значит в logs
+ * этого раунда лежат реплики другого разговора. Их нельзя подавать как текущий контекст для ответа —
+ * иначе их тон/цитаты протекают в композицию для текущего чата (cross-chat contamination).
+ *
+ * Сравнение по numeric id: targetChatId бывает и graph-id (`channel:telegram:X`), и сырым (`X`);
+ * приватный чат делит numeric id между contact:X и channel:X.
+ */
+function readsAnotherChat(
+  observations: readonly ExecutionObservation[],
+  tickTarget: string | null,
+): boolean {
+  if (!tickTarget) return false;
+  const tickNum = extractNumericId(tickTarget);
+  if (tickNum == null) return false;
+  for (const obs of observations) {
+    if (!obs.targetChatId) continue;
+    const obsNum = extractNumericId(obs.targetChatId);
+    if (obsNum == null) continue;
+    // targetChatId совпал с текущей целью → чтение СВОЕГО чата, не межчатовое.
+    if (obsNum === tickNum) continue;
+    return true;
+  }
+  return false;
 }
 
 interface IntraTickContinuationDecision {
@@ -302,7 +334,14 @@ export async function tick(
     // ── ADR-213: результат выполнения → observations (фрактальное свёртывание: round → узел-факт) ──
     if (execResult.logs.length > 0) {
       const outputText = execResult.logs.slice(0, 50).join("\n");
-      board.observations.push(`(Command output:\n${outputText})`);
+      // Контекст-скоупинг: если в этом раунде читался ДРУГОЙ чат (`irc tail --in ...` и т.п.),
+      // помечаем вывод служебным маркером — timeline обернёт его в рамку cross-chat
+      // ("do NOT reply to these messages"), чтобы реплики чужого разговора не воспринимались
+      // как текущий контекст для ответа. Достоверный сигнал берём из структурированной
+      // метаданных наблюдения (targetChatId), а не из форматирования текста.
+      const crossChat = readsAnotherChat(execResult.observations, ctx.item.target);
+      const prefix = crossChat ? CROSS_CHAT_OBSERVATION_MARKER : "";
+      board.observations.push(`${prefix}(Command output:\n${outputText})`);
     }
 
     // ── ADR-169: ошибки скрипта → observations (самокоррекция LLM) ──

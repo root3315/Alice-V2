@@ -234,19 +234,45 @@ export class ThoughtTimelineSource implements TimelineSource {
 /**
  * ADR-160 Fix D: Изоляция наблюдений из других чатов.
  *
- * Обнаруживает наблюдения с содержимым из других чатов (по маркеру `[recent_chat]`
- * и паттерну `messages from`) и оборачивает их в тип context.
+ * Обнаруживает наблюдения с содержимым из других чатов и оборачивает их в тип context.
  * Тип context не имеет префикса `[HH:MM]`, визуально чётко отделяя их от текущего разговора.
  *
  * Для сравнения: PeripheralTimelineSource уже корректно использует `kind: "context"`,
  * и LLM правильно воспринимает это как внешний источник. Здесь применяется тот же паттерн.
  *
+ * Обнаружение по двум путям:
+ *  1. НАДЁЖНЫЙ маркер CROSS_CHAT_OBSERVATION_MARKER — проставляется в tick.ts на основе
+ *     структурированной метаданных наблюдения (currentChatId/targetChatId), когда команда
+ *     прочитала ДРУГОЙ чат (`irc tail --in ...`, `recent_chat --in ...` и т.п.). Это
+ *     единственный по-настоящему достоверный сигнал: он не зависит от форматирования текста.
+ *  2. Эвристика по тексту (recent_chat / messages from) — legacy fallback на случай, если
+ *     наблюдение пришло без структурированной метки.
+ *
  * @see docs/adr/158-outbound-feedback-gap.md §Fix D
  */
 
-/** Определяет, содержит ли текст наблюдения контент из другого чата. */
+/**
+ * Стабильный маркер межчатового наблюдения.
+ *
+ * Проставляется в tick.ts ПЕРЕД попаданием в timeline, когда структурированная метаданных
+ * наблюдения (ExecutionObservation.targetChatId) указывает на чат, отличный от текущей цели тика.
+ * Намеренно не несёт человекочитаемого смысла — это служебная метка, не видимая LLM
+ * (она снимается перед рендером содержимого наблюдения).
+ */
+export const CROSS_CHAT_OBSERVATION_MARKER = "__alice_cross_chat__";
+
+/** Снять служебный маркер межчатового наблюдения из текста (если он есть). */
+function stripCrossChatMarker(obs: string): string {
+  return obs.startsWith(CROSS_CHAT_OBSERVATION_MARKER)
+    ? obs.slice(CROSS_CHAT_OBSERVATION_MARKER.length)
+    : obs;
+}
+
+/** Определяет, содержит ли наблюдение контент из другого чата. */
 function isCrossChatObservation(obs: string, target: string): boolean {
-  // Типичный вывод recent_chat содержит "[recent_chat]" или "messages from"
+  // Путь 1: надёжный структурный маркер (проставлен на основе targetChatId наблюдения).
+  if (obs.startsWith(CROSS_CHAT_OBSERVATION_MARKER)) return true;
+  // Путь 2 (legacy эвристика): типичный вывод recent_chat содержит "recent_chat"/"messages from".
   if (!obs.includes("recent_chat") && !obs.includes("recentChat") && !obs.includes("messages from"))
     return false;
   // Если наблюдение явно упоминает target channel, это не межчатовый контент
@@ -263,7 +289,8 @@ export class ObservationTimelineSource implements TimelineSource {
 
     for (const obs of this.observations) {
       if (isCrossChatObservation(obs, target)) {
-        // Межчатовое наблюдение: обернуть в context, явно пометить как недопустимое для ответа
+        // Межчатовое наблюдение: обернуть в context, явно пометить как недопустимое для ответа.
+        // Служебный маркер снимаем — LLM видит только содержимое в рамке cross-chat.
         result.push({
           ts: nowMs - 1,
           kind: "context",
@@ -272,7 +299,7 @@ export class ObservationTimelineSource implements TimelineSource {
         result.push({
           ts: nowMs,
           kind: "observation",
-          rendered: obs,
+          rendered: stripCrossChatMarker(obs),
         });
         result.push({
           ts: nowMs + 1,

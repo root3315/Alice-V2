@@ -9,6 +9,7 @@
  * - `waiting_reply` / `resting` / `fed_up` / `cooling_down` 直接终止
  */
 import { describe, expect, it, vi } from "vitest";
+import { CROSS_CHAT_OBSERVATION_MARKER } from "../src/engine/act/timeline.js";
 import { createBlackboard } from "../src/engine/tick/blackboard.js";
 import type { TickExecutionResult } from "../src/engine/tick/callLLM.js";
 import type { TickDeps } from "../src/engine/tick/tick.js";
@@ -535,5 +536,81 @@ describe("structured block episode continuation", () => {
     const result = await tick(board, [], deps, BASE_CTX);
 
     expect(result.outcome).toBe("resting");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Контекст-скоупинг: чтение ДРУГОГО чата не должно протекать в композицию текущего
+// ═══════════════════════════════════════════════════════════════════════════
+// Регрессия: внутри тика для рабочей группы Alice сделала `irc tail --in <DM>`; интимные
+// реплики DM попали в её prompt как обычный контекст и она выдала тёплый филлер «и тебе 🙂»
+// вне контекста. Достоверный сигнал «это другой чат» — структурированная метаданных
+// наблюдения (targetChatId), а НЕ текст вывода. tick.ts помечает такой вывод служебным
+// маркером, чтобы timeline изолировал его как cross-chat.
+describe("tick observation context scoping (cross-chat read isolation)", () => {
+  const GROUP_TARGET = "channel:telegram:-1003737026444"; // рабочая группа «работач»
+  const DM_NATIVE_ID = "5707638365"; // личка с владельцем
+
+  const ctxForTarget = (target: string) => ({
+    ...BASE_CTX,
+    item: { action: "conversation", target, facetId: "core" } as never,
+  });
+
+  it("вывод раунда, где читался ДРУГОЙ чат (targetChatId ≠ цель тика), помечается cross-chat маркером", async () => {
+    const board = makeBoard(1);
+    const deps = makeDeps([
+      makeExecResult({
+        rawScript: `irc tail --in @${DM_NATIVE_ID} --count 3`,
+        afterward: "done",
+        logs: ['[tail Любимый]', '1. (msgId 7) Любимый: "доброе утро любимая"'],
+        observations: [
+          {
+            kind: "new_message_context",
+            source: "irc.tail",
+            text: '1. (msgId 7) Любимый: "доброе утро любимая"',
+            enablesContinuation: true,
+            // tail --in чужого чата проставляет targetChatId на ТОТ чат (graph-id),
+            // тогда как цель тика — рабочая группа.
+            targetChatId: `channel:telegram:${DM_NATIVE_ID}`,
+            currentChatId: "-1003737026444",
+          },
+        ],
+      }),
+    ]);
+
+    const result = await tick(board, [], deps, ctxForTarget(GROUP_TARGET));
+
+    const obs = result.observations.find((o) => o.includes("доброе утро любимая"));
+    expect(obs).toBeDefined();
+    // Помечено маркером → timeline обернёт как cross-chat «do NOT reply».
+    expect(obs?.startsWith(CROSS_CHAT_OBSERVATION_MARKER)).toBe(true);
+  });
+
+  it("вывод раунда, где читался ТЕКУЩИЙ чат (targetChatId = цель тика), НЕ помечается", async () => {
+    const board = makeBoard(1);
+    const deps = makeDeps([
+      makeExecResult({
+        rawScript: "irc tail --count 3",
+        afterward: "done",
+        logs: ['1. (msgId 99) Bob: "да то самое"'],
+        observations: [
+          {
+            kind: "new_message_context",
+            source: "irc.tail",
+            text: '1. (msgId 99) Bob: "да то самое"',
+            enablesContinuation: true,
+            // Локальное чтение собственного чата → targetChatId совпадает с целью (по numeric id).
+            targetChatId: "-1003737026444",
+            currentChatId: "-1003737026444",
+          },
+        ],
+      }),
+    ]);
+
+    const result = await tick(board, [], deps, ctxForTarget(GROUP_TARGET));
+
+    const obs = result.observations.find((o) => o.includes("да то самое"));
+    expect(obs).toBeDefined();
+    expect(obs?.startsWith(CROSS_CHAT_OBSERVATION_MARKER)).toBe(false);
   });
 });

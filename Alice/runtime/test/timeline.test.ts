@@ -20,6 +20,7 @@ vi.mock("../src/db/queries.js", () => ({
 import { getRecentActionsByChat } from "../src/db/queries.js";
 import {
   buildTimeline,
+  CROSS_CHAT_OBSERVATION_MARKER,
   MessageTimelineSource,
   ObservationTimelineSource,
   renderMessageContent,
@@ -588,6 +589,44 @@ describe("ObservationTimelineSource", () => {
     expect(entries[4].kind).toBe("observation"); // 普通 1
     expect(entries[5].kind).toBe("observation"); // 普通 2
     expect(entries[6].rendered).toBe("--- end observations ---");
+  });
+
+  // ── Context-scoping: cross-chat read by reliable structured marker ──────────
+  // Регрессия: `irc tail --in <DM>` внутри тика для рабочей группы протекал интимными
+  // репликами DM в композицию (warm filler «и тебе 🙂» вне контекста). Текст вывода tail
+  // не содержит "messages from", поэтому старая эвристика его не ловила. Теперь tick.ts
+  // помечает такой вывод структурным маркером, и timeline обязан изолировать его как cross-chat.
+  it("структурный маркер cross-chat → обёрнут в рамку cross-chat (tail --in другого чата)", () => {
+    // Вывод `irc tail --in <DM>` БЕЗ "messages from" — старая эвристика бы его пропустила.
+    const tailOutput = `${CROSS_CHAT_OBSERVATION_MARKER}(Command output:\n[tail Любимый]\n1. (msgId 7) Любимый: "доброе утро любимая")`;
+    const source = new ObservationTimelineSource([tailOutput]);
+    // target — рабочая группа; в выводе её id НЕ упоминается.
+    const entries = source.entries("channel:telegram:-1003737026444", 0, 42000);
+
+    // header + observation + footer (cross-chat независимая обёртка)
+    expect(entries).toHaveLength(3);
+    expect(entries[0].kind).toBe("context");
+    expect(entries[0].rendered).toContain("cross-chat reference");
+    expect(entries[0].rendered).toContain("do NOT reply");
+    expect(entries[1].kind).toBe("observation");
+    // Служебный маркер снят — LLM видит чистое содержимое внутри рамки cross-chat.
+    expect(entries[1].rendered).not.toContain(CROSS_CHAT_OBSERVATION_MARKER);
+    expect(entries[1].rendered).toContain("доброе утро любимая");
+    expect(entries[2].kind).toBe("context");
+    expect(entries[2].rendered).toBe("--- end cross-chat ---");
+  });
+
+  it("вывод команды для ТЕКУЩЕГО чата (без маркера) → обычный блок observations, НЕ cross-chat", () => {
+    // Чтение собственного чата маркером не помечается → остаётся обычным контекстом для ответа.
+    const localOutput = `(Command output:\n[tail current]\n1. Bob: "да то самое")`;
+    const source = new ObservationTimelineSource([localOutput]);
+    const entries = source.entries("channel:telegram:-1003737026444", 0, 42000);
+
+    expect(entries).toHaveLength(3);
+    expect(entries[0].rendered).toBe("--- observations ---");
+    expect(entries[1].kind).toBe("observation");
+    expect(entries[1].rendered).toContain("да то самое");
+    expect(entries[2].rendered).toBe("--- end observations ---");
   });
 });
 
