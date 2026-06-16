@@ -213,6 +213,44 @@ export const memoryMod = createMod<MemoryState>("memory", {
       }
     }
 
+    // 1b. Её СОБСТВЕННЫЕ недавние реплики в этом чате — ВСЕГДА на виду, даже когда окно выше
+    //     тонет в шуме (в рабочем чате бот-уведомления вытесняют её сообщения из последних 20).
+    //     Чтобы она помнила, что уже писала, и не повторяла одно и то же по кругу (напр. слать
+    //     «и тебе»/«и мне good» снова и снова). Берётся из БД → переживает рестарт.
+    if (ctx.state.targetChatId) {
+      const mine = db
+        .select()
+        .from(messageLog)
+        .where(eq(messageLog.chatId, ctx.state.targetChatId))
+        .orderBy(desc(messageLog.id))
+        .limit(120)
+        .all()
+        .filter((m) => m.isOutgoing)
+        .slice(0, 6)
+        .reverse();
+      if (mine.length > 0) {
+        const mb = new PromptBuilder();
+        for (const m of mine) {
+          const agoS = estimateAgeS(m, ctx.nowMs, ctx.tick);
+          const preview = m.text
+            ? m.text.length > 120
+              ? `${m.text.slice(0, 120)}...`
+              : m.text
+            : "(no text)";
+          mb.line(`[${humanDurationAgo(agoS)}] ${preview}`);
+        }
+        items.push(
+          section(
+            "recent-self",
+            mb.build(),
+            "Что ты сама уже недавно написала здесь (помни — не повторяй одно и то же по кругу):",
+            19,
+            78,
+          ),
+        );
+      }
+    }
+
     // 2. Ретроспектива диалога — структурированный снимок временной шкалы (философия PageIndex: давать структуру, дать LLM рассуждать)
     //    Запрашивать последние 100 сообщений (исключая уже показанные 20), разбивать по промежуткам, резюме начала и конца
     if (ctx.state.targetChatId) {
