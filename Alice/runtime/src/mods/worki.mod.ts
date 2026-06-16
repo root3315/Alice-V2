@@ -268,6 +268,49 @@ function scrubToken(s: string): string {
   return out.replace(/x-access-token:[^@\s]*@/g, "x-access-token:***@");
 }
 
+/**
+ * Подтянуть свежие объекты base-ветки в dev-клон НА ХОСТЕ перед read-задачами по коду.
+ *
+ * Зачем: read-путь (ревью/анализ/тест/прогон) резолвит конкретный коммит/реф в read-only
+ * dev-клоне через прокси. Если клон отстал и нужного коммита нет — ревью идёт по СТАРОМУ коду,
+ * а git fetch без авторизации на ПРИВАТНОМ репо падает с «fetch failed» (нет кэша host-creds).
+ * Поэтому фетчим ЗДЕСЬ, на хосте, токен-URL'ом (как code_pr для push). Токен host-only —
+ * в Docker-песочницу не идёт (это просто локальный `git -C DEV_CLONE fetch`, не sandbox-команда).
+ *
+ * ТОЛЬКО fetch: НЕ трогаем рабочее дерево / текущую ветку / локальные fix-ветки (никаких
+ * checkout/reset/pull) — нужно лишь чтобы объекты были на месте, реф резолвит сам ревью-путь.
+ * Обновляем и локальный refs/remotes/origin/<base>, чтобы прокси/клон видел новые коммиты.
+ * Идемпотентно и дёшево; ошибки/пустой токен — не валим ревью, лишь предупреждаем (санитизировано).
+ */
+async function fetchDevCloneFresh(): Promise<void> {
+  if (!WORKI_ALICE_TOKEN) {
+    log.warn("worki: WORKI_ALICE_TOKEN пуст — пропускаю fetch dev-клона (приватный репо не обновить)");
+    return;
+  }
+  const tokenUrl = `https://x-access-token:${WORKI_ALICE_TOKEN}@github.com/${WORKI_ALICE_REPO}.git`;
+  try {
+    // FETCH-only: тянем base-ветку и обновляем локальный origin/<base>-реф (никаких мутаций дерева).
+    const { stdout, stderr } = await execFileP(
+      "git",
+      [
+        "-C",
+        DEV_CLONE,
+        "fetch",
+        tokenUrl,
+        `+refs/heads/${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}`,
+      ],
+      { timeout: GIT_TIMEOUT_MS, env: GIT_ENV },
+    );
+    const tail = scrubToken(`${stdout}\n${stderr}`.trim());
+    log.debug("worki: dev-клон обновлён (fetch)", { out: tail.slice(0, 200) });
+  } catch (err) {
+    // Не валим ревью: реф может уже быть на месте (стоп-гэп ручного фетча) — отдаём что есть.
+    log.warn("worki: fetch dev-клона не удался — продолжаю на текущем состоянии", {
+      err: scrubToken((err as Error).message),
+    });
+  }
+}
+
 async function postJson(url: string, body: unknown, timeoutSec: number): Promise<Record<string, unknown>> {
   const res = await fetch(url, {
     method: "POST",
@@ -316,6 +359,9 @@ async function runAnalysis(
 ): Promise<void> {
   const e = pending.get(id);
   if (!e) return;
+  // Read-путь: сначала подтягиваем свежую base в dev-клон (host-only токен), чтобы ревью шло по
+  // актуальному коду, а резолв нужного коммита не падал «fetch failed» на приватном репо.
+  await fetchDevCloneFresh();
   try {
     const data = await postJson(
       CODE_ANALYZE_URL,
@@ -371,6 +417,8 @@ async function runFix(
 ): Promise<void> {
   const e = pending.get(id);
   if (!e) return;
+  // Фикс ветвится от свежей base — подтягиваем её перед стартом (host-only токен).
+  await fetchDevCloneFresh();
   try {
     const data = await postJson(
       CODE_FIX_URL,
@@ -408,6 +456,8 @@ async function runTest(
 ): Promise<void> {
   const e = pending.get(id);
   if (!e) return;
+  // Тесты гоняем по свежей base — подтягиваем перед прогоном (host-only токен).
+  await fetchDevCloneFresh();
   try {
     const data = await postJson(
       CODE_TEST_URL,
@@ -445,6 +495,8 @@ async function runCommand(
 ): Promise<void> {
   const e = pending.get(id);
   if (!e) return;
+  // Команду (build/lint/test) гоняем по свежей base — подтягиваем перед запуском (host-only токен).
+  await fetchDevCloneFresh();
   try {
     // Прокси держит allowlist (build/lint/test и т.п.) и сам режет всё остальное — мы лишь
     // передаём команду. Возвращает exit-код + хвост вывода.
