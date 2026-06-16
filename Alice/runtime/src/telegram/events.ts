@@ -12,6 +12,7 @@ import { writeCanonicalEvent, writeCanonicalEventOnce } from "../db/canonical-ev
 import { getDb } from "../db/connection.js";
 import { messageLog } from "../db/schema.js";
 import { terminateConversation } from "../engine/conversation.js";
+import { recordTyping } from "../engine/react/typing-tracker.js";
 import { telegramChannelId, telegramContactId } from "../graph/constants.js";
 import type { ChatType } from "../graph/entities.js";
 import type { WorldModel } from "../graph/world-model.js";
@@ -791,6 +792,18 @@ export function bindEvents(
 
     // Пропускаем собственный typing Alice
     if (userId === getSelfId()) return;
+
+    // Typing-aware burst settle: фиксируем ТОЛЬКО реальный набор текста (status "typing" в mtcute
+    // соответствует TL sendMessageTypingAction / sendMessageTextDraftAction; upload/record/sticker и
+    // прочее сюда не попадают). chatId уже маркирован mtcute, поэтому channelId совпадает с
+    // targetChannelId в orchestrator. Эфемерно, не персистится; обёрнуто — никогда не роняет хендлер.
+    if (ctx.status === "typing") {
+      try {
+        recordTyping(channelId, contactId ?? null, Date.now());
+      } catch (e) {
+        log.warn("recordTyping failed (ignored)", e);
+      }
+    }
 
     pushCanonicalPerturbation(
       buffer,

@@ -55,6 +55,7 @@ import { measureClosureDepth } from "../closure-depth.js";
 import { commitActEvents } from "../consciousness.js";
 import { runTickSubcycle } from "../tick/bridge.js";
 import { processResult } from "./feedback-arc.js";
+import { isTyping, lastTypingMs } from "./typing-tracker.js";
 
 const log = createLogger("react:orchestrator");
 
@@ -74,6 +75,61 @@ const RESTING_DURATION_MS = 30 * 60 * 1000;
  * Алиса отвечает немедленно — в обычном случае задержки нет.
  */
 const BURST_SETTLE_MS = 1800;
+
+/**
+ * Typing-aware burst settle — ждать, ПОКА собеседник печатает.
+ *
+ * Лучше фиксированной паузы: если в целевом чате кто-то печатает (получаем typing-апдейты Telegram),
+ * Алиса ждёт окончания набора, чтобы ответить на ВЕСЬ всплеск, а не на его половину — как живой человек.
+ * Фиксированная пауза BURST_SETTLE_MS остаётся FALLBACK на случай, когда сигнала typing нет вовсе
+ * (клиент их не шлёт / уже перестал печатать).
+ *
+ * Безопасность (см. nextSettleWait): жёсткий потолок суммарного ожидания TYPING_WAIT_CAP_MS — она
+ * никогда не зависнет, даже если собеседник пишет роман или индикатор «залип». Вся фаза settle
+ * (typing-ожидание + фиксированная пауза) применяется НЕ БОЛЕЕ одного раза на engagement (slot.burstSettled).
+ */
+/** Интервал опроса состояния typing во время ожидания (мс). */
+const TYPING_POLL_MS = 700;
+/** Сколько typing должен «молчать», чтобы считать набор оконченным (мс). */
+const TYPING_QUIET_MS = 1500;
+/** Окно «свежести» typing-сигнала: апдейты Telegram действительны ~6с. */
+const TYPING_RECENT_MS = 6000;
+/** Жёсткий потолок суммарного ожидания фазы settle (мс) — страховка от зависания. */
+export const TYPING_WAIT_CAP_MS = 9000;
+
+/** Параметры одного шага ожидания (для удобства вызова из orchestrator с именованными константами). */
+export interface SettleWaitInput {
+  /** Сколько мс прошло с последнего typing-сигнала (now - lastTypingMs). undefined = сигнала не было вовсе. */
+  quietForMs: number | undefined;
+  /** Сколько уже прождали в этой фазе settle (мс). */
+  waitedMs: number;
+  /** Порог тишины: typing должен «молчать» столько мс, чтобы считать набор оконченным. */
+  quietMs: number;
+  /** Жёсткий потолок суммарного ожидания (мс). */
+  capMs: number;
+  /** Шаг опроса (мс). */
+  pollMs: number;
+}
+
+/**
+ * Чистое решение одного шага typing-aware ожидания (вынесено для детерминированного теста).
+ *
+ * Ожидание продолжается, пока собеседник «недавно печатал» (тишина короче `quietMs`) И не исчерпан
+ * жёсткий потолок `capMs`. Как только typing замолчал на `quietMs` (`quietForMs >= quietMs`) ИЛИ
+ * достигнут потолок — ожидание прекращается, и Алиса отвечает (ответ НЕ пропускается, меняется только МОМЕНТ).
+ *
+ * @returns wait — продолжать ли ожидание; sleepMs — сколько спать до следующей проверки (≤ остатка до потолка)
+ */
+export function nextSettleWait(input: SettleWaitInput): { wait: boolean; sleepMs: number } {
+  const { quietForMs, waitedMs, quietMs, capMs, pollMs } = input;
+  const remaining = capMs - waitedMs;
+  // Потолок исчерпан → отвечаем немедленно (страховка от зависания на бесконечном typing).
+  if (remaining <= 0) return { wait: false, sleepMs: 0 };
+  // Сигнала typing нет вовсе / он замолчал дольше порога тишины → набор окончен, больше не ждём.
+  if (quietForMs === undefined || quietForMs >= quietMs) return { wait: false, sleepMs: 0 };
+  // Печатает (тишина короче порога) → ждём ещё один интервал опроса, не выходя за потолок.
+  return { wait: true, sleepMs: Math.min(pollMs, remaining) };
+}
 
 function isConversationOutput(action: CompletedAction): boolean {
   return (
@@ -163,6 +219,29 @@ export function shouldSettleBurst(
   if (alreadySettled) return false;
   if (lastIncomingMs === undefined) return false;
   return nowMs - lastIncomingMs < BURST_SETTLE_MS;
+}
+
+/**
+ * Перечитывает live-сообщения после фазы settle, чтобы прицепившиеся реплики серии попали в контекст
+ * этого subcycle. Перечитывание не критично: при сбое продолжаем с уже имеющимися сообщениями —
+ * ответ не пропускается, просто без свежей дочитки. Вынесено, чтобы typing-ожидание и фиксированная
+ * пауза переиспользовали одну и ту же логику refetch.
+ */
+async function settleRefetch(ctx: ActContext, slot: EngagementSlot): Promise<void> {
+  if (!slot.targetChatId) return;
+  const chatType = ctx.G.has(slot.item.target ?? "")
+    ? ctx.G.getChannel(slot.item.target ?? "").chat_type
+    : undefined;
+  try {
+    slot.liveMessages = await fetchRecentMessages(ctx.client, slot.targetChatId, ctx.config, {
+      chatType,
+    });
+  } catch (err) {
+    log.warn("Burst settle: refetch failed → continue with existing messages", {
+      target: slot.item.target,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 /**
@@ -414,41 +493,54 @@ export async function startReActLoop(ctx: ActContext): Promise<void> {
     lastTarget = next.item.target;
 
     // ── 4b. Окно дочитывания (burst settle) — дать серии сообщений осесть ──
-    // Если последнее входящее свежее (собеседник, вероятно, ещё дописывает серию),
-    // ждём короткую ограниченную паузу и перечитываем сообщения, чтобы вся серия попала
-    // в контекст до составления ответа. Жёсткий предел: не более одной паузы на engagement
-    // (slot.burstSettled), поэтому слот никогда не голодает и не зависает. Ответ не пропускается
-    // и не меняется по содержанию — меняется только МОМЕНТ (на удар сердца позже, с полным контекстом).
-    if (next.targetChannelId && ctx.G.has(next.targetChannelId)) {
-      const lastIncomingMs = ctx.G.getChannel(next.targetChannelId).last_incoming_ms;
-      if (shouldSettleBurst(lastIncomingMs, Date.now(), next.burstSettled)) {
-        next.burstSettled = true; // жёсткий предел: одна пауза на engagement
+    // Если собеседник, вероятно, ещё дописывает серию, ждём короткую ограниченную паузу и перечитываем
+    // сообщения, чтобы вся серия попала в контекст до составления ответа. Ответ не пропускается и не
+    // меняется по содержанию — меняется только МОМЕНТ (на удар сердца позже, с полным контекстом).
+    //
+    // Typing-aware: если в чате прямо сейчас ПЕЧАТАЮТ (typing-апдейты Telegram), ждём, ПОКА набор не
+    // закончится (опрос каждые TYPING_POLL_MS, выход после тишины TYPING_QUIET_MS) — лучше фиксированной
+    // паузы. Если сигнала typing нет — fallback к фиксированной паузе BURST_SETTLE_MS, как раньше.
+    //
+    // Жёсткие пределы: вся фаза settle применяется НЕ БОЛЕЕ одного раза на engagement (slot.burstSettled),
+    // суммарное ожидание ограничено TYPING_WAIT_CAP_MS — слот никогда не голодает и не зависает.
+    if (next.targetChannelId && ctx.G.has(next.targetChannelId) && !next.burstSettled) {
+      const targetChannelId = next.targetChannelId;
+      const settleStart = Date.now();
+      const typingActive = isTyping(targetChannelId, settleStart, TYPING_RECENT_MS);
+      const lastIncomingMs = ctx.G.getChannel(targetChannelId).last_incoming_ms;
+
+      if (typingActive) {
+        // Кто-то печатает → ждём окончания набора (ограниченный цикл опроса).
+        next.burstSettled = true; // жёсткий предел: одна фаза settle на engagement
+        log.info("Burst settle (typing-aware): waiting for the typist to finish", {
+          target: next.item.target,
+          capMs: TYPING_WAIT_CAP_MS,
+          lastTypingAgoMs: settleStart - (lastTypingMs(targetChannelId) ?? settleStart),
+        });
+        for (;;) {
+          const now = Date.now();
+          const lastTyped = lastTypingMs(targetChannelId);
+          const decision = nextSettleWait({
+            // Тишина с последнего typing-сигнала: undefined = сигнала не было (выходим сразу).
+            quietForMs: lastTyped === undefined ? undefined : now - lastTyped,
+            waitedMs: now - settleStart,
+            quietMs: TYPING_QUIET_MS,
+            capMs: TYPING_WAIT_CAP_MS,
+            pollMs: TYPING_POLL_MS,
+          });
+          if (!decision.wait) break;
+          await new Promise((resolve) => setTimeout(resolve, decision.sleepMs));
+        }
+        await settleRefetch(ctx, next);
+      } else if (shouldSettleBurst(lastIncomingMs, settleStart, next.burstSettled)) {
+        // Сигнала typing нет, но последнее входящее свежее → фиксированная пауза (прежнее поведение).
+        next.burstSettled = true; // жёсткий предел: одна фаза settle на engagement
         log.info("Burst settle: deferring one beat to let the message burst land", {
           target: next.item.target,
           settleMs: BURST_SETTLE_MS,
         });
         await new Promise((resolve) => setTimeout(resolve, BURST_SETTLE_MS));
-        // Перечитываем сообщения, чтобы прицепившиеся реплики серии попали в контекст этого subcycle.
-        if (next.targetChatId) {
-          const chatType = ctx.G.has(next.item.target ?? "")
-            ? ctx.G.getChannel(next.item.target ?? "").chat_type
-            : undefined;
-          try {
-            next.liveMessages = await fetchRecentMessages(
-              ctx.client,
-              next.targetChatId,
-              ctx.config,
-              { chatType },
-            );
-          } catch (err) {
-            // Перечитывание не критично: если упало, продолжаем с уже имеющимися сообщениями —
-            // ответ не пропускается, просто без свежей дочитки.
-            log.warn("Burst settle: refetch failed → continue with existing messages", {
-              target: next.item.target,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        }
+        await settleRefetch(ctx, next);
       }
     }
 
