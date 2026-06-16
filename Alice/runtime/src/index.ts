@@ -1207,7 +1207,10 @@ async function main() {
   // @see docs/adr/54-pre-mortem-safety-net.md §S1
   {
     const S1_MAX_ATTEMPTS = 3;
-    const S1_TIMEOUT_MS = 15_000;
+    // 45s: холодный `claude` CLI за прокси на первом вызове отвечает дольше прогретого
+    // (прогретый ~14s); при 15s старт-проверка таймаутила и роняла загрузку (FATAL) на
+    // ещё-не-прогретом прокси. 45s спокойно покрывает холодный старт.
+    const S1_TIMEOUT_MS = 45_000;
     let s1Passed = false;
     for (let attempt = 1; attempt <= S1_MAX_ATTEMPTS; attempt++) {
       try {
