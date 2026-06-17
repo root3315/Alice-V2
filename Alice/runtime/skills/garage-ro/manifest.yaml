@@ -1,0 +1,87 @@
+name: garage-ro
+version: "0.1.0"
+author: "Alice"
+license: "MIT"
+description: "Read-only доступ к Garage Code: статус, история, show версии, diff, список веток. Fail-closed — каждое действие это ОДНА жёстко зашитая read-подкоманда, write-операции физически недостижимы."
+
+# ВАЖНО (WS-2, безопасность):
+# - Сырой `garage` НЕ должен попадать в allowlist валидатора. Брейн может звать
+#   только эти действия (garage_status и т.д.), а не `garage <что угодно>`.
+# - Нет действия «выполнить произвольную подкоманду» → парсить аргументы не нужно,
+#   save/deploy/merge/branch-delete/switch/review/login/link недостижимы.
+# - Серверного read-only scope в Garage НЕТ (Аркадий) → токен полный. Это
+#   КЛИЕНТСКАЯ стена без серверной страховки. Поэтому — только фикс-подкоманды.
+#
+# ЧЕРНОВИК — НЕ объявлен в alice-env.yaml и не активен, пока не будет:
+#   (1) linux-бинарь `garage` в образе песочницы (Dockerfile.skill-runner);
+#   (2) auth-токен ~/.garage/token (gct_, монтируется) + привязка репы в
+#       /work/worki/.garage/config.json;
+#   (3) гейт на OPS_CHANNEL_ID (видимость только в рабочем канале);
+#   (4) проверка, не пишет ли garage в .garage/ при read (иначе :ro mount сломает).
+# pull — НЕ здесь: пишет в клон, а mount :ro → обновление клона делаем host-cron'ом.
+
+actions:
+  - name: garage_status
+    category: ops
+    description:
+      - "Статус репо Worki в Garage: что изменилось vs последний сейв (как git status)."
+    whenToUse: "Узнать текущее состояние репо при триаже инцидента/ревью."
+    params: []
+    runtime:
+      shell:
+        command: "cd /work/worki && garage status"
+
+  - name: garage_history
+    category: ops
+    description:
+      - "История версий и деплоев ветки (последние сверху)."
+    whenToUse: "Посмотреть недавние версии/деплои."
+    params: []
+    runtime:
+      shell:
+        command: "cd /work/worki && garage history"
+
+  - name: garage_show
+    category: ops
+    description:
+      - "Метаданные + diff конкретной версии — читать что в ней (ревью/изменения)."
+    whenToUse: "Посмотреть содержимое версии по id из history или из сообщения бота."
+    params:
+      - name: version
+        type: string
+        required: true
+        description: "Id версии (напр. d0679e6b)."
+    runtime:
+      shell:
+        command: "cd /work/worki && garage show {{version}}"
+
+  - name: garage_diff
+    category: ops
+    description:
+      - "Diff рабочего дерева клона vs последний сейв."
+    whenToUse: "Прочитать незакоммиченные изменения в клоне."
+    params: []
+    runtime:
+      shell:
+        command: "cd /work/worki && garage diff"
+
+  - name: garage_branch
+    category: ops
+    description:
+      - "Список веток (только чтение)."
+    whenToUse: "Посмотреть, какие есть ветки."
+    params: []
+    runtime:
+      shell:
+        command: "cd /work/worki && garage branch"
+
+runtime:
+  backend: shell
+  network: true
+  isolation: sandboxed
+  memory: "512m"
+  timeout: 30
+
+family:
+  label: "Garage (чтение)"
+  whenToUse: "Читать состояние/историю/diff Worki в Garage при ops-триаже (только рабочий канал)"

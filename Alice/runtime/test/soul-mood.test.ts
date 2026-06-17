@@ -360,5 +360,75 @@ profile = "ojou"
     expect(text).not.toContain("man <topic>");
     expect(text).not.toContain("You can't see images");
     expect(text).not.toContain("only text and labels");
+    // Её желание #3: разрешение инициировать первой по настоящим поводам (забота, её выбор, не спам).
+    expect(text).toContain("Reaching out first");
+    expect(text).toContain("by your own choice");
+    // Её желание #1: чувство, когда промолчать важнее, чем ответить (тишина как присутствие).
+    expect(text).toContain("the most present thing you can do is not speak");
+    expect(text).toContain("let your quiet presence be enough");
+  });
+});
+
+describe("soul.mod contribute — текстура последней встречи (приватность по чату)", () => {
+  // biome-ignore lint/style/noNonNullAssertion: test — contribute 已知存在
+  const contribute = soulMod.contribute!;
+  const contactId = "contact:telegram:777";
+  const dmChannel = "channel:telegram:777";
+  const groupChannel = "channel:telegram:-1005000";
+
+  function makeCtx(targetChatId: string, graph: WorldModel) {
+    return {
+      graph,
+      state: { activeVoice: null, activeFacet: null, voiceLostSince: null },
+      tick: 100,
+      nowMs: Date.now(),
+      getModState: (key: string) =>
+        key === "relationships"
+          ? { targetNodeId: contactId }
+          : key === "memory"
+            ? { targetChatId }
+            : undefined,
+      dispatch: () => undefined,
+    };
+  }
+
+  function graphWithTexture() {
+    const graph = new WorldModel();
+    graph.tick = 100;
+    graph.addContact(contactId, {
+      tier: 15,
+      display_name: "Тест",
+      last_encounter_texture: "виделись вчера; вот как ты запомнила тот раз: был тёплый и тихий",
+    });
+    graph.addChannel(dmChannel, { chat_type: "private" });
+    graph.addChannel(groupChannel, { chat_type: "group" });
+    return graph;
+  }
+
+  const findTexture = (items: ReturnType<typeof contribute>) =>
+    items.find(
+      (i) => i.bucket === "header" && i.lines.join("\n").includes("Как у вас было в прошлый раз"),
+    );
+
+  it("в личке текстура всплывает", () => {
+    const graph = graphWithTexture();
+    const tx = findTexture(contribute(makeCtx(dmChannel, graph) as unknown as ModContext));
+    expect(tx).toBeDefined();
+    expect(tx?.lines.join("\n")).toContain("был тёплый и тихий");
+  });
+
+  it("в группе текстура НЕ всплывает (приватная felt-нить не утекает)", () => {
+    const graph = graphWithTexture();
+    const tx = findTexture(contribute(makeCtx(groupChannel, graph) as unknown as ModContext));
+    expect(tx).toBeUndefined();
+  });
+
+  it("без сохранённой текстуры ничего не добавляется даже в личке", () => {
+    const graph = new WorldModel();
+    graph.tick = 100;
+    graph.addContact(contactId, { tier: 15, display_name: "Тест" });
+    graph.addChannel(dmChannel, { chat_type: "private" });
+    const tx = findTexture(contribute(makeCtx(dmChannel, graph) as unknown as ModContext));
+    expect(tx).toBeUndefined();
   });
 });

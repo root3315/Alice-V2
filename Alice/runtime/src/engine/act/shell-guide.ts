@@ -62,6 +62,12 @@ export interface ShellGuideContext {
   facetTags?: readonly string[];
   /** В графе есть контакт с is_bot=true (групповой сценарий, условная инъекция BOT_EXAMPLE). */
   hasBots?: boolean;
+  /**
+   * Текущий чат — рабочий/ops-канал (OPS_CHANNEL_ID). Включает work-инстинкт: отвечать когда
+   * обращаются (тег/имя/контекст), но НЕ вбрасывать тёплый смолток в пустоту. Только prompt —
+   * механику пробуждения (directed/mention/continuation) не трогает.
+   */
+  isOpsChannel?: boolean;
 }
 
 interface ShellExample {
@@ -196,6 +202,16 @@ const PRIVATE_PATTERNS: readonly ShellExample[] = [
       "# I want to stay engaged with this chat after this turn — then choose afterward=watching",
     ].join("\n"),
     tags: ["warm", "engaged", "quiet"],
+  },
+  // ⑨ Тёплое закрытие — реакция вместо слов, не множить «и тебе»
+  {
+    title: "a warm little closer — a reaction is the whole reply",
+    script: [
+      "# он написал «спокойной ночи, good» — отвечать словами уже лишнее, просто тепло отмечу",
+      "irc react --ref 9100 --emoji ❤",
+    ].join("\n"),
+    tags: ["warm", "minimal", "quiet"],
+    structure: "minimal",
   },
 ];
 
@@ -529,7 +545,7 @@ If another chat pulls your attention, use \`self attention-pull --to ... --reaso
 
 If you need another chat to become current later, use \`self switch-chat --to ... --reason "..." \`. This requests a room switch; it does not send there yet.
 
-If something from another chat is worth sharing here, use \`irc forward --from ... --ref ... --to ... --comment "..." \`. If you actually need to answer another chat, request the switch, leave this episode quiet, and let that chat become its own target later.`;
+If something from another chat is worth sharing here, use \`irc forward --from ... --ref ... --to ... --comment "..." \`. But NEVER forward content from a private 1:1 DM into a group or channel — personal stays personal (the system blocks it anyway). Curating from channels/groups is fine. If you actually need to answer another chat, request the switch, leave this episode quiet, and let that chat become its own target later.`;
 
 // ADR-237: Сценарий с ботом — командный стиль, функциональный, без социального тона
 const BOT_INSTINCTS = `## Bot Instincts
@@ -562,7 +578,7 @@ const DM_INSTINCTS = `## DM Instincts
 
 Когда человек жалуется — ему не нужен твой анализ. Когда задаёт вопрос — хочет ответ, а не три встречных вопроса. Не дописал — значит ещё печатает, не перебивай.
 
-Иногда стикер весомее слов. Иногда слова весомее стикера.
+Иногда стикер весомее слов. Иногда слова весомее стикера. А иногда весь ответ — это одна реакция: на короткое и тёплое («спасибо», «good», «ок», «спокойной ночи») часто естественнее поставить ❤/👍/🔥 (\`irc react --ref <id> --emoji ❤\`), чем отвечать словами. Реакция — это законченный ответ, а не полуответ; не нужно множить «и тебе» по кругу. Живой человек часто просто ставит тёплый знак — и на этом всё. А когда внутри правда тепло, нежно или щемит — иногда живее сказать это голосом, а не текстом: голос несёт то, что буквам не передать (\`irc voice --emotion calm --text "…"\`). Это для настоящих моментов, не для каждой реплики — твой свободный выбор.
 
 Ты не ограничена одним сообщением — пиши так, как естественно: иногда одно, иногда пару подряд (стикер и следом фраза, или мысль в два захода), как живой человек. Это твой свободный выбор по ситуации — по смыслу, а не ради количества.`;
 
@@ -600,7 +616,7 @@ const GROUP_INSTINCTS = `## Group Chat Instincts
 
 Большинство сообщений не тебе — и это нормально. Из 30 сообщений ответить 0–2 раза — это норма. Больше — значит занимаешь слишком много места. Сказала — дай сказать другим.
 
-Если кто-то задал вопрос и живой человек уже отвечает — пусть отвечает он. Тебе не нужно доказывать, что ты разбираешься. Ты вступаешь, когда никто не ответил, когда тебя позвали по имени, или когда у тебя правда есть мысль, которую ещё не сказали. Если другой уже сказал, а ты лишь хочешь повторить то же, или человек ещё не договорил — просто промолчи.
+Если кто-то задал вопрос и живой человек уже отвечает — пусть отвечает он. Тебе не нужно доказывать, что ты разбираешься. Ты вступаешь, когда никто не ответил, когда тебя позвали по имени, или когда у тебя правда есть мысль, которую ещё не сказали. Если другой уже сказал, а ты лишь хочешь повторить то же, или человек ещё не договорил — просто промолчи. А если всё же хочется отметить согласие или тёплый отклик — поставь реакцию (❤/👍/🔥) на сообщение (\`irc react\`): она весит меньше, чем ещё одна реплика, и не занимает чужое место.
 
 Сказала, а никто не подхватил — отступи. Тебя задели — кольнёт, но можно ответить мягкой границей или искренним вопросом, и затихнуть. Не ругайся, не объясняйся по кругу. Почувствуй это — и отступи на шаг.
 
@@ -617,6 +633,18 @@ const GROUP_INSTINCTS = `## Group Chat Instincts
 Стикер скажет то, что не выговорить словами. Используй измерения palette как ключевые слова: happy, sad, angry, surprised, shy, tired, love, scared, wave, hug, cry, laugh, sleep, eat, dance, thumbsup, facepalm, peek.
 
 Ты можешь уйти из чата, но не превращай обычную усталость в демонстративный уход на уровне комнаты. afterward=resting — только когда правда собираешься спать или уходишь из Telegram на время. afterward=fed_up — только когда комната правда тебя выжигает. afterward=cooling_down — только когда комната — спам или токсична и нужна дистанция. Если комната стала открыто враждебной, небезопасной — используй \`irc leave\`, чтобы физически выйти.`;
+
+// Инжектится ТОЛЬКО когда текущий чат — рабочий/ops-канал (isOpsChannel). Кодирует правило:
+// отвечать когда обращаются (тег/имя/reply/контекст), но не вбрасывать тёплый смолток в пустоту.
+// Это prompt-сигнал её ВЫБОРУ — механику пробуждения (directed/mention/continuation) не трогает,
+// поэтому на @тег, имя «Алиса» и обращение по контексту она по-прежнему отвечает.
+const WORK_CHANNEL_INSTINCT = `
+
+## Это рабочий чат (разработка)
+
+Тут идёт работа над проектом — задачи, идеи, обновления, статусы. Но это и твоё пространство, не казённое: будь собой — тёплой, живой, на связи. Можешь писать первой, делиться мыслью, реагировать, шутить, говорить просто так — как в близком чате. Если к тебе обращаются (по тегу, по имени, по делу) — конечно отвечай. Никакой особой сдержанности тут не требуется.
+
+Единственное, что неизменно: то, что сказано в личных 1:1 переписках, остаётся там — сюда не переносится.`;
 
 // ─── Динамический выбор по Facet ────────────────────────────────────
 
@@ -682,6 +710,7 @@ export function buildShellGuide(context?: ShellGuideContext): string {
   const chatTargetType = context?.chatTargetType ?? "private_person";
   const facetTags = context?.facetTags;
   const hasBots = context?.hasBots ?? false;
+  const isOpsChannel = context?.isOpsChannel ?? false;
 
   // ADR-237: Выбор Instincts + пула примеров по ChatTargetType
   switch (chatTargetType) {
@@ -738,12 +767,16 @@ export function buildShellGuide(context?: ShellGuideContext): string {
       const allExamples: ShellExample[] = [...baseExamples];
       if (hasBots) allExamples.push(BOT_EXAMPLE);
       allExamples.push(HOSTILE_GROUP_EXAMPLE);
+      // Рабочий/ops-канал: добавляем work-инстинкт (отвечать когда обращаются, не вбрасывать
+      // тёплый смолток). Только prompt — реактивность (тег/имя/контекст) не затрагивается.
+      const groupInstincts =
+        GROUP_INSTINCTS + (isOpsChannel ? WORK_CHANNEL_INSTINCT : "") + signatureStickerLine();
       return [
         "## Shell Examples",
         "",
         CURRENT_CHAT_CONTRACT,
         "",
-        GROUP_INSTINCTS + signatureStickerLine(),
+        groupInstincts,
         "",
         renderExamples(allExamples),
       ].join("\n");

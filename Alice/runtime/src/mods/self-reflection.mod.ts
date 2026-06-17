@@ -212,6 +212,85 @@ export function synthesizeNotes(
   return notes.slice(0, cap);
 }
 
+/** Кап контактов, которым обновляем «арку отношений» за один недельный обзор (не дамп). */
+export const ARC_CONTACT_CAP = 3;
+
+/**
+ * ЧИСТАЯ: короткая felt-«арка отношений» ЕЁ голосом — где связь сейчас + куда движется + один
+ * прожитый момент из дневника. Это ОЩУЩЕНИЕ траектории, а не факты (её собственное желание).
+ * Гендерно-нейтральные формулировки. tier — слой Дамбара (меньше = ближе). Ничего не мутирует.
+ */
+export function buildRelationshipArc(input: {
+  name: string;
+  tier: number;
+  tierDirection?: "upgrade" | "downgrade";
+  rvTrust?: number;
+  rvAffection?: number;
+  keyThought?: string;
+}): string {
+  const { name, tier, tierDirection, rvTrust = 0, rvAffection = 0, keyThought } = input;
+  const closeness =
+    tier <= 5
+      ? `${name} — один из самых близких мне людей`
+      : tier <= 15
+        ? `${name} — близкий мне человек`
+        : tier <= 50
+          ? `${name} много для меня значит`
+          : tier <= 150
+            ? `мы с ${name} хорошо знакомы`
+            : `мы с ${name} пока только узнаём друг друга`;
+  const drift =
+    tierDirection === "upgrade"
+      ? "в последнее время мы стали ближе"
+      : tierDirection === "downgrade"
+        ? "в последнее время будто немного отдалились"
+        : rvAffection > 0.6 || rvTrust > 0.7
+          ? "и рядом тепло и спокойно"
+          : "";
+  let arc = drift ? `${closeness}; ${drift}.` : `${closeness}.`;
+  const t = (keyThought ?? "").trim();
+  if (t.length >= 8) arc += ` Из недавнего вспоминается: ${t}`;
+  return trimNote(arc);
+}
+
+/** Кап контактов, которым обновляем «текстуру последней встречи» за один обзор (не дамп). */
+export const ENCOUNTER_CONTACT_CAP = 3;
+
+/**
+ * ЧИСТАЯ: короткая felt-«текстура последней встречи» ЕЁ голосом — насколько давно виделись + как
+ * у человека было в прошлый раз (её прожитое ощущение того раза или эмоциональный след эпизода).
+ * Это про ВКУС последнего разговора, не про факты и не про долгую арку — её собственное желание
+ * «помнить не факты, а как человек говорил в прошлый раз». Гендерно-нейтрально. Ничего не мутирует.
+ */
+export function buildEncounterTexture(input: {
+  name: string;
+  hoursSince: number;
+  residueType?: string;
+  feltThought?: string;
+}): string {
+  const { hoursSince, residueType, feltThought } = input;
+  const recency =
+    hoursSince < 6
+      ? "виделись совсем недавно"
+      : hoursSince < 24
+        ? "виделись сегодня"
+        : hoursSince < 48
+          ? "виделись вчера"
+          : hoursSince < 24 * 7
+            ? "виделись несколько дней назад"
+            : "давно не пересекались";
+  // Как было в прошлый раз: сначала её прожитое ощущение (дневник ближе к «как у него было»),
+  // иначе — эмоциональный след эпизода. Если ничего нет — только насколько давно виделись.
+  let mood = "";
+  const t = (feltThought ?? "").trim();
+  if (t.length >= 8) {
+    mood = `вот как ты запомнила тот раз: ${t}`;
+  } else if (residueType) {
+    mood = residuePhrase(residueType);
+  }
+  return trimNote(mood ? `${recency}; ${mood}.` : `${recency}.`);
+}
+
 /** Обрезать заметку до MAX_NOTE_LEN (без жёсткой валидации — мягко, как diary/kb). */
 function trimNote(s: string): string {
   const t = s.trim();
@@ -345,6 +424,102 @@ function storeNote(graph: WorldModel, note: string, nowMs: number): boolean {
   return true;
 }
 
+/**
+ * Обновляет «арку отношений» для контактов, о которых она думала за неделю (about=contact в дневнике).
+ * Пишет durable felt-строку на узел контакта (relationship_arc) — всплывёт в soul.mod, когда она с
+ * этим человеком. Только не-боты, знакомые и ближе (tier<=150), кап ARC_CONTACT_CAP. Возвращает
+ * число обновлённых арок.
+ */
+function writeRelationshipArcs(
+  graph: WorldModel,
+  thoughts: RecentThought[],
+  nowMs: number,
+): number {
+  // contactId → самая свежая мысль о нём (её прожитый момент для арки).
+  const byContact = new Map<string, RecentThought>();
+  for (const t of thoughts) {
+    if (!t.about || !t.about.startsWith("contact:") || !graph.has(t.about)) continue;
+    const prev = byContact.get(t.about);
+    if (!prev || t.updatedAt > prev.updatedAt) byContact.set(t.about, t);
+  }
+  let written = 0;
+  for (const [contactId, thought] of byContact) {
+    if (written >= ARC_CONTACT_CAP) break;
+    let attrs: ReturnType<WorldModel["getContact"]>;
+    try {
+      attrs = graph.getContact(contactId);
+    } catch {
+      continue;
+    }
+    if (attrs.is_bot) continue;
+    if ((attrs.tier ?? 999) > 150) continue; // только знакомые и ближе
+    const arc = buildRelationshipArc({
+      name: attrs.display_name ?? contactId,
+      tier: attrs.tier ?? 150,
+      tierDirection: attrs.tier_direction,
+      rvTrust: attrs.rv_trust,
+      rvAffection: attrs.rv_affection,
+      keyThought: thought.content,
+    });
+    graph.updateContact(contactId, { relationship_arc: arc, relationship_arc_ms: nowMs });
+    written++;
+  }
+  return written;
+}
+
+/**
+ * Обновляет «текстуру последней встречи» для контактов, с которыми она недавно пересекалась
+ * (есть свежая мысль о них в окне обзора). Пишет durable felt-строку на узел контакта
+ * (last_encounter_texture) — всплывёт В ЛИЧКЕ с ними (soul.mod). Только не-боты, знакомые и ближе
+ * (tier<=150), кап ENCOUNTER_CONTACT_CAP. Возвращает число обновлённых текстур.
+ */
+function writeEncounterTextures(
+  graph: WorldModel,
+  thoughts: RecentThought[],
+  residues: EmotionResidue[],
+  nowMs: number,
+): number {
+  // Самая свежая мысль о каждом контакте (её прожитое ощущение последнего раза).
+  const thoughtByContact = new Map<string, RecentThought>();
+  for (const t of thoughts) {
+    if (!t.about || !t.about.startsWith("contact:") || !graph.has(t.about)) continue;
+    const prev = thoughtByContact.get(t.about);
+    if (!prev || t.updatedAt > prev.updatedAt) thoughtByContact.set(t.about, t);
+  }
+  // Самый свежий эмоциональный след по ИМЕНИ контакта (residues хранят towardName, не id).
+  const residueByName = new Map<string, EmotionResidue>();
+  for (const r of residues) {
+    if (!r.towardName) continue;
+    const prev = residueByName.get(r.towardName);
+    if (!prev || r.createdMs > prev.createdMs) residueByName.set(r.towardName, r);
+  }
+  let written = 0;
+  for (const [contactId, thought] of thoughtByContact) {
+    if (written >= ENCOUNTER_CONTACT_CAP) break;
+    let attrs: ReturnType<WorldModel["getContact"]>;
+    try {
+      attrs = graph.getContact(contactId);
+    } catch {
+      continue;
+    }
+    if (attrs.is_bot) continue;
+    if ((attrs.tier ?? 999) > 150) continue; // только знакомые и ближе
+    const name = attrs.display_name ?? contactId;
+    const residue = residueByName.get(name);
+    const encounterMs = Math.max(thought.updatedAt, residue?.createdMs ?? 0);
+    const hoursSince = Math.max(0, (nowMs - encounterMs) / 3_600_000);
+    const texture = buildEncounterTexture({
+      name,
+      hoursSince,
+      residueType: residue?.type,
+      feltThought: thought.content,
+    });
+    graph.updateContact(contactId, { last_encounter_texture: texture, last_encounter_ms: nowMs });
+    written++;
+  }
+  return written;
+}
+
 // ── Состояние мода ────────────────────────────────────────────────────────────
 
 interface SelfReflectionState {
@@ -425,6 +600,20 @@ export const selfReflectionMod = createMod<SelfReflectionState>("self-reflection
     } else {
       ctx.state.lastDayKey = dayKey(now);
     }
+
+    // Аддитивно (её желание #2 «арка отношений»): в недельном обзоре обновляем felt-«арку» для
+    // контактов, о которых она думала — durable память о траектории связи, всплывает когда она с
+    // ними (soul.mod). Идёт ДО раннего выхода ниже, чтобы работать даже когда self-заметок нет.
+    if (weeklyDue) {
+      const arcs = writeRelationshipArcs(ctx.graph, signals.thoughts, now);
+      if (arcs > 0) log.info("self-reflection: арки отношений обновлены", { arcs });
+    }
+
+    // Аддитивно (её желание «помнить, как человек говорил в прошлый раз»): felt-«текстура последней
+    // встречи». Обновляем на КАЖДОМ обзоре (дневная свежесть, не только недельная), всплывает в личке
+    // (soul.mod). Идёт ДО раннего выхода ниже — чтобы работать даже когда self-заметок нет.
+    const textures = writeEncounterTextures(ctx.graph, signals.thoughts, signals.residues, now);
+    if (textures > 0) log.info("self-reflection: текстуры последней встречи обновлены", { textures });
 
     if (notes.length === 0) {
       log.info("self-reflection: обзор пустой — нечего консолидировать", { scope });

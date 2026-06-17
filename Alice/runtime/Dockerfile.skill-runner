@@ -68,5 +68,16 @@ ENV HOME=/home/alice
 WORKDIR /workspace
 USER alice
 
+# ── Garage Code CLI (read-only ops skill garage-ro, WS-2) ──────────────────
+# Installed as the alice user via uv from Garage's wheel endpoint (py3-none-any,
+# cross-platform; no separate linux build). Provides the `garage` command.
+# Needs build-time + runtime egress to astral.sh and garage.astracore.work.
+# Harmless until garage-ro is declared in alice-env.yaml and a token is mounted
+# (~/.garage/token = gct_ auth, clone/.garage/config.json = repo binding).
+ENV PATH=/opt/alice/bin:/home/alice/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && LATEST=$(curl -s https://garage.astracore.work/api/cli/versions | python3 -c "import json,sys;print(json.load(sys.stdin)[0]['filename'])") \
+    && uv tool install --from "https://garage.astracore.work/api/cli/$LATEST" garage-cli
+
 HEALTHCHECK --interval=30s --timeout=5s --retries=1 \
   CMD /bin/sh -c 'node --version && python3 --version'

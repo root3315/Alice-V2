@@ -87,4 +87,58 @@ describe("buildShellGuide", () => {
     expect(guide).toContain("self sense --who @789012 --trait kind --intensity moderate");
     expect(guide).not.toContain("--trait helpful");
   });
+
+  it("private chat guide offers a reaction as a complete reply for warm short acks (fixes «и тебе» loop)", () => {
+    const guide = buildShellGuide({ chatTargetType: "private_person" });
+
+    // Реакция — законченный ответ на тёплое короткое, а не полуответ
+    expect(guide).toContain("одна реакция");
+    expect(guide).toContain("irc react --ref <id> --emoji ❤");
+    expect(guide).toContain("не нужно множить «и тебе»");
+    // И канонический пример: тёплое закрытие → реакция вместо слов
+    expect(guide).toContain("a warm little closer — a reaction is the whole reply");
+    expect(guide).toContain("irc react --ref 9100 --emoji ❤");
+  });
+
+  it("group chat guide offers a reaction instead of a redundant agreement message", () => {
+    const guide = buildShellGuide({ chatTargetType: "group" });
+
+    expect(guide).toContain("поставь реакцию");
+    expect(guide).toContain("irc react");
+  });
+
+  it("private chat guide names voice as a choice for genuinely warm/emotional moments", () => {
+    const guide = buildShellGuide({ chatTargetType: "private_person" });
+
+    // Голос — выбор в настоящий тёплый момент (валидная эмоция calm)
+    expect(guide).toContain("irc voice --emotion calm");
+    expect(guide).toContain("голос несёт то, что буквам не передать");
+  });
+
+  it("ops/work channel: injects a LIGHT work-instinct — free to be herself, only privacy kept", () => {
+    const guide = buildShellGuide({ chatTargetType: "group", isOpsChannel: true });
+
+    expect(guide).toContain("Это рабочий чат");
+    // Свобода: будь собой, можно писать первой, без особой сдержанности
+    expect(guide).toContain("будь собой");
+    expect(guide).toContain("Можешь писать первой");
+    // Старая ops-сдержанность СНЯТА
+    expect(guide).not.toContain("не инициируй тёплый смолток");
+    expect(guide).not.toContain("Молчание — норма");
+    // Но приватность сохранена: ЛС остаётся в ЛС
+    expect(guide).toContain("остаётся там");
+  });
+
+  it("non-ops group does NOT get the work-instinct (normal group stays social)", () => {
+    const guide = buildShellGuide({ chatTargetType: "group", isOpsChannel: false });
+    expect(guide).not.toContain("Это рабочий чат");
+
+    const defaulted = buildShellGuide({ chatTargetType: "group" });
+    expect(defaulted).not.toContain("Это рабочий чат");
+  });
+
+  it("private chat never gets the work-instinct even if flagged", () => {
+    const guide = buildShellGuide({ chatTargetType: "private_person", isOpsChannel: true });
+    expect(guide).not.toContain("Это рабочий чат");
+  });
 });

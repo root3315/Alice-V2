@@ -182,6 +182,36 @@ function visibleInScope(
   return false;
 }
 
+/**
+ * SCOPE-SAFE для мыслей дневника. Дневник — внутренний мир Алисы, но он МОЖЕТ содержать интим из
+ * ЛС (напр. «соскучилась по нему», about=null). Поэтому в группе/супергруппе её приватные мысли НЕ
+ * всплывают через recall: показываем только мысль про САМ этот канал (или про другой групповой/
+ * канальный источник). В приватном чате доступно всё — это не утечка третьим лицам.
+ *
+ * Закрывает дыру: раньше пул мыслей в recall был глобальным (scope не применялся), и при явном
+ * recall в рабочем чате семантически близкая интимная мысль из ЛС могла всплыть в группе.
+ */
+export function thoughtVisibleInScope(
+  graph: WorldModel,
+  about: string | null,
+  currentChannelId: string | null,
+  currentChatType: string | undefined,
+): boolean {
+  // Приватная цель — можно вспоминать что угодно.
+  if (currentChatType && currentChatType !== "group" && currentChatType !== "supergroup") {
+    return true;
+  }
+  // В группе: глобальные размышления (about=null) и мысли о людях (contact:) скрываем.
+  if (!about) return false;
+  if (about === currentChannelId) return true;
+  if (about.startsWith("contact:")) return false;
+  if (about.startsWith("channel:") && graph.has(about)) {
+    const t = graph.getChannel(about).chat_type;
+    return t === "group" || t === "supergroup" || t === "channel";
+  }
+  return false;
+}
+
 // ── Сбор мыслей дневника ─────────────────────────────────────────────────────
 
 interface DiaryThoughtLike {
@@ -389,6 +419,9 @@ export const recallMod = createMod<{}>("recall", {
       const thoughtHits: RecallHit[] = [];
       const diaryState = ctx.getModState<DiaryStateLike>("diary");
       for (const t of diaryState?.thoughts ?? []) {
+        // Приватность: в группе НЕ всплывают её приватные размышления (about=null) и мысли о людях —
+        // могут содержать интим из ЛС. В приватном чате — доступно всё.
+        if (!thoughtVisibleInScope(ctx.graph, t.about, currentChannelId, currentChatType)) continue;
         const ageS = Math.max(0, (nowMs - t.updatedAt) / 1000);
         const about =
           t.about && ctx.graph.has(t.about) ? safeDisplayName(ctx.graph, t.about) : null;

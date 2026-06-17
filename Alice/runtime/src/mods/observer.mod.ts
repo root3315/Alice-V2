@@ -1174,11 +1174,31 @@ export const observerMod = createMod<ObserverState>("observer", {
   .contribute((ctx): ContributionItem[] => {
     const items: ContributionItem[] = [];
 
+    // ── ПРИВАТНОСТЬ: feedback-секции (last-action-recap, outcome-history) рендерятся в промпт через
+    // FEEDBACK_CONTRIBUTION_KEYS (prompt-builder) и ОБХОДЯТ visibility-фильтр (тот применяется только
+    // к header-bucket). Поэтому здесь scope'им их на текущий чат вручную: иначе имя+LLM-текст из ЛС
+    // («David: poor — слишком личное») могут всплыть в рабочем чате. Только текущий чат → нет утечки.
+    const feedbackRelState = readModState(ctx, "relationships");
+    const feedbackTarget = feedbackRelState?.targetNodeId ?? null;
+    const feedbackChannel = feedbackTarget
+      ? (ensureChannelId(feedbackTarget) ?? feedbackTarget)
+      : null;
+    const matchesFeedbackTarget = (t: string | null | undefined): boolean => {
+      if (!t || !feedbackTarget) return false;
+      if (t === feedbackTarget) return true;
+      return (ensureChannelId(t) ?? t) === feedbackChannel;
+    };
+
     // ── ADR-199 W2: инъекция сводки результатов предыдущего раунда ───
     {
       const recap = ctx.state.lastActionRecap;
       const RECAP_TTL_MS = 10 * 60 * 1000; // TTL 10 минут
-      if (recap && ctx.nowMs - recap.timestamp < RECAP_TTL_MS) {
+      // Показываем recap только если он про ТЕКУЩИЙ чат (иначе «Sent a message to David» утечёт сюда).
+      if (
+        recap &&
+        ctx.nowMs - recap.timestamp < RECAP_TTL_MS &&
+        (!recap.target || matchesFeedbackTarget(recap.target))
+      ) {
         const recapBuilder = new PromptBuilder();
         if (recap.messageSent) {
           const targetName = recap.target ? safeDisplayName(ctx.graph, recap.target) : "unknown";
@@ -1287,7 +1307,9 @@ export const observerMod = createMod<ObserverState>("observer", {
 
     // Сводка истории outcome (позволяет LLM знать о результатах последних действий → обратная связь для обучения)
     const visibleOutcomeHistory = ctx.state.outcomeHistory.filter(
-      (r) => !isBotOutcomeTarget(ctx, r.target),
+      // Приватность: только текущий чат — иначе результат действия из ЛС (с LLM-текстом причины)
+      // утечёт в другой чат через feedback-путь (он обходит visibility-фильтр).
+      (r) => !isBotOutcomeTarget(ctx, r.target) && matchesFeedbackTarget(r.target),
     );
     if (visibleOutcomeHistory.length > 0) {
       const recent = visibleOutcomeHistory.slice(-5);
@@ -1305,6 +1327,7 @@ export const observerMod = createMod<ObserverState>("observer", {
       const DEFERRED_FEEDBACK_TTL_MS = 10 * 60 * 1000;
       for (const channelId of ctx.graph.getEntitiesByType("channel")) {
         if (isBotOutcomeTarget(ctx, channelId)) continue;
+        if (!matchesFeedbackTarget(channelId)) continue; // приватность: только текущий чат
         const ch = ctx.graph.getChannel(channelId);
         const outcomeMs = ch.last_outcome_ms ?? 0;
         const outcomeQuality = ch.last_outcome_quality;

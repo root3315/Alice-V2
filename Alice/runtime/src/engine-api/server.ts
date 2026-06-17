@@ -38,6 +38,7 @@ import {
   handleSkillUpgrade,
   handleSkillUpgrades,
 } from "./routes/skills.js";
+import { handleSelfSource } from "./routes/self-source.js";
 import { handleTelegramForward } from "./routes/telegram.js";
 import { handleTransport } from "./routes/transport.js";
 
@@ -105,6 +106,17 @@ export interface EngineApiDeps {
     title?: string;
     replyTo?: number;
   }) => Promise<{ msgId: number | null }>;
+  /** Отметить пункты существующего чеклиста выполненными/невыполненными (`irc check`). */
+  telegramChecklistComplete?: (params: {
+    chatId: number;
+    msgId: number;
+    completed: number[];
+    uncompleted: number[];
+  }) => Promise<{ msgId: number | null }>;
+  /** Закрепить сообщение (`irc pin`). */
+  telegramPin?: (params: { chatId: number; msgId: number }) => Promise<{ ok: true }>;
+  /** Открепить сообщение (`irc unpin`). */
+  telegramUnpin?: (params: { chatId: number; msgId: number }) => Promise<{ ok: true }>;
   /** Telegram native poll (опрос) callback (`irc poll`). Free feature — no Premium needed. */
   telegramPoll?: (params: {
     chatId: number;
@@ -326,6 +338,11 @@ export function routeRequest(
   // --- telegram ---
   if (resource === "telegram" && method === "POST" && segments.length === 2) {
     return handleTelegramForward(segments[1], req, res, deps);
+  }
+
+  // --- self (самочтение исходника Алисы, read-only) ---
+  if (resource === "self" && segments[1] === "source" && segments.length === 2) {
+    return handleSelfSource(method, req, res);
   }
 
   // --- transport ---

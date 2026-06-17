@@ -31,6 +31,8 @@ export interface QueryResultMap {
     pressure?: number;
     /** ADR-190: "conversation" | "system". Используется для фильтрации system thread. */
     source?: string | null;
+    /** Узлы, к которым привязан тред (контакты/каналы). Для scope заголовков по текущему чату. */
+    involves?: Array<{ nodeId: string }>;
   }>;
   crisis_channels: string[];
   best_time: {

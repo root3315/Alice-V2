@@ -531,7 +531,9 @@ async def call_claude(
     """Готовит argv и зовёт claude. С картинками — нативный multimodal через stream-json."""
     tmpdir = tempfile.mkdtemp(prefix="claude_proxy_")
     try:
-        argv = [CLAUDE_CLI, "-p", "--model", model]
+        # --strict-mcp-config: НЕ грузить глобальные MCP-серверы (Figma/Canva/Gmail и пр.) — чату
+        # Алисы они не нужны, а их init добавляет ~1с к КАЖДОМУ спавну claude. Замер: 6.2с → 5.2с.
+        argv = [CLAUDE_CLI, "-p", "--model", model, "--strict-mcp-config"]
         call_timeout = OPUS_TIMEOUT_S if model == "opus" else CALL_TIMEOUT_S
         if FALLBACK_MODEL:
             argv += ["--fallback-model", FALLBACK_MODEL]
@@ -754,6 +756,7 @@ async def code_analyze(request: Request):
     argv = [
         CLAUDE_CLI, "-p",
         "--model", model,
+        "--strict-mcp-config",
         "--allowedTools", "Read", "Grep", "Glob",
         *out_fmt,
     ]
@@ -823,6 +826,7 @@ async def research(request: Request):
     argv = [
         CLAUDE_CLI, "-p",
         "--model", model,
+        "--strict-mcp-config",
         "--allowedTools", "WebSearch", "WebFetch", "Read",
         *out_fmt,
     ]
@@ -914,6 +918,7 @@ async def code_fix(request: Request):
     argv = [
         CLAUDE_CLI, "-p",
         "--model", model,
+        "--strict-mcp-config",
         "--allowedTools", "Read", "Grep", "Glob", "Edit", "Write", "Bash",
         *out_fmt,
     ]

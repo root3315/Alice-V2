@@ -380,11 +380,14 @@ export const diaryMod = createMod<DiaryState>("diary", {
     const currentTarget = relState?.targetNodeId ?? null;
 
     // Вычисляем эффективную значимость, оставляем только мысли, связанные с текущей целью.
+    //
+    // ВАЖНО (приватность): global-мысли (about=null) намеренно НЕ инжектятся НИГДЕ. Это собственная
+    // нить Алисы — но её мысли об одном человеке/чате не должны протекать в другой (особенно интим
+    // из ЛС → в рабочий чат). Попытка вынести их «внутренним фоном» во все чаты (ADR-82/H4) привела
+    // ровно к такой утечке, поэтому откатано. Continuity-of-self нужен приватно-безопасный механизм.
     const active = thoughts
       .map((t) => ({ ...t, eSal: effectiveSalience(t, nowMs) }))
       .filter((t) => t.eSal >= INJECT_FLOOR)
-      // ПРИМ.: global-мысли (about=null) намеренно НЕ попадают в per-target prompt (тест diary:308).
-      // Аудит (H4) предлагал их инжектить (ADR-82), но это смена когниции — вынесено на решение владельца.
       .filter((t) => thoughtMatchesCurrentTarget(t, currentTarget))
       .sort((a, b) => {
         return b.eSal - a.eSal;

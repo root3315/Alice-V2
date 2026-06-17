@@ -269,6 +269,9 @@ export async function buildTickPrompt(
     chatTargetType: snapshot.chatTargetType,
     facetTags: getFacetTags(item.facetId),
     hasBots: board.features.hasBots,
+    // Рабочий/ops-канал (OPS_CHANNEL_ID, тот же id что incident-детекция в events.ts). Включает
+    // work-инстинкт «отвечать когда обращаются, не вбрасывать тёплое в пустоту».
+    isOpsChannel: !!process.env.OPS_CHANNEL_ID && item.target === process.env.OPS_CHANNEL_ID,
   });
 
   // ── Руководство по инструментам ──

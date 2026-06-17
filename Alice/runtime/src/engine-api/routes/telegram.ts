@@ -22,6 +22,15 @@ import { isTelegramActionError } from "../../telegram/errors.js";
 import type { EngineApiDeps } from "../server.js";
 import { TARGET_NOT_WHITELISTED_CODE, telegramTargetAllowed } from "../target-policy.js";
 
+/**
+ * ПРИВАТНОСТЬ: пересылка из приватного 1:1 чата (положительный Telegram id = пользователь) в ДРУГОЙ
+ * чат запрещена — контент ЛС не должен утекать в группы/каналы через forward. Пересылка из
+ * групп/каналов (id < 0, курирование) разрешена; пересылка внутри того же ЛС (to == from) безвредна.
+ */
+export function isPrivateForwardBlocked(fromChatId: number, toChatId: number): boolean {
+  return fromChatId > 0 && toChatId !== fromChatId;
+}
+
 // ── Кэш дедупликации: предотвращает повторную отправку уже успешных сообщений при повторных попытках LLM ──
 
 const DEDUPE_TTL_MS = 30_000;
@@ -361,6 +370,82 @@ export async function handleTelegramForward(
     return;
   }
 
+  if (action === "checklist-complete") {
+    if (!deps.telegramChecklistComplete) {
+      notConfigured(res, "checklist-complete");
+      return;
+    }
+    const b = body as {
+      chatId?: unknown;
+      msgId?: unknown;
+      completed?: unknown;
+      uncompleted?: unknown;
+    } | null;
+    const isNumArray = (v: unknown): v is number[] =>
+      Array.isArray(v) && v.every((n) => typeof n === "number");
+    if (
+      b === null ||
+      typeof b !== "object" ||
+      Array.isArray(b) ||
+      typeof b.chatId !== "number" ||
+      typeof b.msgId !== "number" ||
+      !isNumArray(b.completed) ||
+      !isNumArray(b.uncompleted)
+    ) {
+      badRequest(
+        res,
+        'body must be { "chatId": number, "msgId": number, "completed": number[], "uncompleted": number[] }',
+      );
+      return;
+    }
+    if (b.completed.length === 0 && b.uncompleted.length === 0) {
+      badRequest(res, "nothing to toggle: completed and uncompleted are both empty");
+      return;
+    }
+    if (!ensureTargetAllowed(res, deps, b.chatId)) return;
+    try {
+      const result = await deps.telegramChecklistComplete({
+        chatId: b.chatId,
+        msgId: b.msgId,
+        completed: b.completed,
+        uncompleted: b.uncompleted,
+      });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      serverError(res, "checklist-complete failed", err);
+    }
+    return;
+  }
+
+  if (action === "pin" || action === "unpin") {
+    const dep = action === "pin" ? deps.telegramPin : deps.telegramUnpin;
+    if (!dep) {
+      notConfigured(res, action);
+      return;
+    }
+    const b = body as { chatId?: unknown; msgId?: unknown } | null;
+    if (
+      b === null ||
+      typeof b !== "object" ||
+      Array.isArray(b) ||
+      typeof b.chatId !== "number" ||
+      typeof b.msgId !== "number"
+    ) {
+      badRequest(res, 'body must be { "chatId": number, "msgId": number }');
+      return;
+    }
+    if (!ensureTargetAllowed(res, deps, b.chatId)) return;
+    try {
+      const result = await dep({ chatId: b.chatId, msgId: b.msgId });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      serverError(res, `${action} failed`, err);
+    }
+    return;
+  }
+
   if (action === "poll") {
     if (!deps.telegramPoll) {
       notConfigured(res, "poll");
@@ -650,6 +735,21 @@ export async function handleTelegramForward(
       badRequest(
         res,
         'body must be { "fromChatId": number, "msgId": number, "toChatId": number, "comment"?: string }',
+      );
+      return;
+    }
+    // ПРИВАТНОСТЬ (authoritative, промпт обойти не может): не пересылать из приватного 1:1 чата
+    // (положительный Telegram id = пользователь) в ДРУГОЙ чат. Контент ЛС не должен утекать в
+    // группы/каналы через forward. Пересылка из групп/каналов (id < 0 — курирование) разрешена;
+    // пересылка внутри того же ЛС (to == from) бессмысленна, но безвредна — пропускаем.
+    if (isPrivateForwardBlocked(b.fromChatId, b.toChatId)) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: "forward_from_private_blocked",
+          message:
+            "Forward from a private 1:1 chat into another chat is blocked for privacy. Personal stays personal.",
+        }),
       );
       return;
     }

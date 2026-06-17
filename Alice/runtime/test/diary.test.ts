@@ -305,7 +305,7 @@ describe("ADR-225: Diary Mod — Working Memory", () => {
       expect(text).toContain("今天好累");
     });
 
-    it("global 想法不进入普通 prompt", () => {
+    it("global 想法不进入普通 prompt（приватность: глобальные мысли не инжектятся нигде）", () => {
       const state = freshState();
       state.thoughts.push({
         content: "全局漂移想法",

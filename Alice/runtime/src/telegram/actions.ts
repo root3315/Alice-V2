@@ -189,6 +189,21 @@ function isNativeWidgetUnsupported(err: unknown): boolean {
   return /PREMIUM|UNSUPPORTED/i.test(text);
 }
 
+/**
+ * true, если Telegram отверг To-Do из-за дублирующихся пунктов (TODO_ITEM_DUPLICATE).
+ * Дедуп в sendChecklist это предотвращает, но это страховка от петли (напр. если Telegram
+ * сравнивает регистронезависимо): вместо 500 → грациозный текстовый ☐-фолбэк.
+ */
+function isTodoItemDuplicate(err: unknown): boolean {
+  const text = String(
+    (err as { text?: unknown } | null)?.text ??
+      (err as { message?: unknown } | null)?.message ??
+      err ??
+      "",
+  );
+  return /TODO_ITEM_DUPLICATE/i.test(text);
+}
+
 /** Текстовый фолбэк чеклиста (☐ + пункты) для аккаунтов без Premium. */
 function renderTextChecklist(title: string, items: string[]): string {
   const head = title.trim() ? `**${title.trim()}**\n` : "";
@@ -264,11 +279,18 @@ export async function sendChecklist(
   await globalLimiter.acquire();
 
   // Пустые пункты отбрасываем; вызывающий impl уже гарантирует непустой items.
-  // Клампим число пунктов и длину каждого под лимиты Telegram.
+  // Клампим длину каждого, ДЕДУПИМ (Telegram требует уникальные пункты, иначе 400
+  // TODO_ITEM_DUPLICATE), затем клампим число пунктов. Дедуп ДО slice — чтобы дубли не съедали слоты.
+  const seenItems = new Set<string>();
   const items = options.items
     .filter((s) => s != null && String(s).trim().length > 0)
-    .slice(0, TODO_ITEMS_MAX)
-    .map((s) => clampCodePoints(String(s).trim(), TODO_ITEM_MAX));
+    .map((s) => clampCodePoints(String(s).trim(), TODO_ITEM_MAX))
+    .filter((s) => {
+      if (seenItems.has(s)) return false;
+      seenItems.add(s);
+      return true;
+    })
+    .slice(0, TODO_ITEMS_MAX);
 
   // title обязателен в InputMedia.todo → дефолт при пустом + кламп длины.
   const rawTitle = options.title?.trim();
@@ -276,15 +298,42 @@ export async function sendChecklist(
 
   let sent: Message | undefined;
   try {
-    sent = await client.sendMedia(chatId, InputMedia.todo({ title, items }), {
-      replyTo: options.replyToMsgId ?? options.topicId,
-    });
+    // Шлём СЫРОЙ inputMediaTodo (зеркалит mtcute), НО с id пунктов от 1, а не от 0. Высокоуровневый
+    // InputMedia.todo ставит todoItem.id = 0,1,2…, а текущий Telegram, похоже, рисует карточку
+    // Checklist (◯ + «Checklist» + «N completed») только при id с ЕДИНИЦЫ — иначе деградирует в
+    // плоский статичный ☐-список. othersCanComplete/Append=true → собеседник может отмечать/
+    // добавлять пункты (интерактивная карточка). @see normalize-input-media.js (mtcute 0.30.1).
+    const textWE = (s: string) => ({ _: "textWithEntities" as const, text: s, entities: [] });
+    const todoRaw = {
+      _: "inputMediaTodo" as const,
+      todo: {
+        _: "todoList" as const,
+        othersCanComplete: true,
+        othersCanAppend: true,
+        title: textWE(title),
+        list: items.map((it, idx) => ({
+          _: "todoItem" as const,
+          id: idx + 1,
+          title: textWE(it),
+        })),
+      },
+    };
+    sent = await client.sendMedia(
+      chatId,
+      todoRaw as unknown as Parameters<TelegramClient["sendMedia"]>[1],
+      { replyTo: options.replyToMsgId ?? options.topicId },
+    );
   } catch (err) {
-    // Нативный To-Do требует Telegram Premium. Без него Telegram отвечает
-    // PREMIUM_ACCOUNT_REQUIRED — грациозно шлём текстовый чеклист (☐), а не падаем 500.
-    if (isNativeWidgetUnsupported(err)) {
-      log.info("checklist: native To-Do unsupported, falling back to text", {
+    // Native To-Do недоступен (PREMIUM_ACCOUNT_REQUIRED / RICH_*UNSUPPORTED) или дубли пунктов
+    // (TODO_ITEM_DUPLICATE) → грациозный текстовый ☐-фолбэк, а не 500/петля ретраев. Прочие ошибки
+    // (напр. CHAT_WRITE_FORBIDDEN — текст тоже не уйдёт) пробрасываем, чтобы не маскировать сбой.
+    if (isNativeWidgetUnsupported(err) || isTodoItemDuplicate(err)) {
+      log.info("checklist: native To-Do failed, falling back to text", {
         chatId: String(chatId),
+        // Видимая причина фолбэка: PREMIUM_ACCOUNT_REQUIRED | RICH_*UNSUPPORTED | TODO_ITEM_DUPLICATE
+        reason:
+          (err as { text?: string } | null)?.text ??
+          (err instanceof Error ? err.message : String(err)),
       });
       return sendText(client, chatId, renderTextChecklist(title, items), {
         replyToMsgId: options.replyToMsgId,
@@ -294,6 +343,33 @@ export async function sendChecklist(
     rethrowTelegramActionFailure(err, "send_checklist", { chatId: String(chatId) });
   }
   return sent?.id;
+}
+
+/**
+ * Отмечает пункты существующего нативного чеклиста (To-Do) как выполненные/невыполненные.
+ * `completed`/`uncompleted` — id пунктов (1-based, как их ставит sendChecklist). Позволяет Алисе
+ * самой ставить галочки: например, в рабочем чате прилетел деплой из таски → она отмечает пункт.
+ * @see toggleTodoCompleted (mtcute 0.30.1) → messages.toggleTodoCompleted.
+ */
+export async function toggleChecklistItems(
+  client: TelegramClient,
+  chatId: string | number,
+  msgId: number,
+  completed: number[],
+  uncompleted: number[],
+): Promise<number | undefined> {
+  await globalLimiter.acquire();
+  try {
+    const res = await client.toggleTodoCompleted({
+      chatId,
+      message: msgId,
+      completed,
+      uncompleted,
+    });
+    return res?.id ?? msgId;
+  } catch (err) {
+    rethrowTelegramActionFailure(err, "checklist_complete", { chatId: String(chatId) });
+  }
 }
 
 /**
@@ -418,6 +494,11 @@ export async function sendReaction(
       emoji,
     });
   } catch (err) {
+    // MESSAGE_NOT_MODIFIED = такая реакция УЖЕ стоит (тот же эмодзи на том же сообщении) → нужное
+    // состояние достигнуто, это не ошибка. Глотаем как no-op (а не 500 / петля ретраев). Прочее — проброс.
+    const text =
+      (err as { text?: string } | null)?.text ?? (err instanceof Error ? err.message : String(err));
+    if (/MESSAGE_NOT_MODIFIED/i.test(text)) return;
     rethrowTelegramActionFailure(err, "send_reaction", { chatId: String(chatId), msgId, emoji });
   }
 }
@@ -576,7 +657,10 @@ export async function pinMessage(
   msgId: number,
 ): Promise<void> {
   await globalLimiter.acquire();
-  await client.pinMessage({ chatId, message: msgId });
+  // bothSides: true — в ЛИЧКЕ пин виден ОБЕИМ сторонам. Без него mtcute ставит pmOneside:true →
+  // пин односторонний (виден только Алисе, собеседник его НЕ видит = «не может закрепить»).
+  // В группах/каналах флаг игнорируется (там пин и так общий, но нужны права админа).
+  await client.pinMessage({ chatId, message: msgId, bothSides: true });
 }
 
 /**

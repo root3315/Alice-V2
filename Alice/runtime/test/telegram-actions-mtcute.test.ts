@@ -11,7 +11,15 @@
 import type { TelegramClient } from "@mtcute/node";
 import { InputMedia } from "@mtcute/node";
 import { describe, expect, it, vi } from "vitest";
-import { joinChat, sendChecklist, sendPoll, sendTable } from "../src/telegram/actions.js";
+import {
+  joinChat,
+  pinMessage,
+  sendChecklist,
+  sendPoll,
+  sendReaction,
+  sendTable,
+  toggleChecklistItems,
+} from "../src/telegram/actions.js";
 
 // Typed fake media-send signatures so vi.fn().mock.calls carries the arg types.
 type TodoMedia = { type: string; title: string; items: string[] };
@@ -58,8 +66,22 @@ describe("joinChat — mtcute 0.30 result shape", () => {
   });
 });
 
-describe("sendChecklist — native To-Do list (InputMedia.todo)", () => {
-  it("sends an InputMedia.todo media object with title + items", async () => {
+describe("sendChecklist — native To-Do (raw inputMediaTodo, 1-based item ids)", () => {
+  // Сырой TL: { _:"inputMediaTodo", todo:{ othersCan*, title:{text}, list:[{id, title:{text}}] } }
+  type Todo = {
+    _: string;
+    todo: {
+      othersCanComplete?: boolean;
+      othersCanAppend?: boolean;
+      title: { text: string };
+      list: Array<{ id: number; title: { text: string } }>;
+    };
+  };
+  const titleOf = (m: unknown) => (m as Todo).todo.title.text;
+  const itemsOf = (m: unknown) => (m as Todo).todo.list.map((i) => i.title.text);
+  const idsOf = (m: unknown) => (m as Todo).todo.list.map((i) => i.id);
+
+  it("sends a raw inputMediaTodo with title, items, 1-based ids and interactive flags", async () => {
     const sendMedia = fakeSendMedia();
     const client = { sendMedia };
 
@@ -72,53 +94,57 @@ describe("sendChecklist — native To-Do list (InputMedia.todo)", () => {
     expect(sendMedia).toHaveBeenCalledTimes(1);
     const [chatId, media] = sendMedia.mock.calls[0];
     expect(chatId).toBe(-100);
-    // Built via InputMedia.todo → { type: "todo", title, items }
-    expect(media).toMatchObject({ type: "todo", title: "Groceries", items: ["bread", "milk"] });
-    // Sanity: matches the real mtcute builder output for the same inputs.
-    expect(media).toEqual(InputMedia.todo({ title: "Groceries", items: ["bread", "milk"] }));
+    expect((media as unknown as Todo)._).toBe("inputMediaTodo");
+    expect(titleOf(media)).toBe("Groceries");
+    expect(itemsOf(media)).toEqual(["bread", "milk"]);
+    // КЛЮЧЕВОЕ #1: id пунктов с ЕДИНИЦЫ (не с нуля) — иначе Telegram рисует плоский ☐-список.
+    expect(idsOf(media)).toEqual([1, 2]);
+    // КЛЮЧЕВОЕ #2: othersCanComplete/Append=true — собеседник может тапать/добавлять пункты.
+    expect((media as unknown as Todo).todo.othersCanComplete).toBe(true);
+    expect((media as unknown as Todo).todo.othersCanAppend).toBe(true);
   });
 
-  it("clamps item count to 30", async () => {
+  it("clamps item count to 30 (ids stay 1-based)", async () => {
     const sendMedia = fakeSendMedia();
     const client = { sendMedia };
 
     const items = Array.from({ length: 50 }, (_, i) => `item-${i}`);
     await sendChecklist(client as unknown as TelegramClient, -100, { title: "T", items });
 
-    const media = sendMedia.mock.calls[0][1] as { items: string[] };
-    expect(media.items).toHaveLength(30);
-    expect(media.items[0]).toBe("item-0");
-    expect(media.items[29]).toBe("item-29");
+    const media = sendMedia.mock.calls[0][1];
+    expect(itemsOf(media)).toHaveLength(30);
+    expect(itemsOf(media)[0]).toBe("item-0");
+    expect(itemsOf(media)[29]).toBe("item-29");
+    expect(idsOf(media)[0]).toBe(1);
+    expect(idsOf(media)[29]).toBe(30);
   });
 
   it("truncates an item longer than 64 code points", async () => {
     const sendMedia = fakeSendMedia();
     const client = { sendMedia };
 
-    const longItem = "x".repeat(100);
     await sendChecklist(client as unknown as TelegramClient, -100, {
       title: "T",
-      items: [longItem],
+      items: ["x".repeat(100)],
     });
 
-    const media = sendMedia.mock.calls[0][1] as { items: string[] };
-    expect([...media.items[0]]).toHaveLength(64);
-    expect(media.items[0]).toBe("x".repeat(64));
+    const media = sendMedia.mock.calls[0][1];
+    expect([...itemsOf(media)[0]]).toHaveLength(64);
+    expect(itemsOf(media)[0]).toBe("x".repeat(64));
   });
 
   it("truncates a title longer than 32 code points", async () => {
     const sendMedia = fakeSendMedia();
     const client = { sendMedia };
 
-    const longTitle = "T".repeat(60);
     await sendChecklist(client as unknown as TelegramClient, -100, {
-      title: longTitle,
+      title: "T".repeat(60),
       items: ["a"],
     });
 
-    const media = sendMedia.mock.calls[0][1] as { title: string };
-    expect([...media.title]).toHaveLength(32);
-    expect(media.title).toBe("T".repeat(32));
+    const media = sendMedia.mock.calls[0][1];
+    expect([...titleOf(media)]).toHaveLength(32);
+    expect(titleOf(media)).toBe("T".repeat(32));
   });
 
   it("drops blank/empty/whitespace items", async () => {
@@ -130,8 +156,20 @@ describe("sendChecklist — native To-Do list (InputMedia.todo)", () => {
       items: ["keep", "", "   ", "alsokeep"],
     });
 
-    const media = sendMedia.mock.calls[0][1] as { items: string[] };
-    expect(media.items).toEqual(["keep", "alsokeep"]);
+    expect(itemsOf(sendMedia.mock.calls[0][1])).toEqual(["keep", "alsokeep"]);
+  });
+
+  it("dedupes duplicate items (Telegram rejects TODO_ITEM_DUPLICATE)", async () => {
+    const sendMedia = fakeSendMedia();
+    const client = { sendMedia };
+
+    await sendChecklist(client as unknown as TelegramClient, -100, {
+      title: "T",
+      items: ["milk", "milk", "bread", "  milk  ", "bread"],
+    });
+
+    // Дубли (в т.ч. с лишними пробелами после trim) схлопнуты; порядок первого вхождения сохранён.
+    expect(itemsOf(sendMedia.mock.calls[0][1])).toEqual(["milk", "bread"]);
   });
 
   it('falls back to "Чеклист" when title is missing', async () => {
@@ -140,8 +178,7 @@ describe("sendChecklist — native To-Do list (InputMedia.todo)", () => {
 
     await sendChecklist(client as unknown as TelegramClient, -100, { items: ["a"] });
 
-    const media = sendMedia.mock.calls[0][1] as { title: string };
-    expect(media.title).toBe("Чеклист");
+    expect(titleOf(sendMedia.mock.calls[0][1])).toBe("Чеклист");
   });
 
   it('falls back to "Чеклист" when title is blank/whitespace', async () => {
@@ -153,8 +190,7 @@ describe("sendChecklist — native To-Do list (InputMedia.todo)", () => {
       items: ["a"],
     });
 
-    const media = sendMedia.mock.calls[0][1] as { title: string };
-    expect(media.title).toBe("Чеклист");
+    expect(titleOf(sendMedia.mock.calls[0][1])).toBe("Чеклист");
   });
 
   it("does not split an emoji at the 64-code-point boundary", async () => {
@@ -169,10 +205,10 @@ describe("sendChecklist — native To-Do list (InputMedia.todo)", () => {
       items: [item],
     });
 
-    const media = sendMedia.mock.calls[0][1] as { items: string[] };
-    expect([...media.items[0]]).toHaveLength(64);
-    expect(media.items[0]).toBe(item);
-    expect(media.items[0].endsWith("😀")).toBe(true);
+    const media = sendMedia.mock.calls[0][1];
+    expect([...itemsOf(media)[0]]).toHaveLength(64);
+    expect(itemsOf(media)[0]).toBe(item);
+    expect(itemsOf(media)[0].endsWith("😀")).toBe(true);
   });
 
   it("truncates past an emoji boundary without producing a lone surrogate", async () => {
@@ -186,11 +222,11 @@ describe("sendChecklist — native To-Do list (InputMedia.todo)", () => {
       items: [item],
     });
 
-    const media = sendMedia.mock.calls[0][1] as { items: string[] };
-    expect([...media.items[0]]).toHaveLength(64);
-    expect(media.items[0]).toBe("a".repeat(64));
+    const media = sendMedia.mock.calls[0][1];
+    expect([...itemsOf(media)[0]]).toHaveLength(64);
+    expect(itemsOf(media)[0]).toBe("a".repeat(64));
     // No lone surrogate left behind.
-    expect(media.items[0]).not.toMatch(/[\uD800-\uDBFF]$/);
+    expect(itemsOf(media)[0]).not.toMatch(/[\uD800-\uDBFF]$/);
   });
 
   it("routes replyTo to replyToMsgId when provided", async () => {
@@ -586,5 +622,88 @@ describe("native widget fallback to text (no Premium / unsupported account)", ()
     const text = textOf(sendText.mock.calls[0][1]);
     expect(text).toContain("Name");
     expect(text).toContain("Apple");
+  });
+});
+
+describe("toggleChecklistItems — tick items in an existing To-Do (irc check)", () => {
+  it("calls toggleTodoCompleted with chatId, message, completed, uncompleted", async () => {
+    const toggleTodoCompleted = vi.fn(async (..._a: unknown[]) => ({ id: 42 }));
+    const client = { toggleTodoCompleted };
+
+    const msgId = await toggleChecklistItems(
+      client as unknown as TelegramClient,
+      -100,
+      555,
+      [2, 3],
+      [1],
+    );
+
+    expect(msgId).toBe(42);
+    expect(toggleTodoCompleted).toHaveBeenCalledTimes(1);
+    const params = toggleTodoCompleted.mock.calls[0][0] as {
+      chatId: number;
+      message: number;
+      completed: number[];
+      uncompleted: number[];
+    };
+    // id пунктов 1-based — те же, что выставляет sendChecklist.
+    expect(params).toMatchObject({ chatId: -100, message: 555, completed: [2, 3], uncompleted: [1] });
+  });
+
+  it("returns the toggled message id (falls back to input msgId if service returns none)", async () => {
+    const toggleTodoCompleted = vi.fn(async (..._a: unknown[]) => null);
+    const client = { toggleTodoCompleted };
+
+    const msgId = await toggleChecklistItems(
+      client as unknown as TelegramClient,
+      -100,
+      777,
+      [1],
+      [],
+    );
+
+    expect(msgId).toBe(777);
+  });
+});
+
+describe("pinMessage — pin visible to both sides (irc pin)", () => {
+  it("passes bothSides:true (else a DM pin is one-sided — peer never sees it)", async () => {
+    const pin = vi.fn(async (..._a: unknown[]) => null);
+    const client = { pinMessage: pin };
+
+    await pinMessage(client as unknown as TelegramClient, 5707638365, 1965);
+
+    expect(pin).toHaveBeenCalledTimes(1);
+    const params = pin.mock.calls[0][0] as {
+      chatId: number;
+      message: number;
+      bothSides?: boolean;
+    };
+    expect(params).toMatchObject({ chatId: 5707638365, message: 1965, bothSides: true });
+  });
+});
+
+describe("sendReaction — swallows MESSAGE_NOT_MODIFIED (reaction already set)", () => {
+  it("does NOT throw when Telegram returns MESSAGE_NOT_MODIFIED (already that reaction)", async () => {
+    const react = vi.fn(async () => {
+      throw { text: "MESSAGE_NOT_MODIFIED" };
+    });
+    const client = { sendReaction: react };
+
+    await expect(
+      sendReaction(client as unknown as TelegramClient, -100, 555, "❤"),
+    ).resolves.toBeUndefined();
+    expect(react).toHaveBeenCalledTimes(1);
+  });
+
+  it("rethrows other reaction errors (e.g. REACTION_INVALID)", async () => {
+    const react = vi.fn(async () => {
+      throw { text: "REACTION_INVALID" };
+    });
+    const client = { sendReaction: react };
+
+    await expect(
+      sendReaction(client as unknown as TelegramClient, -100, 555, "❤"),
+    ).rejects.toBeDefined();
   });
 });

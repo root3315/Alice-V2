@@ -87,6 +87,24 @@ export function resolveTarget(G: WorldModel, target: string): ResolvedTarget {
  * Все ID инжектируются через эту функцию — LLM не должен их угадывать.
  * @see docs/adr/155-branded-graph-id.md — интерфейс ContextVars
  */
+/**
+ * ПРИВАТНОСТЬ: виден ли тред в текущем чате (для scope заголовков ACTIVE_THREADS в промпте).
+ * В группе/канале (groupScope) — только треды, привязанные к ЭТОМУ чату (или без привязки —
+ * неоднозначно, оставляем: это лишь заголовок). В приватном 1:1 — все (её собственное пространство).
+ * Иначе название треда из ЛС («Планы с David») могло бы мелькнуть в рабочем промпте.
+ */
+export function threadVisibleInChat(
+  involves: ReadonlyArray<{ nodeId: string }> | undefined,
+  currentChannel: string | null,
+  groupScope: boolean,
+): boolean {
+  if (!groupScope) return true;
+  const list = involves ?? [];
+  if (list.length === 0) return true;
+  const ids = list.map((i) => ensureChannelId(i.nodeId) ?? i.nodeId);
+  return currentChannel != null && ids.includes(currentChannel);
+}
+
 export function buildContextVars(
   ctx: ActContext,
   item: ActionQueueItem,
@@ -109,8 +127,14 @@ export function buildContextVars(
   // ADR-190: фильтруем системные треды, чтобы anomaly/evaluate не заняли все слоты ACTIVE_THREADS
   const threads = typedQuery(ctx.dispatcher, "open_topics");
   if (threads && threads.length > 0) {
+    // ПРИВАТНОСТЬ: в группе/канале (отрицательный Telegram id) показываем только треды, относящиеся
+    // к ЭТОМУ чату — иначе название треда из ЛС («Планы с David») мелькнёт в рабочем промпте. В
+    // приватном 1:1 — все (её пространство). Тред без involves оставляем (неоднозначно, только заголовок).
+    const groupScope = targetChat != null && targetChat < 0;
+    const currentChannel = item.target ? (ensureChannelId(item.target) ?? item.target) : null;
     vars.ACTIVE_THREADS = threads
       .filter((t) => t.source !== "system")
+      .filter((t) => threadVisibleInChat(t.involves, currentChannel, groupScope))
       .slice(0, 5)
       .map((t) => ({
         id: String(t.id),

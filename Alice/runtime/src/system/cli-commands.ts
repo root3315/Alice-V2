@@ -559,6 +559,143 @@ export async function checklistCommand(
   };
 }
 
+// ── Checklist Complete Command (irc check) ──
+
+export interface ChecklistCompleteArgs {
+  json?: string;
+  in?: string;
+  /** ID сообщения-чеклиста, в котором отмечаем пункты. */
+  ref: string;
+  /** 1-based номера пунктов отметить ВЫПОЛНЕННЫМИ, через запятую (например "2" или "1,3"). */
+  done?: string;
+  /** 1-based номера пунктов СНЯТЬ отметку, через запятую. */
+  undone?: string;
+}
+
+/** Разбирает список 1-based номеров пунктов ("1,3" → [1,3]). Толерантно к пробелам/скобкам. */
+function parseItemNumberList(
+  raw: string | undefined,
+  die: (msg: string, code?: CliErrorCode) => never,
+  label: string,
+): number[] {
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) return [];
+  const nums = trimmed
+    .replace(/^\[|\]$/g, "")
+    .split(/[,\s]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((s) => Number(s));
+  if (nums.some((n) => !Number.isInteger(n) || n < 1)) {
+    die(`${label} must be 1-based item numbers (e.g. "2" or "1,3")`, "command_arg_format");
+  }
+  return nums;
+}
+
+/** Логика команды check — отмечает пункты существующего чеклиста выполненными/невыполненными. */
+export async function checklistCompleteCommand(
+  ctx: CliContext,
+  args: ChecklistCompleteArgs,
+): Promise<CommandResult> {
+  const die = makeDie(ctx.output, "irc");
+
+  const chatId = await ctx.resolveTarget(args.in);
+  if (!args.ref) die("check requires --ref (the checklist message id)", "command_missing_argument");
+  const msgId = parseMsgId(args.ref);
+  const completed = parseItemNumberList(args.done, die, "done");
+  const uncompleted = parseItemNumberList(args.undone, die, "undone");
+  if (completed.length === 0 && uncompleted.length === 0) {
+    die("check requires --done and/or --undone item numbers", "command_missing_argument");
+  }
+  assertCurrentChatForSend(ctx, chatId, die, "irc.check");
+
+  const body = { chatId, msgId, completed, uncompleted };
+  const result = (await ctx.engine.post("/telegram/checklist-complete", body)) as SendResult | null;
+
+  return {
+    output: renderConfirm(
+      "Checklist updated",
+      `done [${completed.join(",") || "-"}] undone [${uncompleted.join(",") || "-"}]`,
+    ),
+    rawResult: { msgId: result?.msgId, chatId },
+  };
+}
+
+// ── Pin / Unpin Commands (irc pin / irc unpin) ──
+
+export interface PinArgs {
+  json?: string;
+  in?: string;
+  /** ID сообщения для закрепления/открепления. */
+  ref: string;
+}
+
+/** Общая логика pin/unpin: закрепляет/открепляет сообщение в текущем чате. */
+async function pinOrUnpin(
+  ctx: CliContext,
+  args: PinArgs,
+  action: "pin" | "unpin",
+): Promise<CommandResult> {
+  const die = makeDie(ctx.output, "irc");
+  const chatId = await ctx.resolveTarget(args.in);
+  if (!args.ref) die(`${action} requires --ref (the message id)`, "command_missing_argument");
+  const msgId = parseMsgId(args.ref);
+  assertCurrentChatForSend(ctx, chatId, die, `irc.${action}`);
+
+  const result = (await ctx.engine.post(`/telegram/${action}`, { chatId, msgId })) as {
+    ok?: boolean;
+  } | null;
+
+  return {
+    output: renderConfirm(action === "pin" ? "Pinned" : "Unpinned", `#${msgId}`),
+    rawResult: { ok: result?.ok ?? false, chatId },
+  };
+}
+
+export const pinCommand = (ctx: CliContext, args: PinArgs): Promise<CommandResult> =>
+  pinOrUnpin(ctx, args, "pin");
+
+export const unpinCommand = (ctx: CliContext, args: PinArgs): Promise<CommandResult> =>
+  pinOrUnpin(ctx, args, "unpin");
+
+// ── Self-Source Command (irc self-source) — read-only самочтение собственного кода ──
+
+export interface SelfSourceArgs {
+  json?: string;
+  /** Файл для чтения (SOUL.md, src/**.ts, docs/**). */
+  path?: string;
+  /** Каталог для навигации (".", "src", "src/mods"). */
+  list?: string;
+}
+
+export async function selfSourceCommand(
+  ctx: CliContext,
+  args: SelfSourceArgs,
+): Promise<CommandResult> {
+  const die = makeDie(ctx.output, "irc");
+  const body: Record<string, unknown> = {};
+  if (args.list !== undefined) body.list = args.list || "";
+  else if (args.path) body.path = args.path;
+  else die("self-source needs --path <file> or --list <dir>", "command_missing_argument");
+
+  const result = (await ctx.engine.post("/self/source", body)) as {
+    content?: string;
+    entries?: string[];
+    dir?: string;
+    path?: string;
+    truncated?: boolean;
+    error?: string;
+  } | null;
+
+  if (!result) return { output: "(self-source: пустой ответ)", rawResult: { error: "empty" } };
+  if (result.error) return { output: `(${result.error})`, rawResult: result };
+  if (result.entries) {
+    return { output: `${result.dir}/\n  ${result.entries.join("\n  ")}`, rawResult: result };
+  }
+  const header = `// ${result.path}${result.truncated ? "  (обрезано)" : ""}`;
+  return { output: `${header}\n${result.content ?? ""}`, rawResult: result };
+}
+
 // ── Poll Command ──
 
 export interface PollArgs {

@@ -79,7 +79,10 @@ import {
   joinChat,
   leaveChat,
   markRead,
+  pinMessage,
   sendChecklist,
+  toggleChecklistItems,
+  unpinMessage,
   sendPoll,
   sendReaction,
   sendSticker,
@@ -775,6 +778,38 @@ async function main() {
         dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
       }
       return { msgId: msgId ?? null };
+    },
+    // Отметить пункты существующего чеклиста (To-Do) галочкой — она сама ставит ✅ (напр. деплой готов).
+    telegramChecklistComplete: async ({ chatId, msgId, completed, uncompleted }) => {
+      const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
+      const resultMsgId = await toggleChecklistItems(client, rawChatId, msgId, completed, uncompleted);
+      const graphId = telegramChannelId(rawChatId);
+      if (graphId && G.has(graphId)) {
+        // Это правка существующего сообщения, не новое → считаем действием, но НЕ message
+        // (не бьёт consecutive_outgoing, не блокирует стикер).
+        dispatcher.dispatch("DECLARE_ACTION", { target: graphId, isMessage: false });
+      }
+      return { msgId: resultMsgId ?? null };
+    },
+    // Закрепить/открепить сообщение (`irc pin` / `irc unpin`). Правка чата, не новое сообщение →
+    // DECLARE_ACTION isMessage:false (не бьёт consecutive_outgoing).
+    telegramPin: async ({ chatId, msgId }) => {
+      const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
+      await pinMessage(client, rawChatId, msgId);
+      const graphId = telegramChannelId(rawChatId);
+      if (graphId && G.has(graphId)) {
+        dispatcher.dispatch("DECLARE_ACTION", { target: graphId, isMessage: false });
+      }
+      return { ok: true };
+    },
+    telegramUnpin: async ({ chatId, msgId }) => {
+      const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
+      await unpinMessage(client, rawChatId, msgId);
+      const graphId = telegramChannelId(rawChatId);
+      if (graphId && G.has(graphId)) {
+        dispatcher.dispatch("DECLARE_ACTION", { target: graphId, isMessage: false });
+      }
+      return { ok: true };
     },
     // Нативный опрос (poll/опрос) — БЕСПЛАТНАЯ функция Telegram. Зеркалит telegramChecklist:
     // typing → resolve топика → sendPoll → cache → SEND_MESSAGE(text=question) + DECLARE_ACTION.

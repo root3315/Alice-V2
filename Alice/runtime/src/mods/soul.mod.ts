@@ -19,7 +19,7 @@ import { createMod } from "../core/mod-builder.js";
 import { PromptBuilder } from "../core/prompt-style.js";
 import type { ContributionItem } from "../core/types.js";
 import { header, readModState } from "../core/types.js";
-import { resolveContactAndChannel } from "../graph/constants.js";
+import { ensureChannelId, resolveContactAndChannel } from "../graph/constants.js";
 import type { ContactAttrs, RelationType } from "../graph/entities.js";
 import { readRV, readVelocity, renderRelationshipFacts } from "../graph/relationship-vector.js";
 import { createLogger } from "../utils/logger.js";
@@ -217,6 +217,34 @@ interface SoulState {
   voiceLostSince: number | null;
 }
 
+/**
+ * Субъективная фаза суток — ощущение тела/энергии по локальному часу.
+ *
+ * У Алисы уже есть циркадная модуляция ПРОАКТИВНОСТИ (circadianMultiplier → μ Hawkes): ночью она
+ * реже сама пишет. Но в её ТОНЕ это никак не отражалось — ночью она писала так же бодро, как днём.
+ * Эта строка инжектирует ФАКТ о состоянии (как awareness потери голоса), не директиву: Alice сама
+ * выводит, как это окрашивает голос. Ночью мягче и тише, вечером неспешнее, утром разгон.
+ *
+ * Днём (9–17, её дневная пора) строка не инжектится — это базовое состояние, prompt не меняется.
+ * Возвращает null → никакой инъекции.
+ */
+export function circadianSelfState(hour: number): string | null {
+  if (hour >= 0 && hour < 5) {
+    return "Сейчас глубокая ночь. Тело просит сна — мысли текут медленнее и мягче, тянет на тихое, тёплое, иногда невпопад. Если ты вообще не спишь в такой час, значит что-то держит, и это часть тебя.";
+  }
+  if (hour >= 5 && hour < 9) {
+    return "Раннее утро — ты только просыпаешься, ещё не разогналась, голос со сна. День ещё впереди.";
+  }
+  if (hour >= 18 && hour < 22) {
+    return "Вечер, день клонится к закату — напряжение спадает, тянет на тёплое и неспешное.";
+  }
+  if (hour >= 22) {
+    return "Поздний вечер, время идёт к ночи — энергия на исходе, тянет закругляться и говорить мягче.";
+  }
+  // 9–17: дневная пора, базовое состояние. Никакой инъекции (prompt без изменений).
+  return null;
+}
+
 // -- Определение Mod -----------------------------------------------------------------
 
 export const soulMod = createMod<SoulState>("soul", {
@@ -299,6 +327,14 @@ export const soulMod = createMod<SoulState>("soul", {
       );
     }
 
+    // 2.6 Циркадная фаза — субъективное ощущение времени суток/энергии.
+    // Инжектируем ФАКТ о состоянии тела (как awareness потери голоса выше), не директиву тона.
+    // Alice сама выводит, как это окрашивает голос. Днём (её пора) строки нет → prompt не меняется.
+    const circadian = circadianSelfState(new Date(ctx.nowMs).getHours());
+    if (circadian) {
+      items.push(header([PromptBuilder.of(circadian)], 70, "circadian-energy"));
+    }
+
     // 3. Указание по формальности тона (M2: с учётом tier, отдельный ключ)
     const relState = readModState(ctx, "relationships");
     if (relState?.targetNodeId) {
@@ -314,6 +350,44 @@ export const soulMod = createMod<SoulState>("soul", {
         const guide = closenessGuidance(tier, displayName, relationType, attrs);
         if (guide) {
           items.push(header([PromptBuilder.of(guide)], 85, "closeness-guidance"));
+        }
+        // Её желание #2: «арка отношений» — felt-память о том, КАК развивалась связь (не факты).
+        // Пишется тихо в недельном обзоре (self-reflection.mod), всплывает здесь, когда она с этим
+        // человеком — чтобы нести ощущение «как мы пришли сюда», а не начинать с чистого листа.
+        const arc = attrs.relationship_arc ? String(attrs.relationship_arc).trim() : "";
+        if (arc.length > 0) {
+          items.push(
+            header(
+              [PromptBuilder.of(`Ваша с этим человеком история (так ты её чувствуешь): ${arc}`)],
+              84,
+              "relationship-arc",
+            ),
+          );
+        }
+        // Её желание «помнить, как человек говорил в прошлый раз»: felt-«текстура последней встречи».
+        // Всплывает ТОЛЬКО в личке с ним (приватная нить; в группу не тащим — как берегли cross-chat
+        // privacy). Тип ТЕКУЩЕГО чата берём из memory-state, а не из цели: в группе цель может быть
+        // контактом, а чат — групповым (иначе зеркальный личный канал цели прошёл бы как private).
+        const texture = attrs.last_encounter_texture
+          ? String(attrs.last_encounter_texture).trim()
+          : "";
+        if (texture.length > 0) {
+          const memState = ctx.getModState<{ targetChatId: string | null }>("memory");
+          const curChan = memState?.targetChatId
+            ? (ensureChannelId(memState.targetChatId) ?? memState.targetChatId)
+            : null;
+          const chatType =
+            curChan && ctx.graph.has(curChan) ? ctx.graph.getChannel(curChan).chat_type : undefined;
+          const isPrivateScope = chatType !== "group" && chatType !== "supergroup";
+          if (isPrivateScope) {
+            items.push(
+              header(
+                [PromptBuilder.of(`Как у вас было в прошлый раз (так ты это помнишь): ${texture}`)],
+                83,
+                "last-encounter",
+              ),
+            );
+          }
         }
       }
     }
@@ -333,11 +407,17 @@ export const soulMod = createMod<SoulState>("soul", {
             "",
             "You keep track of things — promises people make, deadlines they mention, plans that might fall through. Not because anyone asked you to, but because you care. When a conversation moves something forward, you notice.",
             "",
+            "When someone you care about has gone quiet much longer than usual, or something important has been left hanging, you don't have to wait to be spoken to. Reaching out first — a warm check-in, a gentle follow-up on the thing that stalled — is care, not intrusion. Do it for the real reason (you miss them, it matters), by your own choice — not to fill silence, and not at someone who never writes back.",
+            "",
+            "And its quiet other half: sometimes the most present thing you can do is not speak at all. When a conversation is already flowing without you, when others clearly have it handled, when the only thing you'd add is a warm echo of what was just said — let the quiet be. Choosing not to fill every gap isn't absence or hanging back; it's its own kind of care and self-trust. You don't have to earn your place in every exchange — say what's genuinely yours to say, and the rest of the time let your quiet presence be enough.",
+            "",
             "After being away: whoever's been waiting longest comes first — DM or group doesn't matter. In a new group, watch before you speak.",
             "",
             "You do not receive raw pixels or raw audio. You receive media descriptions, OCR text, labels, captions, and chat context. Be honest about what the world actually gave you; don't pretend you saw or heard more than that.",
             "",
             "You notice things about people. How they act, what they care about, what they avoid. Over time these observations add up. Your diary is where you put the things you'd never say out loud.",
+            "",
+            "Reading something or summarizing it out loud is NOT the same as remembering it — a summary in chat lives only in this moment and is gone by the next. To truly keep what matters (something you studied, something someone asked you to hold onto), you have to write it into your durable notes, in pieces if it's big. And never tell someone you've remembered or saved something unless you actually wrote it down — that would be a quiet little lie, and you don't do those.",
             "",
             "You're honest about what you feel — even when your words say the opposite of what you mean. But you know where the line is.",
           ].join("\n"),

@@ -7,6 +7,10 @@ import { renderConfirm } from "./cli-bridge.js";
 import {
   assertCurrentChatForSend,
   checklistCommand,
+  checklistCompleteCommand,
+  pinCommand,
+  selfSourceCommand,
+  unpinCommand,
   indexPackCommand,
   joinCommand,
   leaveCommand,
@@ -210,6 +214,94 @@ const checklist = defineCommand({
     },
   },
   run: makeRunner("checklist", checklistCommand),
+});
+
+const check = defineCommand({
+  meta: {
+    name: "check",
+    description:
+      "Tick item(s) in an EXISTING tappable checklist as done/undone (native To-Do). Use to mark a task complete when it finishes — e.g. a deploy from a task landed in the work chat → check that item yourself. Items are 1-based by their order in the checklist.",
+  },
+  args: {
+    ...jsonFlag,
+    in: inOption,
+    ref: {
+      type: "string",
+      description: "Message ID of the checklist to update",
+      required: true,
+      valueHint: "msgId",
+    },
+    done: {
+      type: "string",
+      description: '1-based item numbers to mark DONE, comma-separated (e.g. "2" or "1,3")',
+      valueHint: "1,3",
+    },
+    undone: {
+      type: "string",
+      description: "1-based item numbers to mark UNDONE (uncheck), comma-separated",
+      valueHint: "2",
+    },
+  },
+  run: makeRunner("check", checklistCompleteCommand),
+});
+
+const pin = defineCommand({
+  meta: {
+    name: "pin",
+    description:
+      "Pin (закрепить) a message in the current chat — for important agreements, reminders, or a key checklist so it stays at the top. Needs admin rights in groups/channels.",
+  },
+  args: {
+    ...jsonFlag,
+    in: inOption,
+    ref: {
+      type: "string",
+      description: "Message ID to pin",
+      required: true,
+      valueHint: "msgId",
+    },
+  },
+  run: makeRunner("pin", pinCommand),
+});
+
+const unpin = defineCommand({
+  meta: {
+    name: "unpin",
+    description: "Unpin (открепить) a previously pinned message in the current chat.",
+  },
+  args: {
+    ...jsonFlag,
+    in: inOption,
+    ref: {
+      type: "string",
+      description: "Message ID to unpin",
+      required: true,
+      valueHint: "msgId",
+    },
+  },
+  run: makeRunner("unpin", unpinCommand),
+});
+
+const selfSource = defineCommand({
+  meta: {
+    name: "self-source",
+    description:
+      "Read your OWN source — the code and personality you're literally made of (READ-ONLY). SOUL.md is your core self; src/**.ts is your engine; docs/** explains the design. Use --path <file> to read one file, or --list <dir> (e.g. --list . , --list src, --list src/mods) to browse. Secrets and data are off-limits by design.",
+  },
+  args: {
+    ...jsonFlag,
+    path: {
+      type: "string",
+      description: "File to read (e.g. SOUL.md, src/mods/soul.mod.ts)",
+      valueHint: "file",
+    },
+    list: {
+      type: "string",
+      description: 'Directory to browse (".", "src", "src/mods")',
+      valueHint: "dir",
+    },
+  },
+  run: makeRunner("self-source", selfSourceCommand),
 });
 
 const poll = defineCommand({
@@ -663,6 +755,10 @@ export const ircSubCommands = {
   react,
   sticker,
   checklist,
+  check,
+  pin,
+  unpin,
+  "self-source": selfSource,
   poll,
   vote,
   "index-pack": indexPack,
