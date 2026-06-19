@@ -117,6 +117,10 @@ export interface EngineApiDeps {
   telegramPin?: (params: { chatId: number; msgId: number }) => Promise<{ ok: true }>;
   /** Открепить сообщение (`irc unpin`). */
   telegramUnpin?: (params: { chatId: number; msgId: number }) => Promise<{ ok: true }>;
+  /** Список топиков форум-супергруппы (`irc forum-topics`). READ-ONLY. */
+  telegramForumTopics?: (
+    chatId: number,
+  ) => Promise<{ topics: Array<{ id: number; title: string; closed: boolean }> }>;
   /** Telegram native poll (опрос) callback (`irc poll`). Free feature — no Premium needed. */
   telegramPoll?: (params: {
     chatId: number;

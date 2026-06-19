@@ -68,6 +68,7 @@ export const COMMAND_FIELDS = {
   pin: ["ok", "chatId"] as const,
   unpin: ["ok", "chatId"] as const,
   "self-source": ["path", "content", "truncated", "entries", "dir", "error"] as const,
+  "forum-topics": ["topics", "chatId"] as const,
   poll: ["msgId", "chatId"] as const,
   vote: ["voted", "chatId", "msgId"] as const,
   "index-pack": ["started", "shortName", "estimated", "message"] as const,

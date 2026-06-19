@@ -12,6 +12,7 @@ import type { TelegramClient } from "@mtcute/node";
 import { InputMedia } from "@mtcute/node";
 import { describe, expect, it, vi } from "vitest";
 import {
+  getForumTopics,
   joinChat,
   pinMessage,
   sendChecklist,
@@ -705,5 +706,44 @@ describe("sendReaction — swallows MESSAGE_NOT_MODIFIED (reaction already set)"
     await expect(
       sendReaction(client as unknown as TelegramClient, -100, 555, "❤"),
     ).rejects.toBeDefined();
+  });
+});
+
+describe("getForumTopics — forum topic listing", () => {
+  const fakeForumClient = (topics: Array<{ id: number; title: string; closed?: boolean }>) => ({
+    iterForumTopics: async function* () {
+      for (const t of topics) yield t;
+    },
+  });
+
+  it("maps id/title/closed from iterForumTopics", async () => {
+    const client = fakeForumClient([
+      { id: 1, title: "General" },
+      { id: 42, title: "Вакансии", closed: true },
+    ]);
+    const topics = await getForumTopics(client as unknown as TelegramClient, -100123);
+    expect(topics).toEqual([
+      { id: 1, title: "General", closed: false },
+      { id: 42, title: "Вакансии", closed: true },
+    ]);
+  });
+
+  it("respects the limit cap", async () => {
+    const many = Array.from({ length: 10 }, (_, i) => ({ id: i, title: `t${i}` }));
+    const topics = await getForumTopics(
+      fakeForumClient(many) as unknown as TelegramClient,
+      -100123,
+      3,
+    );
+    expect(topics).toHaveLength(3);
+    expect(topics[2].id).toBe(2);
+  });
+
+  it("returns [] when the chat has no forum topics", async () => {
+    const topics = await getForumTopics(
+      fakeForumClient([]) as unknown as TelegramClient,
+      -100123,
+    );
+    expect(topics).toEqual([]);
   });
 });

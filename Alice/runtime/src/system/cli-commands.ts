@@ -696,6 +696,39 @@ export async function selfSourceCommand(
   return { output: `${header}\n${result.content ?? ""}`, rawResult: result };
 }
 
+// ── Forum Topics Command (irc forum-topics) — read-only листинг топиков форум-супергруппы ──
+
+export interface ForumTopicsArgs {
+  json?: string;
+  in?: string;
+}
+
+export async function forumTopicsCommand(
+  ctx: CliContext,
+  args: ForumTopicsArgs,
+): Promise<CommandResult> {
+  const chatId = await ctx.resolveTarget(args.in);
+  const result = (await ctx.engine.post("/telegram/forum-topics", { chatId })) as {
+    topics?: Array<{ id: number; title: string; closed?: boolean }>;
+    error?: string;
+  } | null;
+
+  if (!result) return { output: "(forum-topics: пустой ответ)", rawResult: { error: "empty" } };
+  if (result.error) return { output: `(${result.error})`, rawResult: result };
+  const topics = result.topics ?? [];
+  if (topics.length === 0) {
+    return {
+      output: "(в этом чате нет форум-топиков — это не форум-супергруппа, либо они недоступны)",
+      rawResult: { topics, chatId },
+    };
+  }
+  const lines = topics.map((t) => `  #${t.id} ${t.title}${t.closed ? " [закрыт]" : ""}`);
+  return {
+    output: `Топики форума (${topics.length}):\n${lines.join("\n")}`,
+    rawResult: { topics, chatId },
+  };
+}
+
 // ── Poll Command ──
 
 export interface PollArgs {

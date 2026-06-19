@@ -1305,6 +1305,37 @@ export async function unpinMessage(
   await client.unpinMessage({ chatId, message: msgId });
 }
 
+/** Один топик форум-супергруппы (минимальная форма для листинга). */
+export interface ForumTopicInfo {
+  /** id топика = id его корневого сообщения (то, что нужно как replyTo/topicId для ответа в него). */
+  id: number;
+  title: string;
+  closed: boolean;
+}
+
+/**
+ * Список топиков форум-супергруппы (id + название + закрыт ли). READ-ONLY: ничего не отправляет.
+ * mtcute iterForumTopics сам пагинирует — берём до `limit` штук, чтобы не тащить тысячи. Для обычной
+ * (не-форум) группы Telegram бросит ошибку — вызывающий слой её ловит и трактует как «это не форум».
+ */
+export async function getForumTopics(
+  client: TelegramClient,
+  chatId: string | number,
+  limit = 200,
+): Promise<ForumTopicInfo[]> {
+  await globalLimiter.acquire();
+  const out: ForumTopicInfo[] = [];
+  for await (const t of client.iterForumTopics(chatId)) {
+    out.push({
+      id: Number(t.id),
+      title: String(t.title ?? ""),
+      closed: Boolean((t as { closed?: boolean }).closed),
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 // ── ADR-117 D7: Exa Browse ────────────────────────────────────────────────
 
 /**

@@ -81,6 +81,7 @@ import {
   markRead,
   pinMessage,
   sendChecklist,
+  getForumTopics,
   toggleChecklistItems,
   unpinMessage,
   sendPoll,
@@ -810,6 +811,13 @@ async function main() {
         dispatcher.dispatch("DECLARE_ACTION", { target: graphId, isMessage: false });
       }
       return { ok: true };
+    },
+    // Список топиков форум-супергруппы (`irc forum-topics`) — READ-ONLY: только читает, ничего не
+    // меняет и не отправляет, поэтому без DECLARE_ACTION.
+    telegramForumTopics: async (chatId) => {
+      const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
+      const topics = await getForumTopics(client, rawChatId);
+      return { topics };
     },
     // Нативный опрос (poll/опрос) — БЕСПЛАТНАЯ функция Telegram. Зеркалит telegramChecklist:
     // typing → resolve топика → sendPoll → cache → SEND_MESSAGE(text=question) + DECLARE_ACTION.

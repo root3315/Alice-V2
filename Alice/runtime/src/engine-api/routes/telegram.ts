@@ -446,6 +446,27 @@ export async function handleTelegramForward(
     return;
   }
 
+  if (action === "forum-topics") {
+    if (!deps.telegramForumTopics) {
+      notConfigured(res, "forum-topics");
+      return;
+    }
+    const b = body as { chatId?: unknown } | null;
+    if (b === null || typeof b !== "object" || Array.isArray(b) || typeof b.chatId !== "number") {
+      badRequest(res, 'body must be { "chatId": number }');
+      return;
+    }
+    if (!ensureTargetAllowed(res, deps, b.chatId)) return;
+    try {
+      const result = await deps.telegramForumTopics(b.chatId);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      serverError(res, "forum-topics failed", err);
+    }
+    return;
+  }
+
   if (action === "poll") {
     if (!deps.telegramPoll) {
       notConfigured(res, "poll");

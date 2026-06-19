@@ -8,6 +8,7 @@ import {
   assertCurrentChatForSend,
   checklistCommand,
   checklistCompleteCommand,
+  forumTopicsCommand,
   pinCommand,
   selfSourceCommand,
   unpinCommand,
@@ -302,6 +303,19 @@ const selfSource = defineCommand({
     },
   },
   run: makeRunner("self-source", selfSourceCommand),
+});
+
+const forumTopics = defineCommand({
+  meta: {
+    name: "forum-topics",
+    description:
+      "List the forum topics (темы) of a forum supergroup — each topic's id + title. READ-ONLY. Use when asked which topics/темы exist in a forum, or to find a topic's id before replying into it. Defaults to the current chat; pass --in <chat> for another.",
+  },
+  args: {
+    ...jsonFlag,
+    in: inOption,
+  },
+  run: makeRunner("forum-topics", forumTopicsCommand),
 });
 
 const poll = defineCommand({
@@ -759,6 +773,7 @@ export const ircSubCommands = {
   pin,
   unpin,
   "self-source": selfSource,
+  "forum-topics": forumTopics,
   poll,
   vote,
   "index-pack": indexPack,
