@@ -33,7 +33,7 @@ const OptionalEnvNameSchema = z.preprocess(
   z.string().min(1).optional(),
 );
 const OptionalUrlStringSchema = z.union([z.literal(""), z.string().url()]);
-export const SoulProfileSchema = z.enum(["default", "ojou"]);
+export const SoulProfileSchema = z.enum(["default", "ojou", "aura"]);
 export type SoulProfile = z.infer<typeof SoulProfileSchema>;
 
 // -- D5: Provider Fallback（ADR-123 §D5）-------------------------------------

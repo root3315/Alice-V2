@@ -52,9 +52,11 @@ import { initProviders, selectProviderForFirstPass } from "./llm/client.js";
 import { closeGroupCache, initGroupCache } from "./llm/group-cache.js";
 import { closeMediaCache, initMediaCache } from "./llm/media-cache.js";
 import { onBreakerStateChange } from "./llm/resilience.js";
+import { describeMedia, isVisionEnabled } from "./llm/vision.js";
 import { embedTexts, isEmbeddingEnabled } from "./llm/embeddings.js";
 import { getEmbeddingConfig, setEmbeddingConfig } from "./llm/semantic-recall-config.js";
 import { setDigestTarget } from "./mods/digest.mod.js";
+import { setSoulOwner } from "./mods/soul.mod.js";
 import { setExplorationTarget, setExplorationWorker } from "./mods/exploration.mod.js";
 import { setHealthWatchTarget } from "./mods/health-watch.mod.js";
 import { setWorkiStatusSender } from "./mods/worki.mod.js";
@@ -73,6 +75,8 @@ import {
 } from "./runtime-paths.js";
 import { syncEnv } from "./skills/pkg.js";
 import { ensureAllArtifacts, loadRegistry } from "./skills/registry.js";
+import { ALICE_CONTAINER_PATHS } from "./skills/container-runner.js";
+import { ensureBundledAssets } from "./system/bootstrap-assets.js";
 import {
   forwardMessage,
   getMessages,
@@ -108,6 +112,8 @@ import { createClient, createDispatcher, destroyClient, startClient } from "./te
 import { isTelegramActionError, TelegramActionError } from "./telegram/errors.js";
 import { bindEvents, cacheOutgoingMsg, EventBuffer, warmOutgoingCache } from "./telegram/events.js";
 import { createExplorationWorker, startWikiScan, stopWikiScan } from "./telegram/explorer.js";
+import { descriptionLooksWrong, fetchImageBuffer, searchImageUrls } from "./telegram/image-search.js";
+import { imageToRoundVideo, ROUND_VIDEO_SECONDS, ROUND_VIDEO_SIZE } from "./telegram/round-video.js";
 import { cleanupPhantomContacts } from "./telegram/mapper.js";
 import { initAdminNotify, notifyAdmin } from "./telegram/notify-admin.js";
 import { createLogger } from "./utils/logger.js";
@@ -179,6 +185,10 @@ async function main() {
   // 1. Конфигурация
   const config = loadConfig();
 
+  // 1.5 Зеркалим встроенные ассеты в $ALICE_HOME, чтобы irc send-file мог их слать
+  // (карта-вердикт Auserlese, гифка создателя и т.п.). Идемпотентно, никогда не роняет старт.
+  ensureBundledAssets();
+
   // 2. База данных
   ensureParentDir(ALICE_DB_PATH);
   ensureParentDir(ALICE_MEDIA_CACHE_DB_PATH);
@@ -218,6 +228,8 @@ async function main() {
 
   // Дайджест: раз в сутки Алиса сама рассказывает владельцу в ЛС, как прошёл день.
   if (config.telegramAdmin) setDigestTarget(telegramChannelId(config.telegramAdmin));
+  // Аура должна надёжно узнавать создателя по id движка (а не по @хэндлу) → передаём владельца в soul.mod.
+  if (config.telegramAdmin) setSoulOwner(config.telegramAdmin);
 
   // ADR-33 Phase 2: одноразовая миграция со старых graph_snapshots на graph_nodes/graph_edges
   migrateFromSnapshots();
@@ -1152,8 +1164,16 @@ async function main() {
     },
     // ADR-204 W2: callback загрузки файла в Telegram
     telegramUpload: async ({ chatId, path: filePath, caption, replyTo }) => {
+      // Песочный шелл раскрывает $ALICE_HOME в КОНТЕЙНЕРНЫЙ home (/home/alice); ремапим этот префикс
+      // на host ALICE_HOME — иначе путь не пройдёт под-ALICE_HOME гард (он работает с host-путями)
+      // и карта-вердикт/гифка из ритуала не отправятся.
+      const containerHome = ALICE_CONTAINER_PATHS.home;
+      const hostPath =
+        filePath === containerHome || filePath.startsWith(`${containerHome}/`)
+          ? resolve(ALICE_HOME, filePath.slice(containerHome.length).replace(/^\/+/, ""))
+          : filePath;
       // Ограничение безопасности: path должен находиться под ALICE_HOME
-      const resolved = resolve(filePath);
+      const resolved = resolve(hostPath);
       if (!resolved.startsWith(ALICE_HOME)) {
         throw new Error(`file path must be under ALICE_HOME (${ALICE_HOME})`);
       }
@@ -1161,20 +1181,141 @@ async function main() {
       if (!existsSync(resolved)) throw new Error(`file not found: ${resolved}`);
       const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
       const fileBuffer = readFileSync(resolved);
-      const fileName = resolved.split("/").pop() ?? "file";
-      // Строим медиа через InputMedia.auto
+      // basename: делим по / И \ (Windows) — иначе именем файла становится весь путь
+      const fileName = resolved.split(/[/\\]/).pop() ?? "file";
+      const ext = (fileName.split(".").pop() ?? "").toLowerCase();
       const { InputMedia } = await import("@mtcute/node");
-      const inputMedia = InputMedia.auto(fileBuffer, { fileName });
-      const sent = await client.sendMedia(rawChatId, inputMedia, {
-        caption,
-        replyTo,
-      });
+      const sendOpts = { caption, replyTo };
+      // Статичные картинки (webp/png/jpg) шлём как ФОТО → показываются инлайн картинкой, а не
+      // файлом-документом (карта-вердикт ритуала). При отказе Telegram — фолбэк на авто (документ).
+      const isStaticImage = ext === "webp" || ext === "png" || ext === "jpg" || ext === "jpeg";
+      let sent: Awaited<ReturnType<typeof client.sendMedia>> | undefined;
+      if (isStaticImage) {
+        try {
+          sent = await client.sendMedia(rawChatId, InputMedia.photo(fileBuffer), sendOpts);
+        } catch {
+          sent = await client.sendMedia(rawChatId, InputMedia.auto(fileBuffer, { fileName }), sendOpts);
+        }
+      } else {
+        sent = await client.sendMedia(rawChatId, InputMedia.auto(fileBuffer, { fileName }), sendOpts);
+      }
       const graphId = telegramChannelId(rawChatId);
       if (sent?.id != null && graphId) {
         cacheOutgoingMsg(graphId, sent.id);
         dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
       }
       return { msgId: sent?.id ?? null };
+    },
+    // `irc image` — найти картинку (booru SFW / web DDG, без API-ключей), скачать и отправить как фото.
+    // Сеть и скачивание на стороне движка; пробуем несколько кандидатов, пока один не дойдёт.
+    telegramSendImage: async ({ chatId, query, source, topicId }) => {
+      const src = source === "booru" ? "booru" : "web";
+      const urls = await searchImageUrls(query, src);
+      if (urls.length === 0) return { msgId: null, error: "ничего не нашлось" };
+      const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
+      const shuffled = [...urls].sort(() => Math.random() - 0.5).slice(0, 10);
+      const { InputMedia } = await import("@mtcute/node");
+      const visionOn = isVisionEnabled(config);
+      let visionChecks = 0;
+      for (const url of shuffled) {
+        try {
+          const { buffer } = await fetchImageBuffer(url);
+          // Анализ ПЕРЕД отправкой: смотрим картинку через vision, чтобы не слать битое/мусор/не то.
+          // Лимит VLM-проверок; на сбой vision НЕ блокируем (desc === undefined → шлём как есть).
+          if (visionOn && visionChecks < 4) {
+            visionChecks++;
+            let desc: string | undefined;
+            try {
+              desc = await describeMedia(buffer.toString("base64"), `imgsearch:${url}`, "photo", config);
+            } catch {
+              desc = undefined;
+            }
+            if (
+              desc !== undefined &&
+              (desc.trim().length < 10 ||
+                /не удал|broken|corrupt|unavailable|cannot|could not|404|not found|placeholder|error/i.test(
+                  desc,
+                ) ||
+                descriptionLooksWrong(query, desc))
+            ) {
+              continue; // картинка не прошла проверку → следующий кандидат
+            }
+          }
+          let sent: Awaited<ReturnType<typeof client.sendMedia>> | undefined;
+          try {
+            sent = await client.sendMedia(rawChatId, InputMedia.photo(buffer), { replyTo: topicId });
+          } catch {
+            sent = await client.sendMedia(rawChatId, InputMedia.auto(buffer, { fileName: "image.jpg" }), {
+              replyTo: topicId,
+            });
+          }
+          const graphId = telegramChannelId(rawChatId);
+          if (sent?.id != null && graphId) {
+            cacheOutgoingMsg(graphId, sent.id);
+            dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
+          }
+          return { msgId: sent?.id ?? null, url, source: src };
+        } catch {
+          // следующий кандидат — игнорируем и пробуем дальше
+        }
+      }
+      return { msgId: null, error: "кандидаты не скачались/не отправились" };
+    },
+    // `irc circle` — найти картинку → ffmpeg в квадратное mp4 → отправить как video note («кружок»).
+    // Тот же поиск + vision-проверка, что у image; статичный кружок (без живого видео). На движке.
+    telegramSendCircle: async ({ chatId, query, source, topicId }) => {
+      const src = source === "booru" ? "booru" : "web";
+      const urls = await searchImageUrls(query, src);
+      if (urls.length === 0) return { msgId: null, error: "ничего не нашлось" };
+      const rawChatId = typeof chatId === "number" ? chatId : Number(chatId);
+      const shuffled = [...urls].sort(() => Math.random() - 0.5).slice(0, 8);
+      const visionOn = isVisionEnabled(config);
+      let visionChecks = 0;
+      const { InputMedia } = await import("@mtcute/node");
+      for (const url of shuffled) {
+        try {
+          const { buffer } = await fetchImageBuffer(url);
+          if (visionOn && visionChecks < 3) {
+            visionChecks++;
+            let desc: string | undefined;
+            try {
+              desc = await describeMedia(buffer.toString("base64"), `imgcircle:${url}`, "photo", config);
+            } catch {
+              desc = undefined;
+            }
+            if (
+              desc !== undefined &&
+              (desc.trim().length < 10 ||
+                /не удал|broken|corrupt|unavailable|cannot|could not|404|not found|placeholder|error/i.test(
+                  desc,
+                ) ||
+                descriptionLooksWrong(query, desc))
+            ) {
+              continue;
+            }
+          }
+          const mp4 = await imageToRoundVideo(buffer);
+          const sent = await client.sendMedia(
+            rawChatId,
+            InputMedia.video(mp4, {
+              isRound: true,
+              width: ROUND_VIDEO_SIZE,
+              height: ROUND_VIDEO_SIZE,
+              duration: ROUND_VIDEO_SECONDS,
+            }),
+            { replyTo: topicId },
+          );
+          const graphId = telegramChannelId(rawChatId);
+          if (sent?.id != null && graphId) {
+            cacheOutgoingMsg(graphId, sent.id);
+            dispatcher.dispatch("DECLARE_ACTION", { target: graphId });
+          }
+          return { msgId: sent?.id ?? null, url, source: src };
+        } catch {
+          // следующий кандидат
+        }
+      }
+      return { msgId: null, error: "не удалось сделать/отправить кружок" };
     },
     // Живая проба сервера эмбеддингов для дашборда (семантическая память). РЕЗИЛЕНТНО:
     // короткий таймаут, никогда не бросает — при сбое { reachable:false, reason }. Используем

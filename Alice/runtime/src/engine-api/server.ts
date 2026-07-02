@@ -179,6 +179,20 @@ export interface EngineApiDeps {
     caption?: string;
     replyTo?: number;
   }) => Promise<{ msgId: number | null }>;
+  /** `irc image` — найти картинку (booru SFW / web DDG, без API-ключей), скачать и отправить как фото. */
+  telegramSendImage?: (params: {
+    chatId: number;
+    query: string;
+    source?: "booru" | "web";
+    topicId?: number;
+  }) => Promise<{ msgId: number | null; url?: string; source?: string; error?: string }>;
+  /** `irc circle` — найти картинку → квадратное mp4 (ffmpeg) → отправить как video note («кружок»). */
+  telegramSendCircle?: (params: {
+    chatId: number;
+    query: string;
+    source?: "booru" | "web";
+    topicId?: number;
+  }) => Promise<{ msgId: number | null; url?: string; source?: string; error?: string }>;
   /** Telegram voice callback (`irc voice`). TTS → OGG/Opus → sendVoice. */
   telegramVoice?: (params: {
     chatId: number;

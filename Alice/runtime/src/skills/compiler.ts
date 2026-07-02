@@ -106,6 +106,11 @@ function formatResultAsJson(data: unknown): string[] | null {
  * к внешним API, например запрос погоды).
  */
 export function inferNetworkPolicy(manifest: Pick<SkillManifest, "runtime">): boolean {
+  // Host-сеть (Linux-сервер за INPUT DROP): при ALICE_SANDBOX_HOST_NET=1 скилл общается
+  // с Engine API по 127.0.0.1 (общий netns), а `--network=none` вообще отрезает сеть —
+  // тогда даже Engine API TCP недоступен (skill "irc" виснет Engine API timeout).
+  // Поэтому в host-net режиме принудительно даём скиллу сеть (она станет host в docker.ts).
+  if (process.env.ALICE_SANDBOX_HOST_NET === "1") return true;
   return manifest.runtime?.network ?? false;
 }
 

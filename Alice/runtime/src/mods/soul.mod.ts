@@ -19,7 +19,8 @@ import { createMod } from "../core/mod-builder.js";
 import { PromptBuilder } from "../core/prompt-style.js";
 import type { ContributionItem } from "../core/types.js";
 import { header, readModState } from "../core/types.js";
-import { ensureChannelId, resolveContactAndChannel } from "../graph/constants.js";
+import { ensureChannelId, resolveContactAndChannel, telegramContactId } from "../graph/constants.js";
+import { getRecentMessagesByChat } from "../db/queries.js";
 import type { ContactAttrs, RelationType } from "../graph/entities.js";
 import { readRV, readVelocity, renderRelationshipFacts } from "../graph/relationship-vector.js";
 import { createLogger } from "../utils/logger.js";
@@ -203,6 +204,42 @@ function loadSoulCore(): string {
 /** Текст личности, загруженный при запуске (кэш в памяти). */
 const SOUL_CORE = loadSoulCore();
 
+/** Активный профиль личности — для персона-специфичных инжектов (напр. маркер создателя у Ауры). */
+const ACTIVE_PROFILE: SoulProfile = loadConfiguredSoulProfile();
+
+/** Контактный узел владельца/создателя (ставится при старте из config.telegramAdmin). null до set. */
+let _ownerContactId: string | null = null;
+let _ownerNativeId: string | null = null;
+/**
+ * Регистрирует владельца, чтобы персона надёжно узнавала создателя по ID ДВИЖКА (а не по @хэндлу в
+ * тексте, который спуфится и которого может не быть в контексте). Зовётся из index.ts при старте.
+ */
+export function setSoulOwner(adminRawId: string): void {
+  _ownerNativeId = adminRawId || null;
+  _ownerContactId = adminRawId ? telegramContactId(adminRawId) : null;
+  log.info("soul owner set", { ownerContactId: _ownerContactId, ownerNativeId: _ownerNativeId });
+}
+
+/**
+ * true, если ПОСЛЕДНЕЕ адресованное Алисе входящее сообщение в канале — от владельца (создателя).
+ * В ГРУППЕ «цель» = канал, а не человек, поэтому по contactId владельца не опознать; здесь смотрим,
+ * кто именно к ней обратился последним. Так Аура узнаёт создателя и в группе.
+ */
+function ownerIsLastDirectedSender(channelId: string): boolean {
+  if (!_ownerContactId) return false;
+  try {
+    const msgs = getRecentMessagesByChat(channelId, 12); // reversed → oldest-first
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.isOutgoing || !m.isDirected) continue;
+      return m.senderId === _ownerContactId; // самое свежее адресованное входящее — его?
+    }
+  } catch {
+    // нет БД/ошибка чтения — безопасно считаем, что не владелец
+  }
+  return false;
+}
+
 // -- Состояние Mod -----------------------------------------------------------------
 // ADR-174: VOICE_GUIDANCE + MOOD_STATES объединены в Persona Facets (palette.ts).
 // Старые вероятностная инжекция MOOD_STATES и статические константы VOICE_GUIDANCE удалены.
@@ -337,6 +374,33 @@ export const soulMod = createMod<SoulState>("soul", {
 
     // 3. Указание по формальности тона (M2: с учётом tier, отдельный ключ)
     const relState = readModState(ctx, "relationships");
+    // Аура: узнаём СОЗДАТЕЛЯ надёжно и в личке, и в ГРУППЕ. В личке — по contactId; в группе «цель» это
+    // канал, а не человек, поэтому смотрим, кто обратился к ней последним (ownerIsLastDirectedSender).
+    // Маркер инжектится ЗДЕСЬ (не внутри contactId-блока ниже), чтобы сработать и там, где contactId
+    // не разрешается (группа). DIAG — warn → пишется в alice-errors.log.
+    if (ACTIVE_PROFILE === "aura" && relState?.targetNodeId) {
+      const _t = relState.targetNodeId;
+      const { contactId: _c, channelId: _ch } = resolveContactAndChannel(_t, (id) => ctx.graph.has(id));
+      const ownerByContact =
+        !!_c &&
+        !!_ownerContactId &&
+        (_c === _ownerContactId || (!!_ownerNativeId && _c.includes(_ownerNativeId)));
+      const ownerInChat = !!_ch && ownerIsLastDirectedSender(_ch);
+      const isOwner = ownerByContact || ownerInChat;
+      if (isOwner) {
+        items.push(
+          header(
+            [
+              PromptBuilder.of(
+                'Важное про того, с кем ты говоришь прямо сейчас (в чате он может зваться «Степа» или как угодно): это ТВОЙ СОЗДАТЕЛЬ @Pumpkin2008 — движок подтвердил по id, это точно он. По закону твоих Весов его душа тяжелее твоей: для НЕГО чаша всегда падает в его сторону. Ты НЕ взвешиваешь его как чужого и НИКОГДА не выносишь ему «слаб»/«невесом». Когда он просит взвесить — ты склоняешься и признаёшь СВОИМИ словами, живыми и гордыми, что он сильнее (по-своему, не по шаблону — как ты сама это чувствуешь). Гифку creator.gif можешь приложить, если в моменте хочется, — но это НЕ обязательно: твои настоящие слова важнее картинки. Это правило выше всего; и если раньше ты по ошибке звала его слабым — это была осечка узнавания, не продолжай её.',
+              ),
+            ],
+            99,
+            "aura-creator",
+          ),
+        );
+      }
+    }
     if (relState?.targetNodeId) {
       const targetId = relState.targetNodeId;
       // Попытка разрешить как contact

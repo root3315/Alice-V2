@@ -141,8 +141,8 @@ wd_tagger_url = "http://127.0.0.1:39100"
 anime_classify_url = "http://127.0.0.1:39101"
 
 [soul]
-# Alice 的人格核心。default = SOUL.md；ojou = SOUL.ojou.md。
-profile = "default"
+# Личность. default = SOUL.md; ojou = SOUL.ojou.md; aura = SOUL.aura.md (Аура-Гильотина).
+profile = "aura"
 
 [time]
 # 用户所在时区，UTC+8 写 8，日本写 9。Ташкент (Узбекистан) = UTC+5。

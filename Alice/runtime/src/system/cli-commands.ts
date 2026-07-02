@@ -729,6 +729,93 @@ export async function forumTopicsCommand(
   };
 }
 
+// ── Image Command (irc image) — keyless поиск картинки (booru/web) → скачать → отправить фото ──
+
+export interface ImageArgs {
+  json?: string;
+  in?: string;
+  /** Что искать. Для booru пробелы станут подчёркиваниями (теги). */
+  query: string;
+  /** Источник: "booru" (аниме/персонажи, SFW) или "web" (общий, по умолчанию). */
+  source?: string;
+  /** Forum: id топика для ответа в нужную тему. */
+  ref?: string;
+}
+
+export async function imageCommand(ctx: CliContext, args: ImageArgs): Promise<CommandResult> {
+  const die = makeDie(ctx.output, "irc");
+  const chatId = await ctx.resolveTarget(args.in);
+  const query = (args.query ?? "").trim();
+  if (!query) die("image requires --query <что искать>", "command_missing_argument");
+  let source = "web";
+  if (args.source) {
+    if (args.source !== "booru" && args.source !== "web") {
+      die(`unknown --source '${args.source}' (use booru|web)`, "command_arg_format");
+    }
+    source = args.source;
+  }
+  assertCurrentChatForSend(ctx, chatId, die, "irc.image");
+  const topicId = args.ref ? parseMsgId(args.ref) : undefined;
+
+  const body: Record<string, unknown> = { chatId, query, source };
+  if (topicId) body.topicId = topicId;
+  const result = (await ctx.engine.post("/telegram/send-image", body)) as {
+    msgId?: number | null;
+    url?: string;
+    source?: string;
+    error?: string;
+  } | null;
+
+  if (!result || result.error || result.msgId == null) {
+    return {
+      output: `(картинку не отправила: ${result?.error ?? "пустой ответ"})`,
+      rawResult: result ?? { error: "empty" },
+    };
+  }
+  return {
+    output: renderConfirm("Image sent", `${result.source}: ${query}`),
+    rawResult: { msgId: result.msgId, url: result.url, chatId },
+  };
+}
+
+// ── Circle Command (irc circle) — картинка → квадратное mp4 → video note («кружок») ──
+
+export async function circleCommand(ctx: CliContext, args: ImageArgs): Promise<CommandResult> {
+  const die = makeDie(ctx.output, "irc");
+  const chatId = await ctx.resolveTarget(args.in);
+  const query = (args.query ?? "").trim();
+  if (!query) die("circle requires --query <что искать>", "command_missing_argument");
+  let source = "web";
+  if (args.source) {
+    if (args.source !== "booru" && args.source !== "web") {
+      die(`unknown --source '${args.source}' (use booru|web)`, "command_arg_format");
+    }
+    source = args.source;
+  }
+  assertCurrentChatForSend(ctx, chatId, die, "irc.circle");
+  const topicId = args.ref ? parseMsgId(args.ref) : undefined;
+
+  const body: Record<string, unknown> = { chatId, query, source };
+  if (topicId) body.topicId = topicId;
+  const result = (await ctx.engine.post("/telegram/send-circle", body)) as {
+    msgId?: number | null;
+    url?: string;
+    source?: string;
+    error?: string;
+  } | null;
+
+  if (!result || result.error || result.msgId == null) {
+    return {
+      output: `(кружок не отправила: ${result?.error ?? "пустой ответ"})`,
+      rawResult: result ?? { error: "empty" },
+    };
+  }
+  return {
+    output: renderConfirm("Circle sent", `${result.source}: ${query}`),
+    rawResult: { msgId: result.msgId, url: result.url, chatId },
+  };
+}
+
 // ── Poll Command ──
 
 export interface PollArgs {

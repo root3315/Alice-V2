@@ -8,7 +8,9 @@ import {
   assertCurrentChatForSend,
   checklistCommand,
   checklistCompleteCommand,
+  circleCommand,
   forumTopicsCommand,
+  imageCommand,
   pinCommand,
   selfSourceCommand,
   unpinCommand,
@@ -316,6 +318,64 @@ const forumTopics = defineCommand({
     in: inOption,
   },
   run: makeRunner("forum-topics", forumTopicsCommand),
+});
+
+const image = defineCommand({
+  meta: {
+    name: "image",
+    description:
+      "Find an image online (keyless, no API key) and send it as a photo. --query <what to find>. --source booru = anime/character art (SFW, danbooru rating:g) — use this for art of yourself or anime; --source web = general image search (DuckDuckGo, default). Use when asked to send a picture of something, or 'find a photo of yourself and send it' (booru with your character tag). Defaults to current chat; --in <chat> for another.",
+  },
+  args: {
+    ...jsonFlag,
+    in: inOption,
+    query: {
+      type: "string",
+      description: "What to search for, e.g. 'aura sousou no frieren' (booru) or 'cute cat' (web)",
+      required: true,
+      valueHint: "query",
+    },
+    source: {
+      type: "string",
+      description: "booru (anime/character art, SFW) or web (general, default)",
+      valueHint: "booru|web",
+    },
+    ref: {
+      type: "string",
+      description: "Forum topic id to reply into (optional)",
+      valueHint: "topicId",
+    },
+  },
+  run: makeRunner("image", imageCommand),
+});
+
+const circle = defineCommand({
+  meta: {
+    name: "circle",
+    description:
+      "Send a Telegram video note ('кружок') made from an image: finds a picture (booru/web, keyless) → short square video → sends as a round video message. --query <what>. --source booru (anime/character art, e.g. yourself) or web (general, default). Use when asked to send a circle/кружок of yourself or something. NOTE: it's a static round image, not live video. Defaults to current chat; --in <chat>.",
+  },
+  args: {
+    ...jsonFlag,
+    in: inOption,
+    query: {
+      type: "string",
+      description: "What to find for the circle, e.g. 'aura sousou no frieren'",
+      required: true,
+      valueHint: "query",
+    },
+    source: {
+      type: "string",
+      description: "booru (anime/character art) or web (general, default)",
+      valueHint: "booru|web",
+    },
+    ref: {
+      type: "string",
+      description: "Forum topic id (optional)",
+      valueHint: "topicId",
+    },
+  },
+  run: makeRunner("circle", circleCommand),
 });
 
 const poll = defineCommand({
@@ -774,6 +834,8 @@ export const ircSubCommands = {
   unpin,
   "self-source": selfSource,
   "forum-topics": forumTopics,
+  image,
+  circle,
   poll,
   vote,
   "index-pack": indexPack,

@@ -700,6 +700,49 @@ export async function handleTelegramForward(
     return;
   }
 
+  if (action === "send-image" || action === "send-circle") {
+    const dep = action === "send-image" ? deps.telegramSendImage : deps.telegramSendCircle;
+    if (!dep) {
+      notConfigured(res, action);
+      return;
+    }
+    const b = body as
+      | { chatId?: unknown; query?: unknown; source?: unknown; topicId?: unknown }
+      | null;
+    if (
+      b === null ||
+      typeof b !== "object" ||
+      Array.isArray(b) ||
+      typeof b.chatId !== "number" ||
+      typeof b.query !== "string" ||
+      b.query.trim().length === 0
+    ) {
+      badRequest(
+        res,
+        'body must be { "chatId": number, "query": string, "source"?: "booru"|"web", "topicId"?: number }',
+      );
+      return;
+    }
+    if (b.source !== undefined && b.source !== "booru" && b.source !== "web") {
+      badRequest(res, '"source" must be "booru" or "web"');
+      return;
+    }
+    if (!ensureTargetAllowed(res, deps, b.chatId)) return;
+    try {
+      const result = await dep({
+        chatId: b.chatId,
+        query: b.query,
+        source: b.source as "booru" | "web" | undefined,
+        topicId: typeof b.topicId === "number" ? b.topicId : undefined,
+      });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (err) {
+      serverError(res, `${action} failed`, err);
+    }
+    return;
+  }
+
   if (action === "voice") {
     if (!deps.telegramVoice) {
       notConfigured(res, "voice");

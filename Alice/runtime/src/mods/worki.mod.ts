@@ -666,7 +666,10 @@ export const workiMod = createMod<WorkiState>("worki", {
       return { success: true, message: `Разбор запущен (${model}, до ${tmin} мин) — приду с ответом в этот чат. Скажи, что смотришь код, и живи дальше.` };
     },
   })
-  .instruction("research", {
+  // web_search — ОБЩАЯ веб-способность (не про код Worki): keyless поиск/чтение в сети через
+  // Claude Max (прокси /v1/research). Живёт в этом моде из-за общей async-доставки; внутренний
+  // kind остаётся "research" (= имя эндпоинта прокси data.research), для Алисы имя = web_search.
+  .instruction("web_search", {
     params: z.object({
       task: z.coerce.string().trim().min(1).describe('Ссылка или тема, своими словами (напр. "изучи https://… что там" или "поищи про релиз X")'),
       model: z.coerce.string().optional().describe(MODEL_DESC),
@@ -674,7 +677,7 @@ export const workiMod = createMod<WorkiState>("worki", {
       _reply_chat: z.coerce.number().optional().describe(REPLY_CHAT_DESC),
     }),
     deriveParams: deriveReplyChat,
-    description: "Изучить ссылку/тему в сети — сама схожу по веб-инструментам (читаю страницы, иду по ссылкам, ищу) и пришлю сводку АСИНХРОННО в этот чат.",
+    description: "ВЕБ-ПОИСК и чтение страниц в интернете (моя способность лазить в сеть): даёшь ссылку или тему — сама схожу по веб-инструментам (читаю страницы, иду по ссылкам, ищу свежее) и пришлю сводку АСИНХРОННО в этот чат.",
     affordance: {
       priority: "capability",
       category: "memory",

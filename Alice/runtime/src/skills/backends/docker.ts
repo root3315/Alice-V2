@@ -27,6 +27,15 @@ const SESSION_SIGNATURE_LABEL = "alice.sandbox.signature";
 const SESSION_PREFIX = "alice-sbx";
 const DEFAULT_MAX_BUFFER = 1024 * 1024;
 const ALLOW_RUNC_FALLBACK = process.env.ALICE_SANDBOX_ALLOW_RUNC_FALLBACK !== "false";
+/**
+ * Host-сеть для песочницы. На Linux-серверах с `INPUT policy DROP` (UFW) путь
+ * контейнер→host-gateway (host.docker.internal) блокируется файрволом, и скиллы не
+ * достукиваются до Engine API (Error: Engine API timeout). При ALICE_SANDBOX_HOST_NET=1
+ * контейнер запускается с `--network=host` и обращается к движку напрямую по 127.0.0.1
+ * (см. buildDockerContainerFlags + buildDockerExecConfig). OFF by default — на dev
+ * (Windows/Mac) host.docker.internal работает штатно, host-сеть там не нужна.
+ */
+const SANDBOX_HOST_NET = process.env.ALICE_SANDBOX_HOST_NET === "1";
 
 export const DockerIsolationSchema = [
   "container",
@@ -195,7 +204,7 @@ function buildDockerContainerFlags(opts: DockerExecOptions): string[] {
   const profile = resolveDockerIsolationProfile(opts.isolation);
   const args: string[] = [
     ...(profile.runtime ? [`--runtime=${profile.runtime}`] : []),
-    `--network=${opts.network ? "bridge" : "none"}`,
+    `--network=${opts.network ? (SANDBOX_HOST_NET ? "host" : "bridge") : "none"}`,
     `--memory=${opts.memory}`,
     "--cpus=1",
     "--cap-drop=ALL",
@@ -236,7 +245,10 @@ function buildDockerExecConfig(opts: DockerExecOptions): string[] {
   const args: string[] = ["-e", `ALICE_SKILL=${opts.skillName}`];
 
   if (opts.enginePort) {
-    args.push("-e", `ALICE_ENGINE_URL=http://host.docker.internal:${opts.enginePort}`);
+    // При host-сети контейнер делит netns с хостом → движок доступен по loopback;
+    // host.docker.internal там не резолвится (и не нужен). Иначе — обычный bridge-путь.
+    const engineHost = SANDBOX_HOST_NET ? "127.0.0.1" : "host.docker.internal";
+    args.push("-e", `ALICE_ENGINE_URL=http://${engineHost}:${opts.enginePort}`);
   }
 
   if (opts.env) {
