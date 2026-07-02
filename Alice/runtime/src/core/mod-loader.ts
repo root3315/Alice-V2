@@ -10,6 +10,7 @@ import { channelMod } from "../mods/channel.mod.js";
 import { commitmentMod } from "../mods/commitment.mod.js";
 import { consciousnessMod } from "../mods/consciousness.mod.js";
 import { consolidationMod } from "../mods/consolidation.mod.js";
+import { datesMod } from "../mods/dates.mod.js";
 import { devOfferMod } from "../mods/dev-offer.mod.js";
 import { diaryMod } from "../mods/diary.mod.js";
 import { digestMod } from "../mods/digest.mod.js";
@@ -31,6 +32,7 @@ import { socialCaseMod } from "../mods/social-case.mod.js";
 import { soulMod } from "../mods/soul.mod.js";
 import { strategyMod } from "../mods/strategy.mod.js";
 import { threadsMod } from "../mods/threads.mod.js";
+import { topicWatchMod } from "../mods/topic-watch.mod.js";
 import { workiMod } from "../mods/worki.mod.js";
 import type { ModDefinition } from "./types.js";
 
@@ -69,6 +71,8 @@ export function loadAllMods(): ModDefinition[] {
     digestMod, // раз в сутки самосочинённая сводка дня в личку владельца
     selfReflectionMod, // периодическая автобиографическая дуга: раз в сутки/неделю тихо консолидирует недавние сигналы в durable заметки её голосом (internal-only, питает память)
     commitmentMod, // follow-through: ловит намерения с мягким сроком → сама возвращается к ним, когда срок прошёл
+    topicWatchMod, // «следи за темой»: периодически сама глянет в сеть (web_search) и принесёт свежее в тот чат
+    datesMod, // важные даты: помнит ДР/годовщины и в нужный день сама тепло поздравляет своим голосом
     devOfferMod, // очень сдержанный нудж «предложить глянуть код» в рабочем чате
     explorationMod, // автономное read-only обучение по каналам: находит публичные каналы по сильнейшим темам её людей, тихо подписывается, ингестит заметное в KB
   ];

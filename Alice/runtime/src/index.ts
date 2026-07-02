@@ -55,6 +55,7 @@ import { onBreakerStateChange } from "./llm/resilience.js";
 import { describeMedia, isVisionEnabled } from "./llm/vision.js";
 import { embedTexts, isEmbeddingEnabled } from "./llm/embeddings.js";
 import { getEmbeddingConfig, setEmbeddingConfig } from "./llm/semantic-recall-config.js";
+import { setDatesTimezone } from "./mods/dates.mod.js";
 import { setDigestTarget } from "./mods/digest.mod.js";
 import { setSoulOwner } from "./mods/soul.mod.js";
 import { setExplorationTarget, setExplorationWorker } from "./mods/exploration.mod.js";
@@ -230,6 +231,8 @@ async function main() {
   if (config.telegramAdmin) setDigestTarget(telegramChannelId(config.telegramAdmin));
   // Аура должна надёжно узнавать создателя по id движка (а не по @хэндлу) → передаём владельца в soul.mod.
   if (config.telegramAdmin) setSoulOwner(config.telegramAdmin);
+  // Важные даты (ДР/годовщины): «сегодня локально» считаем по её таймзоне.
+  setDatesTimezone(config.timezoneOffset);
 
   // ADR-33 Phase 2: одноразовая миграция со старых graph_snapshots на graph_nodes/graph_edges
   migrateFromSnapshots();
