@@ -148,6 +148,28 @@ _CHILD_ENV = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
 CLEAN_CWD = os.path.join(tempfile.gettempdir(), "claude_proxy_cwd")
 os.makedirs(CLEAN_CWD, exist_ok=True)
 
+
+def _cli_supports_flag(flag: str) -> bool:
+    """Разовая проверка при старте: умеет ли установленный claude данный флаг.
+
+    Нужна для сервера, где крутится чисто-JS claude-code 1.0.128 (SEA-бинарник 2.x
+    зависает на эмулированном CPU): у 1.0.128 нет --json-schema, и запросы со схемой
+    падали бы «unknown option». При недоступности --help считаем CLI современным.
+    """
+    try:
+        proc = subprocess.run(
+            [CLAUDE_CLI, "--help"],
+            capture_output=True, text=True, encoding="utf-8",
+            env=_CHILD_ENV, cwd=CLEAN_CWD, timeout=60,
+        )
+        return flag in (proc.stdout or "") + (proc.stderr or "")
+    except Exception:  # noqa: BLE001
+        return True
+
+
+CLI_HAS_JSON_SCHEMA = _cli_supports_flag("--json-schema")
+log.info("claude CLI: --json-schema %s", "поддерживается" if CLI_HAS_JSON_SCHEMA else "НЕТ (схему кладём в промпт)")
+
 _sem = asyncio.Semaphore(MAX_CONCURRENCY)
 # Отдельный бюджет для worki (code-analyze/code-fix): фоновый агентный разбор НЕ должен
 # занимать слоты разговорных тиков Alice — иначе её ответы тормозят даже на sonnet (HIGH-6).
@@ -544,7 +566,17 @@ async def call_claude(
             argv += ["--system-prompt-file", sys_file]
 
         if json_schema is not None:
-            argv += ["--json-schema", json.dumps(json_schema)]
+            if CLI_HAS_JSON_SCHEMA:
+                argv += ["--json-schema", json.dumps(json_schema)]
+            else:
+                # Старый чисто-JS CLI (сервер, 1.0.128): флага нет — кладём схему в промпт,
+                # JSON достаём из текста ответа (см. envelope_to_content: structured-fallback).
+                prompt = (
+                    f"{prompt}\n\n"
+                    "Ответь СТРОГО одним валидным JSON-объектом по этой JSON Schema — "
+                    "без пояснений и без markdown-ограждений, только сам JSON:\n"
+                    + json.dumps(json_schema, ensure_ascii=False)
+                )
 
         if images:
             # Нативное зрение: картинка как content-блок (Claude мультимодальный, видит
@@ -588,8 +620,11 @@ def _strip_md_fences(text: str) -> str:
 
 def envelope_to_content(envelope: dict, *, structured: bool, json_obj: bool = False) -> str:
     """Из envelope claude достаём текст ответа для OpenAI content."""
-    if structured and envelope.get("structured_output") is not None:
-        return json.dumps(envelope["structured_output"], ensure_ascii=False)
+    if structured:
+        if envelope.get("structured_output") is not None:
+            return json.dumps(envelope["structured_output"], ensure_ascii=False)
+        # Старый CLI без --json-schema: схема ехала в промпте → JSON лежит в тексте ответа.
+        return _strip_md_fences(envelope.get("result", "") or "")
     result = envelope.get("result", "") or ""
     if json_obj:
         return _strip_md_fences(result)
