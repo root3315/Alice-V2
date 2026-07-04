@@ -33,6 +33,7 @@ import {
   manualPauseUntil,
   setManualPause,
 } from "../engine/manual-pause.js";
+import { requestExploreNow } from "../mods/exploration.mod.js";
 import type { WorldModel } from "../graph/world-model.js";
 import { ALICE_DB_PATH } from "../runtime-paths.js";
 import { createLogger } from "../utils/logger.js";
@@ -163,6 +164,33 @@ export function bindAdminCommands(dp: MtcuteDispatcher, ctx: BindAdminCommandsCo
 
     try {
       switch (cmd) {
+        case "/help": {
+          await reply(
+            [
+              "🖤 Пульт Ауры (только тут, в нашей личке):",
+              "",
+              "/status — жива? аптейм, память, пауза, давления, граф",
+              "/pause [30m|2h|1d] — усыпить её самоинициативу (по умолч. 2ч)",
+              "/resume — разбудить (снять паузу)",
+              "/backup — снять бэкап её памяти прямо сейчас",
+              "/explore — сходить прямо сейчас поискать канал по её интересам",
+              "/man — полный статус + справочник её инструментов",
+              "/help — этот список",
+              "",
+              "Обычные сообщения (без /) — это просто разговор с ней, не команды.",
+            ].join("\n"),
+          );
+          return PropagationAction.Stop;
+        }
+        case "/explore": {
+          requestExploreNow();
+          log.info("/explore requested");
+          await reply(
+            "[explore] ок — на ближайшем тике схожу поищу канал по своим интересам " +
+              "(кап 1/сутки в силе). Если найду — скажу тут своими словами.",
+          );
+          return PropagationAction.Stop;
+        }
         case "/man": {
           log.info("/man command received", { senderId });
           await reply(buildStatusMessage(clock, ctx.personality, queue, dispatcher));

@@ -195,12 +195,16 @@ export function selfInterestSeeds(): string[] {
     .slice(0, 12);
 }
 
-/** Готовое (но ещё не рассказанное) уведомление о найденном канале. */
+/** Готовое (но ещё не рассказанное) уведомление о найденном канале/группе. */
 export interface ExplorationNotice {
-  /** Имя канала, на который подписалась. */
+  /** Что произошло: подписалась на КАНАЛ (сама) или нашла ГРУППУ (предлагает — сама НЕ вступает). */
+  kind: "channel" | "group_proposal";
+  /** Имя канала/группы. */
   channelName: string;
   /** Тема, по которой нашла. */
   topic: string;
+  /** @username-ссылка (для group_proposal — чтобы вступить после «да» владельца). */
+  link: string | null;
   /** Когда сформировано (мс) — для TTL. */
   ts: number;
   /** Направленное давление в личку владельца уже поднято. */
@@ -335,8 +339,14 @@ export interface ExploreRequest {
   dailyCap: number;
 }
 
-/** Сигнатура воркера: делает search→channel-only→join→read→KB-ingest, возвращает имя канала или null. */
-export type ExplorationWorker = (req: ExploreRequest) => Promise<{ channelName: string } | null>;
+/** Результат воркера: подписалась на канал ИЛИ нашла группу-кандидата (предложение, БЕЗ join). */
+export type ExplorationResult =
+  | { channelName: string }
+  | { groupProposal: { title: string; link: string | null } }
+  | null;
+
+/** Сигнатура воркера: search→channel-only→join→read→KB-ingest; группы — только как предложение. */
+export type ExplorationWorker = (req: ExploreRequest) => Promise<ExplorationResult>;
 
 let _worker: ExplorationWorker | null = null;
 
@@ -355,13 +365,39 @@ export function setExplorationTarget(ownerDmGraphId: string): void {
 }
 
 /**
- * Воркер сообщает: подписалась на канал по теме. mod подхватит на следующем onTickEnd
- * (поставит направленное давление + подкинет заметку владельцу).
+ * Воркер сообщает результат: подписалась на канал / нашла группу-кандидата. mod подхватит на
+ * следующем onTickEnd (поставит направленное давление + подкинет заметку владельцу).
  */
-let _pendingFromWorker: { channelName: string; topic: string } | null = null;
+let _pendingFromWorker: {
+  kind: "channel" | "group_proposal";
+  name: string;
+  topic: string;
+  link: string | null;
+} | null = null;
+
 export function setExplorationNotice(channelName: string, topic: string): void {
-  _pendingFromWorker = { channelName, topic };
+  _pendingFromWorker = { kind: "channel", name: channelName, topic, link: null };
   log.info("exploration notice queued", { channelName, topic });
+}
+
+/** Нашла ГРУППУ по теме — предложить владельцу (сама НЕ вступает; join только после его «да»). */
+export function setExplorationGroupProposal(
+  title: string,
+  link: string | null,
+  topic: string,
+): void {
+  _pendingFromWorker = { kind: "group_proposal", name: title, topic, link };
+  log.info("exploration group proposal queued", { title, link, topic });
+}
+
+/**
+ * Owner-панель /explore: форс-запуск ближайшей попытки исследования — снимает wall-clock троттл,
+ * warmup и гейт занятости (дневной кап и channels-only остаются в силе).
+ */
+let _forceExplore = false;
+export function requestExploreNow(): void {
+  _forceExplore = true;
+  log.info("exploration: force requested (owner /explore)");
 }
 
 /**
@@ -377,6 +413,7 @@ export function _resetExploration(): void {
   _ownerDm = null;
   _pendingFromWorker = null;
   _workerDone = false;
+  _forceExplore = false;
 }
 
 // ── Вспомогательное (направленное давление в личку владельца) ─────────────────
@@ -415,23 +452,39 @@ export const explorationMod = createMod<ExplorationState>("exploration", {
   },
 })
   // contribute — ЧИСТЫЙ: только читает готовые (directed) уведомления и отдаёт заметку владельцу.
+  // Два вида: kind="channel" (сама подписалась на канал) и kind="group_proposal" (нашла ГРУППУ —
+  // сама НЕ вступает, спрашивает разрешения у владельца; join только после его «да»).
   .contribute((ctx): ContributionItem[] => {
     if (!_ownerDm) return [];
     const ready = ctx.state.notices.filter((n) => n.directed);
     if (ready.length === 0) return [];
-    const lines = ready
-      .map((n) => `— нашла канал «${n.channelName}» по теме «${n.topic}» — буду почитывать оттуда`)
-      .join("\n");
-    const raw = [
-      "## Нашла кое-что почитать (только для лички владельца)",
-      "",
-      "Если ты СЕЙЧАС в личке владельца и момент уместный — скажи ему своими словами, " +
-        "по-человечески и коротко, что подписалась на канал, чтобы быть в теме:",
-      lines,
-      "",
-      "Это не обязаловка: если сейчас не к месту — просто промолчи. В любом ДРУГОМ чате — молчи.",
-    ].join("\n");
-    return [header(PromptBuilder.fromRaw(raw), 82)];
+
+    const blocks: string[] = ["## Нашла кое-что (только для лички владельца)", ""];
+    const channels = ready.filter((n) => n.kind === "channel");
+    const groups = ready.filter((n) => n.kind === "group_proposal");
+
+    if (channels.length > 0) {
+      blocks.push(
+        "Подписалась на канал(ы), чтобы быть в теме — скажи владельцу своими словами, коротко:",
+        channels
+          .map((n) => `— канал «${n.channelName}» по теме «${n.topic}» — буду почитывать`)
+          .join("\n"),
+        "",
+      );
+    }
+    if (groups.length > 0) {
+      blocks.push(
+        "Нашла ГРУППУ по своим интересам, но сама в группы не вступаю (это его аккаунт) — " +
+          "спроси у владельца своими словами, хочет ли он, чтобы ты туда зашла (дай ссылку). " +
+          "Если он потом скажет «зайди» — вступишь через свою команду join:",
+        groups
+          .map((n) => `— группа «${n.channelName}»${n.link ? ` (${n.link})` : ""} по теме «${n.topic}»`)
+          .join("\n"),
+        "",
+      );
+    }
+    blocks.push("Не обязаловка: если сейчас не к месту — промолчи. В любом ДРУГОМ чате — молчи.");
+    return [header(PromptBuilder.fromRaw(blocks.join("\n")), 82)];
   })
   // Жизненный цикл (мутации): троттл + гейты → запуск воркера; приём уведомлений; давление; TTL.
   .onTickEnd((ctx) => {
@@ -447,21 +500,25 @@ export const explorationMod = createMod<ExplorationState>("exploration", {
     //    результат уже получен, пусть расскажет; новые попытки гейтируются ниже).
     if (_pendingFromWorker) {
       ctx.state.notices.push({
-        channelName: _pendingFromWorker.channelName,
+        kind: _pendingFromWorker.kind,
+        channelName: _pendingFromWorker.name,
         topic: _pendingFromWorker.topic,
+        link: _pendingFromWorker.link,
         ts: now,
         directed: false,
       });
-      // Успешный join авто-исследования → двигаем дневной счётчик капа (атомарно в mod-state).
-      const today = dayKey(now);
-      if (ctx.state.joinDayKey !== today) {
-        ctx.state.joinDayKey = today;
-        ctx.state.joinsToday = 0;
+      // Дневной кап двигаем ТОЛЬКО за реальный join канала (предложение группы — не join).
+      if (_pendingFromWorker.kind === "channel") {
+        const today = dayKey(now);
+        if (ctx.state.joinDayKey !== today) {
+          ctx.state.joinDayKey = today;
+          ctx.state.joinsToday = 0;
+        }
+        ctx.state.joinsToday += 1;
+        log.info("exploration: подписка зафиксирована", { joinsToday: ctx.state.joinsToday });
       }
-      ctx.state.joinsToday += 1;
       ctx.state.inFlight = false;
       _pendingFromWorker = null;
-      log.info("exploration: подписка зафиксирована", { joinsToday: ctx.state.joinsToday });
     }
 
     // 1. Направленное давление в личку владельца + TTL-чистка (каждый тик, дёшево).
@@ -477,15 +534,19 @@ export const explorationMod = createMod<ExplorationState>("exploration", {
     if (!_worker) return; // воркер не внедрён → mod спит
     if (ctx.state.inFlight) return; // уже идёт попытка
 
-    // wall-clock троттл (первая попытка — после warmup).
+    // Форс от владельца (/explore) снимает троттл/warmup/гейт занятости (кап и channels-only — нет).
+    const forced = _forceExplore;
+    _forceExplore = false;
+
+    // wall-clock троттл (первая попытка — после warmup). При форсе — пропускаем.
     const baseline =
       ctx.state.lastExploreMs > 0 ? ctx.state.lastExploreMs : now - EXPLORE_THROTTLE_MS + WARMUP_MS;
-    if (now - baseline < EXPLORE_THROTTLE_MS) return;
+    if (!forced && now - baseline < EXPLORE_THROTTLE_MS) return;
 
-    // Гейт «занятости»: при активной переписке не уходим исследовать (как feeds/channel).
-    if (readPressureApi(ctx) > PRESSURE_GATE) return;
+    // Гейт «занятости»: при активной переписке не уходим исследовать (как feeds/channel). Форс — мимо.
+    if (!forced && readPressureApi(ctx) > PRESSURE_GATE) return;
 
-    // Дневной кап.
+    // Дневной кап (и при форсе — уважаем, чтобы не спамить join'ами).
     if (!canJoinToday(ctx.state, now, DEFAULT_DAILY_JOIN_CAP)) return;
 
     // Ясный сигнал интереса (иначе — НЕ исследуем). Источники: профили её людей/групп
@@ -509,9 +570,13 @@ export const explorationMod = createMod<ExplorationState>("exploration", {
       worker({ topic: seed.topic, joinsUsedToday: used, dailyCap: DEFAULT_DAILY_JOIN_CAP }),
     )
       .then((res) => {
-        // Успех → ставим уведомление (mod подхватит, зафиксирует кап и расскажет владельцу).
-        // Неуспех (null: нет подходящего канала / кап исчерпан / не сджойнили) → молча, без уведомления.
-        if (res) setExplorationNotice(res.channelName, seed.topic);
+        // Результат воркера: подписалась на КАНАЛ (сама) ИЛИ нашла ГРУППУ (предложение владельцу).
+        // null (нет кандидата / кап / не сджойнили) → молча, без уведомления.
+        if (res && "channelName" in res) {
+          setExplorationNotice(res.channelName, seed.topic);
+        } else if (res && "groupProposal" in res) {
+          setExplorationGroupProposal(res.groupProposal.title, res.groupProposal.link, seed.topic);
+        }
       })
       .catch((err) => {
         log.warn("exploration worker failed", { err: (err as Error).message });

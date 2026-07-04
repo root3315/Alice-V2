@@ -21,7 +21,7 @@ import type { TelegramClient } from "@mtcute/node";
 import { telegramChannelId } from "../graph/constants.js";
 import { safeDisplayName } from "../graph/display.js";
 import type { WorldModel } from "../graph/world-model.js";
-import type { ExplorationWorker, ExploreRequest } from "../mods/exploration.mod.js";
+import type { ExplorationResult, ExplorationWorker, ExploreRequest } from "../mods/exploration.mod.js";
 import { ingestChannelKb } from "../mods/exploration.mod.js";
 import { createLogger } from "../utils/logger.js";
 import { getExplorationGuard } from "./actions/shared.js";
@@ -97,12 +97,14 @@ export function createExplorationWorker(
   client: TelegramClient,
   getGraph: () => WorldModel,
 ): ExplorationWorker {
-  return async (req: ExploreRequest): Promise<{ channelName: string } | null> => {
+  return async (req: ExploreRequest): Promise<ExplorationResult> => {
     // Ре-проверка дневного капа на стороне воркера (mod уже проверил, но защита от гонок).
     if (req.joinsUsedToday >= req.dailyCap) return null;
 
     const graph = getGraph();
     const guard = getExplorationGuard();
+    // Первая встреченная ГРУППА по теме — сама НЕ вступаем, предложим владельцу (спросит разрешения).
+    let groupCandidate: { title: string; link: string | null } | null = null;
 
     // 1. Поиск публичных кандидатов по теме.
     if (!guard.canSearch("public").allowed) return null;
@@ -143,9 +145,11 @@ export function createExplorationWorker(
 
       // ЖЁСТКИЙ guard channels-only: тянем Chat и проверяем chatType === "channel".
       let chatType: string | undefined;
+      let chatUsername: string | undefined;
       try {
         const chat = await client.getChat(cand.id);
         chatType = chat.chatType;
+        chatUsername = (chat as { username?: string }).username ?? undefined;
       } catch (err) {
         log.debug("explore: getChat failed, skip candidate", {
           id: cand.id,
@@ -154,6 +158,14 @@ export function createExplorationWorker(
         continue;
       }
       if (!isBroadcastChannel(chatType)) {
+        // Группа/супергруппа — АВТО НЕ джойним. Запоминаем ПЕРВУЮ подходящую как предложение
+        // владельцу (он решит — вступать ли; join только по его команде).
+        if ((chatType === "group" || chatType === "supergroup") && !groupCandidate && chatUsername) {
+          groupCandidate = {
+            title: cand.title || `@${chatUsername}`,
+            link: `https://t.me/${chatUsername}`,
+          };
+        }
         log.debug("explore: candidate is not a broadcast channel, skip", { id: cand.id, chatType });
         continue; // НИКОГДА не джойним группы/супергруппы авто
       }
@@ -197,6 +209,14 @@ export function createExplorationWorker(
       return { channelName: name };
     }
 
+    // Канал не нашёлся — но если по теме есть ГРУППА, предложим её владельцу (не вступаем сами).
+    if (groupCandidate) {
+      log.info("explore: no channel — proposing group to owner", {
+        topic: req.topic,
+        group: groupCandidate.title,
+      });
+      return { groupProposal: groupCandidate };
+    }
     log.info("explore: no broadcast-channel candidate matched", { topic: req.topic });
     return null;
   };
