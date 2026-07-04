@@ -25,6 +25,25 @@ import type { GraphPerturbation } from "./mapper.js";
 
 const log = createLogger("events");
 
+// Обращение по ИМЕНИ (ник): "Аура, отправь…" в группе считается directed, даже без @username/reply
+// (её @username — MrPumpkin1_bot, по имени тегнуть нельзя). Список имён/склонений задаётся в
+// ALICE_SELF_NAMES="аура,ауру,ауре,ауры,аурой,aura" (пусто → детекция по имени выключена).
+const SELF_NAMES: readonly string[] = (process.env.ALICE_SELF_NAMES ?? "")
+  .split(/[,;]+/)
+  .map((s) => s.trim().toLowerCase())
+  .filter((s) => s.length >= 2);
+
+/** true, если в тексте есть её имя как ОТДЕЛЬНОЕ слово (юникод-границы, без substring-ложняков). */
+function messageAddressesSelfByName(text: string | null | undefined): boolean {
+  if (!text || SELF_NAMES.length === 0) return false;
+  const t = text.toLowerCase();
+  for (const name of SELF_NAMES) {
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`(?:^|[^\\p{L}\\p{N}])${esc}(?:[^\\p{L}\\p{N}]|$)`, "u").test(t)) return true;
+  }
+  return false;
+}
+
 // WS-4: гейт ops-инцидента — двойной (канал работач + гараж-бот) + маркер. id в .env.
 // Для этого (и только этого) случая инцидент трактуется как directed-сообщение,
 // обходя bot-downweight, чтобы её любопытство его заметило. Сам контакт остаётся ботом.
@@ -382,6 +401,10 @@ export function bindEvents(
           break;
         }
       }
+    }
+    // Обращение по ИМЕНИ ("Аура, ...") — тоже directed, даже без @username/reply (ALICE_SELF_NAMES).
+    if (!isMentioned && messageAddressesSelfByName(ctx.text)) {
+      isMentioned = true;
     }
     const isDirected = isPrivate || isReply || isMentioned || opsIncident;
 
