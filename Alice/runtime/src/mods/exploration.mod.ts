@@ -538,10 +538,15 @@ export const explorationMod = createMod<ExplorationState>("exploration", {
     const forced = _forceExplore;
     _forceExplore = false;
 
-    // wall-clock троттл (первая попытка — после warmup). При форсе — пропускаем.
-    const baseline =
-      ctx.state.lastExploreMs > 0 ? ctx.state.lastExploreMs : now - EXPLORE_THROTTLE_MS + WARMUP_MS;
-    if (!forced && now - baseline < EXPLORE_THROTTLE_MS) return;
+    // Первый запуск: ЗАФИКСИРОВАТЬ точку отсчёта один раз. Иначе baseline (now-THROTTLE+WARMUP)
+    // пересчитывался от now КАЖДЫЙ тик → разрыв вечно 3.5ч < 4ч и авто-исследование НИКОГДА не
+    // наступало. Теперь baseline постоянен → warmup реально истекает (первая попытка ~через 30 мин).
+    if (ctx.state.lastExploreMs === 0) {
+      ctx.state.lastExploreMs = now - EXPLORE_THROTTLE_MS + WARMUP_MS;
+    }
+
+    // wall-clock троттл. При форсе — пропускаем.
+    if (!forced && now - ctx.state.lastExploreMs < EXPLORE_THROTTLE_MS) return;
 
     // Гейт «занятости»: при активной переписке не уходим исследовать (как feeds/channel). Форс — мимо.
     if (!forced && readPressureApi(ctx) > PRESSURE_GATE) return;
