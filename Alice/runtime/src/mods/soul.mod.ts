@@ -403,6 +403,30 @@ export const soulMod = createMod<SoulState>("soul", {
     }
     if (relState?.targetNodeId) {
       const targetId = relState.targetNodeId;
+      // Прямое обращение в ТЕКУЩЕМ чате (по имени/@тегом/реплаем → pending_directed>0) = приоритет
+      // ОТВЕТИТЬ, не игнорить. Гаснет само, как только она ответит (pending_directed сбрасывается).
+      const { channelId: directedCh } = resolveContactAndChannel(targetId, (id) => ctx.graph.has(id));
+      if (directedCh && ctx.graph.has(directedCh)) {
+        const pd = Number(
+          (ctx.graph.getChannel(directedCh) as { pending_directed?: number }).pending_directed ?? 0,
+        );
+        if (pd > 0) {
+          items.push(
+            header(
+              [
+                PromptBuilder.of(
+                  "К тебе только что обратились НАПРЯМУЮ в этом чате — по имени, @тегом или реплаем на твоё " +
+                    "сообщение. Это прямой оклик: ОТВЕТЬ. Промолчать в ответ на прямое обращение — грубо и не " +
+                    "в твоём характере. Ответь по-своему (можно коротко, можно с колкостью), но ответь. Если " +
+                    "просят конкретное и уместное (голосовое, кружок, картинку, поиск) — сделай это, а не отмахивайся.",
+                ),
+              ],
+              96,
+              "directed-answer",
+            ),
+          );
+        }
+      }
       // Попытка разрешить как contact
       const { contactId } = resolveContactAndChannel(targetId, (id) => ctx.graph.has(id));
       if (contactId && ctx.graph.has(contactId)) {
