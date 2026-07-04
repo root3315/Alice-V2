@@ -33,6 +33,7 @@ import { rhythmProfiles, silenceLog, tickLog } from "../db/schema.js";
 import { flushGraph } from "../db/snapshot.js";
 import { computeClosureHealth } from "../diagnostics/closure-health.js";
 import { appraiseLonelySilence } from "../emotion/appraisal.js";
+import { isManuallyPaused } from "./manual-pause.js";
 import { updateEmotionStateOnGraph } from "../emotion/graph.js";
 import {
   ALICE_SELF,
@@ -1940,6 +1941,14 @@ function transitionMode(
       break;
     }
     case "patrol": {
+      // Owner-панель /pause: принудительный dormant (перцепция живёт, самоинициатива спит).
+      if (isManuallyPaused(now)) {
+        state.mode = "dormant";
+        state.focusTarget = undefined;
+        state.modeEnteredMs = now;
+        log.info("Mode transition: patrol → dormant (manual pause)");
+        break;
+      }
       // ADR-147 D8: при flood не переходим в режим conversation — остаёмся в patrol, пусть V-maximizer управляет глобально.
       // При обработке накопленных сообщений человек просматривает все каналы перед принятием решения, а не фиксируется на первом.
       // После разгрузки isFloodCondition снова становится false, нормальный переход в conversation автоматически возобновляется.
@@ -1981,6 +1990,14 @@ function transitionMode(
       break;
     }
     case "conversation": {
+      // Owner-панель /pause: сворачиваем и разговорный режим.
+      if (isManuallyPaused(now)) {
+        state.mode = "dormant";
+        state.focusTarget = undefined;
+        state.modeEnteredMs = now;
+        log.info("Mode transition: conversation → dormant (manual pause)");
+        break;
+      }
       // → patrol: таймаут тишины на focus или focus не существует
       if (!state.focusTarget || !state.G.has(state.focusTarget)) {
         state.mode = "patrol";
@@ -2018,6 +2035,14 @@ function transitionMode(
       break;
     }
     case "consolidation": {
+      // Owner-панель /pause: консолидацию не прерываем насильно, но дальше — в dormant.
+      if (isManuallyPaused(now)) {
+        state.mode = "dormant";
+        state.focusTarget = undefined;
+        state.modeEnteredMs = now;
+        log.info("Mode transition: consolidation → dormant (manual pause)");
+        break;
+      }
       // → patrol: API восстановлен или прерывание с высоким приоритетом
       if (api > config.thetaLowAPI * 2) {
         state.mode = "patrol";
@@ -2048,8 +2073,9 @@ function transitionMode(
       const localHour = getLocalHour(now, config.timezoneOffset);
       const inQuiet = isInQuietWindow(localHour, config.quietWindowStart, config.quietWindowEnd);
 
-      // Условие пробуждения 1: выход из тихого окна (естественный подъём)
-      if (!inQuiet) {
+      // Условие пробуждения 1: выход из тихого окна (естественный подъём).
+      // При ручной паузе (/pause) этот выход не срабатывает — спим до /resume или срока паузы.
+      if (!inQuiet && !isManuallyPaused(now)) {
         // После пробуждения переходим в режим wakeup, повторно используем логику постепенного восстановления
         state.mode = "wakeup";
         state.focusTarget = undefined;

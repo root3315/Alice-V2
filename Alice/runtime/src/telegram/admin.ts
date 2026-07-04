@@ -1,22 +1,40 @@
 /**
- * Обработчик команд администратора.
+ * Обработчик команд администратора (owner-панель).
  *
- * /man — выводит текущее состояние среды выполнения и справочник доступных команд.
- * Доступно только в личных сообщениях пользователя TELEGRAM_ADMIN.
- * Командные сообщения не попадают в EventBuffer (перехватываются через PropagationAction.Stop).
+ * Только ЛИЧКА владельца (TELEGRAM_ADMIN). Командные сообщения перехватываются ДО её
+ * когниции (group=-1 + PropagationAction.Stop) и отвечаются СИСТЕМНЫМ стилем — это пульт
+ * управления, персона Алисы к нему не притрагивается.
+ *
+ * /man     — статус среды + справочник её инструментов (как раньше).
+ * /status  — краткий статус: аптайм, пауза, давления, граф, очередь.
+ * /pause   — ручная пауза самоинициативы (30m/2h/1d; по умолчанию 2ч) → dormant.
+ * /resume  — снять паузу.
+ * /backup  — немедленный бэкап памяти (flushGraph + копия alice.db).
+ *
+ * Неизвестные /команды НЕ перехватываются — уходят в её обычное восприятие.
  */
 
 import type { Dispatcher as MtcuteDispatcher } from "@mtcute/dispatcher";
 import { PropagationAction } from "@mtcute/dispatcher";
 import type { TelegramClient } from "@mtcute/node";
 import { User } from "@mtcute/node";
+import { copyFileSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Config } from "../config.js";
 import type { Dispatcher as AliceDispatcher } from "../core/dispatcher.js";
 import { typedQuery } from "../core/query-helpers.js";
 import { generateShellManual } from "../core/shell-manual.js";
 import type { ModDefinition } from "../core/types.js";
+import { flushGraph } from "../db/snapshot.js";
 import type { ActionQueue } from "../engine/action-queue.js";
+import {
+  clearManualPause,
+  isManuallyPaused,
+  manualPauseUntil,
+  setManualPause,
+} from "../engine/manual-pause.js";
 import type { WorldModel } from "../graph/world-model.js";
+import { ALICE_DB_PATH } from "../runtime-paths.js";
 import { createLogger } from "../utils/logger.js";
 import type { TickClock } from "../utils/time.js";
 import { type PersonalityVector, VOICES } from "../voices/personality.js";
@@ -58,6 +76,48 @@ export function splitMessage(text: string, limit: number = TG_MSG_LIMIT): string
   return chunks;
 }
 
+/**
+ * Парсит длительность паузы: "30m"/"30м" (минуты), "2h"/"2ч" (часы), "1d"/"1д" (дни),
+ * голое число = минуты. Пусто → 2 часа. Кап 7 дней. null = не распознано.
+ */
+export function parsePauseDuration(raw: string | undefined): number | null {
+  if (!raw) return 2 * 60 * 60_000;
+  const m = raw.trim().match(/^(\d+)\s*(m|м|min|h|ч|час|d|д)?\.?$/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const unit = (m[2] ?? "m").toLowerCase();
+  const ms = unit.startsWith("h") || unit.startsWith("ч")
+    ? n * 60 * 60_000
+    : unit.startsWith("d") || unit.startsWith("д")
+      ? n * 24 * 60 * 60_000
+      : n * 60_000;
+  return Math.min(ms, 7 * 24 * 60 * 60_000);
+}
+
+/** Локальное HH:MM для метки времени (тот же приём, что localYMD в dates.mod). */
+function fmtLocalHm(ms: number, tzOffsetHours: number): string {
+  const d = new Date(ms + tzOffsetHours * 3_600_000);
+  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+}
+
+/** Немедленный бэкап памяти: flushGraph + копия alice.db(+wal/shm). Возвращает отчёт. */
+function runManualBackup(G: WorldModel): string {
+  flushGraph(G);
+  const dir = process.env.ALICE_BACKUP_DIR ?? join(dirname(ALICE_DB_PATH), "backups");
+  mkdirSync(dir, { recursive: true });
+  const ts = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
+  const copied: string[] = [];
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const src = `${ALICE_DB_PATH}${suffix}`;
+    if (!existsSync(src)) continue;
+    const dst = join(dir, `manual-${ts}-alice.db${suffix}`);
+    copyFileSync(src, dst);
+    copied.push(`alice.db${suffix} (${(statSync(dst).size / 1024 / 1024).toFixed(1)} MB)`);
+  }
+  return `[backup] сохранено в ${dir}:\n${copied.map((c) => `  ${c}`).join("\n")}`;
+}
+
 export interface BindAdminCommandsContext {
   config: Config;
   client: TelegramClient;
@@ -91,34 +151,75 @@ export function bindAdminCommands(dp: MtcuteDispatcher, ctx: BindAdminCommandsCo
     const senderId = msgCtx.sender ? String(msgCtx.sender.id) : null;
     if (senderId !== config.telegramAdmin) return;
 
-    // только команда /man
     const text = msgCtx.text?.trim();
-    if (text !== "/man") return;
+    if (!text || !text.startsWith("/")) return;
+    const [cmd, ...args] = text.split(/\s+/);
 
-    log.info("/man command received", { senderId });
+    const reply = async (t: string) => {
+      for (const chunk of splitMessage(t)) {
+        await sendText(client, msgCtx.chat.id, chunk);
+      }
+    };
 
     try {
-      // собираем состояние среды выполнения (читаем personality из ctx, чтобы получить актуальную ссылку)
-      const statusText = buildStatusMessage(clock, ctx.personality, queue, dispatcher);
-
-      // отправляем статусное сообщение
-      const statusChunks = splitMessage(statusText);
-      for (const chunk of statusChunks) {
-        await sendText(client, msgCtx.chat.id, chunk);
-      }
-
-      // генерируем и отправляем shell-native справочник
-      const manual = await generateShellManual(mods);
-      const manualChunks = splitMessage(manual);
-      for (const chunk of manualChunks) {
-        await sendText(client, msgCtx.chat.id, chunk);
+      switch (cmd) {
+        case "/man": {
+          log.info("/man command received", { senderId });
+          await reply(buildStatusMessage(clock, ctx.personality, queue, dispatcher));
+          await reply(await generateShellManual(mods));
+          return PropagationAction.Stop;
+        }
+        case "/status": {
+          const now = Date.now();
+          const lines: string[] = [];
+          const up = process.uptime();
+          lines.push(
+            `uptime: ${Math.floor(up / 3600)}h ${Math.floor((up % 3600) / 60)}m | rss: ${(process.memoryUsage().rss / 1024 / 1024).toFixed(0)} MB`,
+          );
+          lines.push(
+            isManuallyPaused(now)
+              ? `pause: ДА, до ${fmtLocalHm(manualPauseUntil(), config.timezoneOffset)} (/resume — снять)`
+              : "pause: нет",
+          );
+          lines.push("");
+          lines.push(buildStatusMessage(clock, ctx.personality, queue, dispatcher));
+          await reply(lines.join("\n"));
+          return PropagationAction.Stop;
+        }
+        case "/pause": {
+          const ms = parsePauseDuration(args[0]);
+          if (ms == null) {
+            await reply("[pause] не понял срок. Примеры: /pause (2ч), /pause 30m, /pause 2h, /pause 1d");
+            return PropagationAction.Stop;
+          }
+          const until = Date.now() + ms;
+          setManualPause(until);
+          log.info("/pause set", { untilMs: until });
+          await reply(
+            `[pause] самоинициатива спит до ${fmtLocalHm(until, config.timezoneOffset)} ` +
+              "(на прямое обращение близких всё же может проснуться). /resume — разбудить.",
+          );
+          return PropagationAction.Stop;
+        }
+        case "/resume": {
+          clearManualPause();
+          log.info("/resume");
+          await reply("[resume] пауза снята — живёт дальше.");
+          return PropagationAction.Stop;
+        }
+        case "/backup": {
+          log.info("/backup requested");
+          await reply(runManualBackup(ctx.G));
+          return PropagationAction.Stop;
+        }
+        default:
+          return; // не команда панели — пусть уходит в её обычное восприятие
       }
     } catch (err) {
-      log.error("/man command failed", { error: err });
-      await sendText(client, msgCtx.chat.id, "[Error] /man command failed. Check logs.");
+      log.error("admin command failed", { cmd, error: err });
+      await reply(`[error] ${cmd} failed. Check logs.`);
+      return PropagationAction.Stop;
     }
-
-    return PropagationAction.Stop;
   }, -1); // group=-1: выполняется до EventBuffer handler
 
   log.info("Admin commands bound", { adminId: config.telegramAdmin });

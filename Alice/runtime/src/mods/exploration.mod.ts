@@ -173,6 +173,26 @@ export interface InterestSources {
       crystallizedInterests?: Record<string, { confidence?: number }>;
     }
   >;
+  /**
+   * ЕЁ СОБСТВЕННЫЕ интересы (персона, а не только отражение людей): «живой человек со своими
+   * вкусами». Задаются владельцем через ALICE_SELF_INTERESTS (см. selfInterestSeeds) — напр.
+   * "Mobile Legends,аниме Фрирен". Вес выше порога → она исследует их сама, без чужого сигнала.
+   */
+  selfInterests?: string[];
+}
+
+/**
+ * Её собственные интересы из окружения: ALICE_SELF_INTERESTS="тема1,тема2;тема3".
+ * Пусто/не задано → []. Дёшево (парс строки), зовётся на каждом решении об исследовании.
+ */
+export function selfInterestSeeds(): string[] {
+  const raw = (process.env.ALICE_SELF_INTERESTS ?? "").trim();
+  if (!raw) return [];
+  return raw
+    .split(/[,;]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 2)
+    .slice(0, 12);
 }
 
 /** Готовое (но ещё не рассказанное) уведомление о найденном канале. */
@@ -231,6 +251,10 @@ export function aggregateInterests(src: InterestSources): InterestSeed[] {
     if (cur) cur.strength += weight;
     else acc.set(key, { topic: display, strength: weight });
   };
+
+  // Её собственные вкусы — сильный самостоятельный сигнал (выше MIN_INTEREST_STRENGTH),
+  // чтобы она исследовала СВОИ темы даже без чужих упоминаний — как человек с интересами.
+  for (const tag of src.selfInterests ?? []) bump(tag, 3);
 
   for (const profile of Object.values(src.contactProfiles ?? {})) {
     for (const tag of profile.interests ?? []) bump(tag, 1);
@@ -464,9 +488,11 @@ export const explorationMod = createMod<ExplorationState>("exploration", {
     // Дневной кап.
     if (!canJoinToday(ctx.state, now, DEFAULT_DAILY_JOIN_CAP)) return;
 
-    // Ясный сигнал интереса (иначе — НЕ исследуем).
+    // Ясный сигнал интереса (иначе — НЕ исследуем). Источники: профили её людей/групп
+    // (relationships) + ЕЁ СОБСТВЕННЫЕ интересы (ALICE_SELF_INTERESTS) — свои работают
+    // и без чужого сигнала (она человек со своими вкусами).
     const relState = ctx.getModState<InterestSources>("relationships");
-    const seed = relState ? pickStrongestInterest(relState) : null;
+    const seed = pickStrongestInterest({ ...(relState ?? {}), selfInterests: selfInterestSeeds() });
     if (!seed) return;
 
     // Все гейты пройдены → отмечаем троттл и запускаем воркер fire-and-forget.

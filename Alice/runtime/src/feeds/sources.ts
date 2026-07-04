@@ -81,6 +81,58 @@ export async function fetchHackerNewsTop(limit = 5): Promise<FeedItem[]> {
   }
 }
 
+// ── Универсальный RSS/Atom-фетчер (без зависимостей) ─────────────────────────
+
+/** Снять CDATA/теги, декодировать базовые сущности, схлопнуть пробелы. */
+function cleanXmlText(s: string): string {
+  return s
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;|&apos;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Первый матч содержимого тега в блоке item/entry. */
+function pickXmlTag(block: string, tag: string): string {
+  return block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "i"))?.[1] ?? "";
+}
+
+/**
+ * Универсальный RSS 2.0 / Atom фетчер: WordPress-/новостные ленты (напр. MLBB-новости)
+ * без RSSHub и внешних парсеров. Толерантен к сбоям: любая ошибка → [].
+ */
+export async function fetchRss(feedUrl: string, limit = 5): Promise<FeedItem[]> {
+  try {
+    const resp = await fetchWithTimeout(feedUrl, 12_000);
+    if (!resp.ok) return [];
+    const xml = await resp.text();
+    const items: FeedItem[] = [];
+    const itemRe = /<(item|entry)\b[\s\S]*?<\/\1>/gi;
+    let m = itemRe.exec(xml);
+    while (m !== null && items.length < limit) {
+      const block = m[0];
+      const title = cleanXmlText(pickXmlTag(block, "title"));
+      // RSS: <link>url</link>; Atom: <link href="..."/>.
+      const atomHref = block.match(/<link[^>]*href="([^"]+)"/i)?.[1];
+      const url = cleanXmlText(atomHref ?? pickXmlTag(block, "link"));
+      const snippet = cleanXmlText(
+        pickXmlTag(block, "description") || pickXmlTag(block, "summary"),
+      ).slice(0, 160);
+      if (title) items.push({ title, url, snippet });
+      m = itemRe.exec(xml);
+    }
+    return items;
+  } catch (e) {
+    log.warn("feed: rss failed", { url: feedUrl, error: e instanceof Error ? e.message : String(e) });
+    return [];
+  }
+}
+
 /** Бесплатные игры Epic этой недели. */
 export async function fetchEpicFreeGames(): Promise<FeedItem[]> {
   try {

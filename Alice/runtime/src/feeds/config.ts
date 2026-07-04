@@ -9,9 +9,9 @@
 import {
   type FeedItem,
   fetchBangumiToday,
-  fetchBiliHot,
   fetchEpicFreeGames,
   fetchHackerNewsTop,
+  fetchRss,
   fetchTodayInHistory,
 } from "./sources.js";
 
@@ -41,8 +41,14 @@ export interface FeedsConfig {
 // В дальнейшем корректируется по мере эволюции персонажа Alice.
 
 const PERSONA_FEEDS: FeedDef[] = [
-  // Социальные тренды — знать, о чём все говорят
-  { label: "Тренды Bilibili", intervalMin: 120, fetcher: () => fetchBiliHot(5) },
+  // MLBB — она сидит в ML-чате и знает игру (KB): свежие новости/патчи как материал для разговора.
+  // Google News RSS: keyless и не банит скрейперы (прямые WP-фиды oneesports/dotesports отдают 403).
+  {
+    label: "Новости Mobile Legends",
+    intervalMin: 360,
+    fetcher: () =>
+      fetchRss("https://news.google.com/rss/search?q=%22Mobile+Legends%22&hl=ru&gl=RU&ceid=RU:ru", 5),
+  },
   // Технологии — повседневная жизнь цифрового аборигена
   { label: "Популярное на HackerNews", intervalMin: 360, fetcher: () => fetchHackerNewsTop(5) },
   // Игры — бесплатные игры Epic как естественный материал для разговора
