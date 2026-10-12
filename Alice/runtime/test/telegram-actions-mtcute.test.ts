@@ -672,7 +672,7 @@ describe("pinMessage — pin visible to both sides (irc pin)", () => {
     const pin = vi.fn(async (..._a: unknown[]) => null);
     const client = { pinMessage: pin };
 
-    await pinMessage(client as unknown as TelegramClient, 5707638365, 1965);
+    await pinMessage(client as unknown as TelegramClient, 1234567890, 1965);
 
     expect(pin).toHaveBeenCalledTimes(1);
     const params = pin.mock.calls[0][0] as {
@@ -680,7 +680,7 @@ describe("pinMessage — pin visible to both sides (irc pin)", () => {
       message: number;
       bothSides?: boolean;
     };
-    expect(params).toMatchObject({ chatId: 5707638365, message: 1965, bothSides: true });
+    expect(params).toMatchObject({ chatId: 1234567890, message: 1965, bothSides: true });
   });
 });
 

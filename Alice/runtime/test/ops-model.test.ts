@@ -6,7 +6,7 @@ import { OPS_OPUS_WINDOW_MS, shouldUseOpsModel } from "../src/engine/tick/ops-mo
 // «просто так» Opus не включается.
 describe("shouldUseOpsModel — Opus только для реальной ops-работы", () => {
   const OPS = "channel:telegram:-100777"; // работач
-  const DM = "channel:telegram:5707638365"; // личка оператора
+  const DM = "channel:telegram:1234567890"; // личка оператора
   const NOW = 1_700_000_000_000;
 
   it("работач + необработанное обращение (pending_directed>0) → Opus", () => {

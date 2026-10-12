@@ -3,7 +3,11 @@
 > [!CAUTION]
 > This project was **designed, coded, tested, and documented entirely by AI agents**. The human author directed the vision and made decisions, but does not have the capacity to maintain this codebase alone — it has grown far too complex. Contributions and forks are welcome, but please understand the maintenance reality before depending on this project.
 
-<h1 align="center">Alice</h1>
+<h1 align="center">Alice V2 (Project Aura)</h1>
+
+> 🌟 **Advanced production fork of [LlmKira/Alice](https://github.com/LlmKira/Alice) with 138+ commits of architectural overhaul, critical bug fixes, physical hardware companion support, and real-world deployment hardening.**
+>
+> 📖 **Read the full improvements & bug fixes report:** [FORK_SHOWCASE.md](FORK_SHOWCASE.md)
 
 <p align="center">
   <a href="https://github.com/LlmKira/alice"><img src="https://img.shields.io/github/stars/LlmKira/alice?style=flat&colorA=080f12&colorB=f0c040" alt="stars"></a>

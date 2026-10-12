@@ -549,7 +549,7 @@ describe("structured block episode continuation", () => {
 // маркером, чтобы timeline изолировал его как cross-chat.
 describe("tick observation context scoping (cross-chat read isolation)", () => {
   const GROUP_TARGET = "channel:telegram:-1003737026444"; // рабочая группа «работач»
-  const DM_NATIVE_ID = "5707638365"; // личка с владельцем
+  const DM_NATIVE_ID = "1234567890"; // личка с владельцем
 
   const ctxForTarget = (target: string) => ({
     ...BASE_CTX,

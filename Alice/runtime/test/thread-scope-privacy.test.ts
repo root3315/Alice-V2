@@ -7,8 +7,8 @@ import { describe, expect, it } from "vitest";
 import { threadVisibleInChat } from "../src/engine/tick/target.js";
 
 const WORK = "channel:telegram:-1003737026444";
-const DM_CONTACT = "contact:telegram:5707638365";
-const DM_CHANNEL = "channel:telegram:5707638365";
+const DM_CONTACT = "contact:telegram:1234567890";
+const DM_CHANNEL = "channel:telegram:1234567890";
 
 describe("threadVisibleInChat — scope заголовков тредов по чату", () => {
   it("приватный чат (groupScope=false): видны все треды", () => {

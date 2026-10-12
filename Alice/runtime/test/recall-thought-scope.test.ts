@@ -16,8 +16,8 @@ describe("thoughtVisibleInScope — приватность мыслей в recal
   const g = new WorldModel();
 
   it("приватный чат: доступно всё (не утечка третьим лицам)", () => {
-    for (const about of [null, "contact:telegram:5707638365", WORK]) {
-      expect(thoughtVisibleInScope(g, about, "channel:telegram:5707638365", "private")).toBe(true);
+    for (const about of [null, "contact:telegram:1234567890", WORK]) {
+      expect(thoughtVisibleInScope(g, about, "channel:telegram:1234567890", "private")).toBe(true);
     }
   });
 
@@ -27,7 +27,7 @@ describe("thoughtVisibleInScope — приватность мыслей в recal
   });
 
   it("группа: мысль о человеке (contact:) скрыта — может быть про ЛС", () => {
-    expect(thoughtVisibleInScope(g, "contact:telegram:5707638365", WORK, "supergroup")).toBe(false);
+    expect(thoughtVisibleInScope(g, "contact:telegram:1234567890", WORK, "supergroup")).toBe(false);
   });
 
   it("группа: мысль про САМ этот канал — видна", () => {
@@ -36,6 +36,6 @@ describe("thoughtVisibleInScope — приватность мыслей в recal
 
   it("неизвестный chat_type трактуется консервативно (как группа) → приватное скрыто", () => {
     expect(thoughtVisibleInScope(g, null, WORK, undefined)).toBe(false);
-    expect(thoughtVisibleInScope(g, "contact:telegram:5707638365", WORK, undefined)).toBe(false);
+    expect(thoughtVisibleInScope(g, "contact:telegram:1234567890", WORK, undefined)).toBe(false);
   });
 });

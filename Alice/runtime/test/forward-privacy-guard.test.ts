@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { isPrivateForwardBlocked } from "../src/engine-api/routes/telegram.js";
 
 describe("isPrivateForwardBlocked — privacy guard on forward", () => {
-  const PRIVATE_DM = 5707638365; // личка (положительный id)
+  const PRIVATE_DM = 1234567890; // личка (положительный id)
   const WORK_GROUP = -1003737026444; // работач (отрицательный = супергруппа)
   const OTHER_GROUP = -1002250041196;
 
